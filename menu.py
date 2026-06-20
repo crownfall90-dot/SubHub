@@ -1064,7 +1064,11 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = subprocess.Popen(args, creationflags=creationflags)
-        proc.wait()
+        while proc.poll() is None:
+            try:
+                proc.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                pass
         code = proc.returncode
     except KeyboardInterrupt:
         print(f"\n\n{Y}  [!] Остановка по Ctrl+C...{RST}")
@@ -7837,11 +7841,12 @@ if __name__ == "__main__":
             def _win32_ctrl_handler(ctrl_type):
                 # ctrl_type: 0=CTRL_C, 1=CTRL_BREAK, 2=CTRL_CLOSE (закрытие окна)
                 if ctrl_type in (0, 1):
-                    # Ctrl+C / Ctrl+Break — возвращаем False сразу.
-                    # Python сам бросит KeyboardInterrupt → except KeyboardInterrupt
-                    # → finally → очистка один раз в главном потоке.
-                    # Запускать cleanup здесь нельзя — будет гонка данных с finally.
-                    return False
+                    # Ctrl+C / Ctrl+Break — явно прерываем главный поток.
+                    # return False не гарантирует KeyboardInterrupt для CTRL_BREAK:
+                    # дефолтный Windows-обработчик убивает процесс без finally.
+                    import _thread
+                    _thread.interrupt_main()
+                    return True
                 if ctrl_type == 2:
                     # Закрытие окна — Python до finally не доходит, запускаем вручную.
                     try:
