@@ -430,8 +430,9 @@ def _menu_tg_bot_thread() -> None:
                 return {"inline_keyboard": [
                     [{"text": f"📱 {phone}", "callback_data": "noop"}],
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
-                    [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
+                    [{"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}],
                     [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
+                    [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:active"}],
                 ]}
             else:
@@ -1497,6 +1498,22 @@ def _menu_tg_bot_thread() -> None:
                         await _goto_main(cid, mid)
                 else:
                     await _send(cid, f"❌ Не удалось заархивировать профиль <code>{phone}</code>", parse_mode="HTML")
+                return
+
+            if data.startswith("profile:set_issued:"):
+                phone = data.split(":", 2)[2]
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                    return
+                import time as _time
+                ok = _m("_save_meta_field")(pp, issued_ts=_time.time())
+                if ok:
+                    await _ack(qid, "🔵 Статус «Выдан» установлен")
+                    txt = f"📱 <code>{phone}</code>\n\nВыберите действие:"
+                    await _edit(cid, mid, txt, _profile_menu_kb(phone, "active"), parse_mode="HTML")
+                else:
+                    await _ack(qid, "❌ Не удалось сохранить статус", alert=True)
                 return
 
             if data.startswith("profile:set_active:"):
