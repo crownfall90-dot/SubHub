@@ -1447,11 +1447,11 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                 // Приоритет: сначала явные кнопки (самые конкретные)
                 if (t.includes('activate now')) return 'activate_now';
                 if (t.includes('explore now'))  return 'explore_now';
-                // Только однозначные признаки активации
+                // Только однозначные признаки активации YouTube Premium
                 if (t.includes('activated') && !t.includes('not activated')) return 'activated';
                 if (t.includes('membership is active'))   return 'activated';
                 if (t.includes('subscription is active')) return 'activated';
-                if (t.includes('membership valid till'))  return 'activated';
+                // 'membership valid till' = дата Black подписки, НЕ признак активации YT Premium
                 return null;
             };
 
@@ -1488,6 +1488,13 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                 const al = (el.getAttribute('aria-label') || '').trim();
                 if (['Activated','Activate Now','Explore Now'].includes(al))
                     combined += ' ' + al;
+            }
+
+            // F) Promos-картинка 1200x213 = кнопка Activate Now (PNG, текст не в DOM)
+            //    Проверяем ДО chk() чтобы перебить ложный "activated" от "membership valid till"
+            for (const img of document.querySelectorAll('img[width="1200"]')) {
+                if (img.getAttribute('height') === '213' && (img.src||'').includes('/promos/'))
+                    return 'activate_now';
             }
 
             return chk(combined);
