@@ -1786,52 +1786,11 @@ def screen_check_all_activated():
             unknown_list.append(username)
 
         elif status == "activated":
-            print(f"  {G}✅ АКТИВИРОВАНО{RST}" + (f" (до {valid_till})" if valid_till else ""))
-            # Безопасный перенос: сохраняем JSON-запись + перемещаем папку Chrome
-            # в BACKUP (не удаляем) — чтобы можно было восстановить при ошибке.
-            BACKUP_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-            USED_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-            backup_path = BACKUP_PROFILES_DIR / p["path"].name
-            try:
-                if backup_path.exists():
-                    shutil.rmtree(str(backup_path))
-                shutil.move(str(p["path"]), str(backup_path))
-                moved_ok = True
-            except Exception as _mv_e:
-                print(f"  {R}  Ошибка переноса папки: {_mv_e}{RST}")
-                moved_ok = False
-            # Сохраняем JSON-запись в chrome_profiles_used
-            try:
-                meta_file = p["path"] / ".profile_meta.json"
-                data = {}
-                if (backup_path / ".profile_meta.json").exists():
-                    try:
-                        data = json.loads(
-                            (backup_path / ".profile_meta.json").read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
-                data.update({
-                    "used_ts": time.time(),
-                    "black_valid_till": valid_till or "",
-                    "activation_status": "activated",
-                    "profile_name": p["path"].name,
-                })
-                phone = data.get("username", p["path"].name)
-                ts_int = int(data["used_ts"])
-                record_path = USED_PROFILES_DIR / f"record_{phone}_{ts_int}.json"
-                record_path.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception as _rec_e:
-                print(f"  {R}  Ошибка JSON-записи: {_rec_e}{RST}")
-            if moved_ok:
-                print(f"  {M}  Перемещено в chrome_profiles_backup/{p['path'].name}{RST}")
-                print(f"  {DIM}  (восстановить: переместить обратно в chrome_profiles_done/){RST}\n")
-                deleted_list.append(username)
-            else:
-                unknown_list.append(username)
+            print(f"  {M}✨ Activated{' до ' + valid_till if valid_till else ''} — аккаунт уже активирован{RST}\n")
+            not_activated.append(username)
 
         elif status == "activate_now":
-            print(f"  {Y}⏳ Activate Now — оплачено, ещё не активировано{RST}\n")
+            print(f"  {G}⭐ Activate Now — доступен к выдаче{RST}\n")
             not_activated.append(username)
 
         elif status == "explore_now":
@@ -1848,13 +1807,9 @@ def screen_check_all_activated():
             unknown_list.append(username)
 
     print(f"\n  {'─' * 48}")
-    print(f"  ✅ В backup (Activated) : {G}{BLD}{len(deleted_list)}{RST}"
-          + (f"  {DIM}{', '.join(deleted_list[:5])}{RST}" if deleted_list else ""))
-    print(f"  ⏳ Не активировано      : {Y}{BLD}{len(not_activated)}{RST}")
-    print(f"  ❓ Ошибки / неизвестно  : {R}{BLD}{len(unknown_list)}{RST}")
-    if deleted_list:
-        print(f"\n  {DIM}Папки Chrome → chrome_profiles_backup/")
-        print(f"  Если статус определён неверно — верните папку обратно в chrome_profiles_done/{RST}")
+    print(f"  ⭐ Activated / Activate Now : {G}{BLD}{len(not_activated)}{RST}"
+          + (f"  {DIM}{', '.join(not_activated[:5])}{RST}" if not_activated else ""))
+    print(f"  ❓ Ошибки / неизвестно      : {R}{BLD}{len(unknown_list)}{RST}")
     pause()
 
 
@@ -6847,21 +6802,15 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         o_ctx = entry[4] if len(entry) > 4 else None
 
                         if o_id != win_id:
+                            # mark_failed — noop для уже completed (bg-login) номеров
                             _grizzly_module.mark_failed(o_id)
                             try:
                                 if o_ctx: await o_ctx.close()
                                 elif o_pg: await o_pg.close()
                             except Exception:
                                 pass
-                            # Удаляем профили без мета-файла (_pending и неудавшиеся _active)
-                            _lp = DONE_PROFILES_DIR / f"profile_{o_ph}"
-                            if _lp.exists() and not (_lp / ".profile_meta.json").exists():
-                                try:
-                                    import shutil as _sh2
-                                    _sh2.rmtree(_lp, ignore_errors=True)
-                                    print(f"  {DIM}Профиль +91 {o_ph} удалён (вход не выполнен){RST}")
-                                except Exception:
-                                    pass
+                            # Удаляем только _pending профили (нет OTP, нет bg-login)
+                            # _active лузеры уже обработаны _do_loser — не трогаем их
 
                 # Победитель определён
                 is_first_winner = (win_id == _active[0][0])
