@@ -4229,9 +4229,11 @@ async def _handle_3ds_verification(page) -> bool:
             _otp_inp_all = otp_inp
             _otp_frame   = _otp_frame_found
             _sub_sel = (
+                "a#btnSubmit, a.gobtn, "
                 "button:has-text('SUBMIT'), button:has-text('Submit'), "
                 "input[value='SUBMIT'], input[value='Submit'], "
-                "button[type='submit'], input[type='submit']"
+                "button[type='submit'], input[type='submit'], "
+                "a:has-text('SUBMIT'), a:has-text('Submit')"
             )
 
             _inp_to_use = _otp_inp_all or otp_inp
@@ -4247,7 +4249,8 @@ async def _handle_3ds_verification(page) -> bool:
             except Exception:
                 pass
             await _inp_to_use.fill(otp_code)
-            await page.wait_for_timeout(400)
+            print("  3DS: код введён — жду 5 секунд перед нажатием Submit...")
+            await page.wait_for_timeout(5_000)
 
             submit_clicked = False
 
@@ -4295,8 +4298,14 @@ async def _handle_3ds_verification(page) -> bool:
                 for _fr in [page] + list(page.frames):
                     try:
                         clicked_js = await _fr.evaluate("""() => {
+                            // Try id=btnSubmit or class=gobtn first
+                            const byId = document.getElementById('btnSubmit');
+                            if (byId) { byId.click(); return true; }
+                            const byClass = document.querySelector('.gobtn');
+                            if (byClass) { byClass.click(); return true; }
+                            // Generic: button/input/a with SUBMIT text
                             for (const el of document.querySelectorAll(
-                                    'button, input[type="submit"], [role="button"]')) {
+                                    'button, input[type="submit"], [role="button"], a')) {
                                 const t = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
                                 if (t === 'submit') {
                                     el.click();
