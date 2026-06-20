@@ -6605,7 +6605,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 print(f"  {G}Номер получен: +91 {phone_10}  (id={phone_id}, цена={cost_gn}){RST}")
 
                 # Регистрируем аренду немедленно, чтобы избежать утечек
-                _grizzly_module.register_rental(phone_id, phone_10, time.monotonic(), pw=pw, login_url=login_url, months=months)
+                _grizzly_module.register_rental(phone_id, phone_10, time.monotonic(), pw=pw, login_url=login_url, months=months, intercept_mode=intercept_mode)
 
                 # TG: уведомление о покупке номера
                 await _send_tg_buy(phone_10)
@@ -6709,7 +6709,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         print(f"  {G}Номер #{n}: +91 {nph10} (${ncost:.3f}){RST}")
 
                         # Регистрируем аренду немедленно, чтобы избежать утечек
-                        _grizzly_module.register_rental(nid, nph10, time.monotonic(), pw=pw, login_url=login_url, months=months)
+                        _grizzly_module.register_rental(nid, nph10, time.monotonic(), pw=pw, login_url=login_url, months=months, intercept_mode=intercept_mode)
 
                         # TG: уведомление о покупке номера
                         await _send_tg_buy(nph10)
@@ -8463,9 +8463,12 @@ if __name__ == "__main__":
                                                            stop_at_email=_stop_at_email)
                             results[idx] = (ok, msg)
                             print(f"  [{idx+1}/{total}] {'✅' if ok else '❌'} {msg}")
-                        except Exception as exc:
+                        except BaseException as exc:
                             results[idx] = (False, str(exc))
-                            print(f"  [{idx+1}/{total}] ❌ Ошибка: {exc}")
+                            if not isinstance(exc, Exception):
+                                print(f"  [{idx+1}/{total}] ⚠ Прервано ({type(exc).__name__})")
+                            else:
+                                print(f"  [{idx+1}/{total}] ❌ Ошибка: {exc}")
 
                 await asyncio.gather(*[_one(i, m) for i, m in enumerate(_tariff_list)])
                 ok_count = sum(1 for r in results if r and r[0])

@@ -136,9 +136,9 @@ _RENTALS = {}
 _MONITOR_TASK = None
 _BG_FUTURES = []
 
-def register_rental(activation_id, phone_10, rented_at, profile_path=None, login_url=None, months=3, **_ignored):
+def register_rental(activation_id, phone_10, rented_at, profile_path=None, login_url=None, months=3, intercept_mode=False, **_ignored):
     """Регистрирует арендованный номер для отслеживания и отмены.
-    
+
     НЕ принимает pw/ctx/page — Playwright объекты нельзя трогать из другого потока.
     """
     aid = str(activation_id)
@@ -149,6 +149,7 @@ def register_rental(activation_id, phone_10, rented_at, profile_path=None, login
         "profile_path": profile_path,
         "login_url": login_url or "https://www.flipkart.com/account/login?ret=/",
         "months": months,
+        "intercept_mode": intercept_mode,
         "cancel_attempts": 0,
         "next_attempt_at": rented_at + 150.0,
         "cancelling": False,
@@ -239,6 +240,23 @@ async def _cancel_rental_task(aid):
             st = await client.get_status(aid)
             if st["type"] == "OK" and st.get("code"):
                 otp = st["code"]
+                # Если основной поток уже обработал этот номер (mark_completed удалил из _RENTALS) —
+                # не запускаем фоновый вход повторно
+                if aid not in _RENTALS:
+                    await client.close()
+                    return
+                # В intercept-режиме OTP передаётся в TG основным потоком —
+                # монитор не должен запускать фоновый вход, только завершить аренду
+                if r.get("intercept_mode"):
+                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} (перехват) — завершаю аренду без входа{_RST}")
+                    try:
+                        await client.cancel(aid)
+                    except Exception:
+                        pass
+                    r["status"] = "completed"
+                    _RENTALS.pop(aid, None)
+                    await client.close()
+                    return
                 print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} пришёл в последний момент: {otp}. Вход...{_RST}")
                 login_url = ""
                 months = 3
