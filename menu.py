@@ -5285,16 +5285,14 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         tg_token = ""
 
     _till_line  = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
-    _btn_line   = f"\n🖱 Кнопка: <b>{_btn_seen}</b>"
-    _url_line   = (f"\n\n🔗 <a href=\"{_full_url}\">Ссылка активации</a>" if _full_url else "\n\n⚠️ Ссылка активации не получена")
-    _short_line = (f"\n🔗 Короткая: {short_link}" if _has_short else "")
+    _url_line   = (f"\n\n🔗 <a href=\"{_full_url}\">{_full_url}</a>" if _full_url else "\n\n⚠️ Ссылка активации не получена")
+    _short_line = (f"\n🔗 {short_link}" if _has_short else "")
     msg = (
         f"🎉 <b>Flipkart Black Membership</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n\n"
         f"📱 Номер: <code>+91 {phone_number}</code>\n"
         f"💳 Тариф: {_tariff}"
         f"{_till_line}"
-        f"{_btn_line}"
         f"{_url_line}"
         f"{_short_line}"
     )
