@@ -1835,6 +1835,9 @@ def screen_profiles():
                 status = f"{B}🔵 Выдан: {p['issued_str']}{RST}"
             elif no_meta:
                 status = f"{R}⚠ Нет данных{RST}"
+            elif p.get("black_valid_till") or p.get("paid_ready"):
+                _vt = p.get("black_valid_till", "")
+                status = f"{G}✅ Оплачен · готов к выдаче{RST}" + (f"  {DIM}до {_vt}{RST}" if _vt else "")
             else:
                 status = f"{G}● Доступен{RST}"
             login_col = R if no_meta else DIM
@@ -4940,6 +4943,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     result["valid_till"] = valid_till
     if valid_till:
         result["paid"] = True
+        result["button_seen"] = f"Membership valid till {valid_till}"
 
     # ── 3. Нажимаем Activate Now (refresh если Explore Now) ──────────────────
     _BTN_SEL = (
@@ -4975,6 +4979,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
 
         if _act_btn:
             result["paid"] = True
+            result["button_seen"] = "Activate Now"
             try:
                 await _act_btn.scroll_into_view_if_needed(timeout=3_000)
                 await black_page.wait_for_timeout(600)
@@ -5016,6 +5021,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
 
         if explore_found:
             result["paid"] = True
+            result["button_seen"] = "Explore Now"
             print(f"  «Explore Now» — обновляю страницу (попытка {attempt+1}/15)...")
             try:
                 await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
@@ -5087,46 +5093,52 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
 
     result["short_link"] = short_link
 
-    # ── 5. Уведомление в Telegram ─────────────────────────────────────────────
+    # ── 5. Консольный вывод ───────────────────────────────────────────────────
+    _full_url  = result.get("activation_url", "")
+    _link      = short_link or _full_url
+    _has_short = short_link and short_link != _full_url
+    _btn_seen  = result.get("button_seen", "не найдена")
+    _tariff    = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
+
+    print(f"\n  {'='*55}")
+    print(f"  ✅ Membership valid till: {valid_till or '—'}")
+    print(f"  Кнопка на странице: {_btn_seen}")
+    if _full_url:
+        print(f"  Ссылка активации:  {_full_url}")
+    if _has_short:
+        print(f"  Короткая ссылка:   {short_link}")
+    elif not _full_url:
+        print(f"  Ссылка активации:  не получена")
+    print(f"  {'='*55}\n")
+
+    # ── 6. Уведомление в Telegram ─────────────────────────────────────────────
     try:
         tg_token = _get_telegram_token()
     except Exception:
         tg_token = ""
 
-    _full_url  = result.get("activation_url", "")
-    _link      = short_link or _full_url
-    _has_short = short_link and short_link != _full_url
-    _tariff    = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
-    _till_line = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
-    _short_line = (f"\n\n🔗 Короткая ссылка:\n{short_link}" if _has_short else "")
+    _till_line  = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
+    _btn_line   = f"\n🖱 Кнопка: <b>{_btn_seen}</b>"
+    _url_line   = (f"\n\n🔗 <a href=\"{_full_url}\">Ссылка активации</a>" if _full_url else "\n\n⚠️ Ссылка активации не получена")
+    _short_line = (f"\n🔗 Короткая: {short_link}" if _has_short else "")
     msg = (
         f"🎉 <b>Flipkart Black Membership</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n\n"
         f"📱 Номер: <code>+91 {phone_number}</code>\n"
         f"💳 Тариф: {_tariff}"
-        f"{_till_line}\n\n"
-        f"🔗 <a href=\"{_full_url or _link}\">Активировать подписку</a>"
+        f"{_till_line}"
+        f"{_btn_line}"
+        f"{_url_line}"
         f"{_short_line}"
     )
     _tg_parse_mode = "HTML"
-    print(f"\n  {'='*55}")
-    print(f"  ✅ Membership valid till: {valid_till or '—'}")
-    if _full_url:
-        print(f"  Полная ссылка: {_full_url}")
-    if _has_short:
-        print(f"  Короткая:      {short_link}")
-    elif short_link:
-        print(f"  Ссылка: {short_link}")
-    print(f"  {'='*55}\n")
 
-    # Отправляем только если есть реальная ссылка активации (оплата прошла)
-    if tg_token and result.get("activation_url"):
+    if tg_token and result.get("paid"):
         try:
             subs_path = TG_SUBSCRIBERS_FILE
             chat_ids: list = []
             if subs_path.exists():
                 d = _json.loads(subs_path.read_text(encoding="utf-8"))
-                # Format: {"chats": [...], "settings": {...}}
                 if isinstance(d, dict):
                     chat_ids = [int(c) for c in d.get("chats", [])]
                 elif isinstance(d, list):
@@ -5148,10 +5160,10 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                         print(f"  TG [{cid}]: {te}")
         except Exception as tge:
             print(f"  TG рассылка: {tge}")
-    elif tg_token and not result.get("activation_url"):
-        print(f"  TG: ссылка активации не получена — уведомление не отправлено")
+    elif tg_token:
+        print(f"  TG: оплата не подтверждена — уведомление не отправлено")
 
-    # ── 6. Сохраняем в профиль (merge через helper — не затирает login_ts и др.) ─
+    # ── 7. Сохраняем в профиль → статус «оплачен, готов к выдаче» ───────────
     try:
         import time as _time_m
         _bought_ts = _time_m.time()
@@ -5160,10 +5172,13 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         _save_meta_field(
             profile_path,
             black_valid_till=valid_till,
-            black_activation_link=short_link,
+            black_activation_link=_link,
+            black_short_link=short_link if _has_short else "",
             subscription_months=months,
             subscription_bought_ts=_bought_ts,
             subscription_expires_ts=_expire_ts,
+            paid_ready=True,
+            button_seen=_btn_seen,
         )
         print(f"  Профиль обновлён: {profile_path / '.profile_meta.json'}")
         print(f"  Подписка: {months} мес. · до {_fmt_msk(_expire_ts)}")
