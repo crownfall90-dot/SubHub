@@ -235,10 +235,11 @@ def _send_tg_error(phone: str, error_text: str) -> None:
                     if _ss.get(str(c), {}).get("buy_number", True)]
         if not chat_ids:
             return
+        _phone_line = f"📱 Профиль: <code>+91 {phone}</code>\n\n" if phone else ""
         msg = (
             f"⚠️ <b>Ошибка покупки</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📱 Профиль: <code>+91 {phone}</code>\n\n"
+            f"{_phone_line}"
             f"❌ {error_text}"
         )
         for cid in chat_ids:
@@ -8435,6 +8436,30 @@ if __name__ == "__main__":
 
             async def _run_cycle():
                 total = len(_tariff_list)
+
+                # ── Проверка доступности Flipkart перед покупкой номеров ──────
+                print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+                try:
+                    _rd, _wr = await asyncio.wait_for(
+                        asyncio.open_connection("www.flipkart.com", 443),
+                        timeout=10.0,
+                    )
+                    _wr.close()
+                    try:
+                        await _wr.wait_closed()
+                    except Exception:
+                        pass
+                    print(f"  {G}Flipkart доступен.{RST}")
+                except Exception as _ping_err:
+                    _ping_msg = f"Flipkart недоступен ({type(_ping_err).__name__}): {_ping_err}"
+                    print(f"\n  {R}⚠ {_ping_msg}{RST}")
+                    print(f"  {Y}Номера покупаться не будут. Повторите позже.{RST}")
+                    try:
+                        _send_tg_error("", f"🌐 {_ping_msg}")
+                    except Exception:
+                        pass
+                    return
+
                 # max_concurrent_accounts из config.yaml
                 try:
                     import yaml as _yrc
