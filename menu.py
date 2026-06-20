@@ -4208,15 +4208,14 @@ async def _get_3ds_otp_from_telegram() -> str | None:
         _cfg = {}
 
     token = _get_telegram_token()
-    wait_sec = int(_cfg.get("telegram_otp", {}).get("wait_timeout", 90))
+    wait_sec = int(_cfg.get("telegram_otp", {}).get("wait_timeout", 1200))
 
     if not token:
         return None
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
 
-    print(f"  {Y}Перешли сообщение с кодом своему боту в Telegram!{RST}")
-    print(f"  Жду код до {wait_sec} сек...")
+    print(f"  {Y}Жду OTP из Telegram (до {wait_sec // 60} мин)...{RST}")
 
     # Узнаём текущий максимальный update_id чтобы брать только НОВЫЕ сообщения
     last_update_id = 0

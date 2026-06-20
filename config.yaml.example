@@ -41,7 +41,7 @@ grizzlysms:
 telegram:
   token: YOUR_TELEGRAM_BOT_TOKEN
 telegram_otp:
-  wait_timeout: 90
+  wait_timeout: 1200
 auto_accounts: 10
 max_concurrent_accounts: 5
 selectors:
