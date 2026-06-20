@@ -1338,15 +1338,17 @@ def _menu_tg_bot_thread() -> None:
                     if new_h:
                         _notified_update_hashes.update(fhash)
                         nc   = [c for c in fetched if c.split()[0] in new_h]
-                        body = "\n".join(f"▸ `{c}`" for c in nc[:10])
+                        def _esc(t):
+                            return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        body = "\n".join(f"<blockquote>{_esc(c)}</blockquote>" for c in nc[:10])
                         if len(nc) > 10:
-                            body += f"\n_...и ещё {len(nc)-10}_"
+                            body += f"\n<i>...и ещё {len(nc)-10}</i>"
                         msg = (
-                            "⬆️ *Новое обновление!*\n"
+                            "⬆️ <b>Новое обновление!</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"Новых коммитов: *{len(nc)}*\n\n"
+                            f"Новых коммитов: <b>{len(nc)}</b>\n\n"
                             f"{body}\n\n"
-                            "_Нажмите кнопку для обновления:_"
+                            "<i>Нажмите кнопку для обновления:</i>"
                         )
                         kb = {"inline_keyboard": [[
                             {"text": "⬆️ Обновить сейчас", "callback_data": "update:pull"},
@@ -1359,7 +1361,7 @@ def _menu_tg_bot_thread() -> None:
                                     await c2.post(
                                         f"https://api.telegram.org/bot{token}/sendMessage",
                                         json={"chat_id": _cid, "text": msg,
-                                              "parse_mode": "Markdown",
+                                              "parse_mode": "HTML",
                                               "reply_markup": kb})
                             except Exception:
                                 pass
