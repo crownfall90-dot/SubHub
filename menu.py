@@ -6227,7 +6227,12 @@ async def _flipkart_phase1(page, login_url: str, phone_10: str) -> str:
             break
         await asyncio.sleep(0.3)
     if rect is None:
-        return "error:поле телефона не найдено"
+        try:
+            _cur = page.url
+            _body = (await page.evaluate("() => document.body?.innerText?.slice(0,300) || ''")).replace("\n", " ")
+            return f"error:поле телефона не найдено | url={_cur} | page={_body[:200]}"
+        except Exception:
+            return "error:поле телефона не найдено"
 
     # Enter phone — human-like: move to near field, pause, move to field, click, type variably
     import random as _r
