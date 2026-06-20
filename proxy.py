@@ -290,7 +290,7 @@ async def _stop_local_auth_proxy(port: int) -> None:
 # ── Proxy6.net API ────────────────────────────────────────────────────────────
 
 def _p6_cfg() -> dict:
-    """Читает секцию proxy6 из config.yaml; api_key — только из secrets.yaml."""
+    """Читает секцию proxy6 из config.yaml; api_key — всегда из secrets.yaml."""
     result: dict = {}
     try:
         import yaml as _y
@@ -298,17 +298,17 @@ def _p6_cfg() -> dict:
             result = (_y.safe_load(_f) or {}).get("proxy6") or {}
     except Exception:
         pass
-    # api_key только из secrets.yaml
-    if not result.get("api_key"):
-        try:
-            import yaml as _y
-            _sp = Path(_proxy_cfg_path()).parent / "secrets.yaml"
-            if _sp.exists():
-                with open(_sp, encoding="utf-8") as _sf:
-                    _sec = _y.safe_load(_sf) or {}
-                result["api_key"] = (_sec.get("proxy6") or {}).get("api_key", "")
-        except Exception:
-            pass
+    result.pop("api_key", None)
+    # api_key всегда из secrets.yaml (единственный источник)
+    try:
+        import yaml as _y
+        _sp = Path(_proxy_cfg_path()).parent / "secrets.yaml"
+        if _sp.exists():
+            with open(_sp, encoding="utf-8") as _sf:
+                _sec = _y.safe_load(_sf) or {}
+            result["api_key"] = (_sec.get("proxy6") or {}).get("api_key", "")
+    except Exception:
+        pass
     return result
 
 

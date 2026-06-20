@@ -130,29 +130,29 @@ def _read_secrets() -> dict:
     return _SECRETS
 
 
+def _write_secret(section: str, key: str, value: str) -> None:
+    """Сохраняет один ключ в secrets.yaml и сбрасывает кэш _SECRETS."""
+    global _SECRETS
+    import yaml as _y
+    _sp = _HERE / "secrets.yaml"
+    try:
+        sec = _y.safe_load(_sp.read_text(encoding="utf-8")) or {} if _sp.exists() else {}
+        sec.setdefault(section, {})[key] = value
+        _tmp = _sp.with_suffix(".yaml.tmp")
+        _tmp.write_text(_y.dump(sec, allow_unicode=True, default_flow_style=False, sort_keys=False), encoding="utf-8")
+        _tmp.replace(_sp)
+        _SECRETS = {}  # сброс кэша, следующий _read_secrets() перечитает файл
+    except Exception as _e:
+        print(f"  {Y}⚠ Не удалось сохранить в secrets.yaml: {_e}{RST}")
+
+
 def _get_telegram_token() -> str:
-    """Возвращает токен Telegram из secrets.yaml, либо из config.yaml в качестве запасного варианта."""
-    # 1. Пробуем из secrets.yaml через _read_secrets()
+    """Возвращает токен Telegram исключительно из secrets.yaml."""
     try:
-        sec = _read_secrets()
-        tok = (sec.get("telegram") or {}).get("token", "").strip()
-        if tok:
-            return tok
+        tok = (_read_secrets().get("telegram") or {}).get("token", "").strip()
+        return tok
     except Exception:
-        pass
-    # 2. Запасной вариант из config.yaml
-    try:
-        import yaml as _yaml
-        _sp = _HERE / "config.yaml"
-        if _sp.exists():
-            with open(_sp, encoding="utf-8") as _f:
-                cfg = _yaml.safe_load(_f) or {}
-            tok = (cfg.get("telegram") or {}).get("token", "").strip()
-            if tok and "YOUR_" not in tok:
-                return tok
-    except Exception:
-        pass
-    return ""
+        return ""
 
 
 _DATA               = _HERE / "data"
@@ -875,7 +875,7 @@ def screen_proxy():
             print()
             try:
                 v = input(f"  {BLD}API ключ (Enter = не менять): {RST}").strip()
-                if v: p6new["api_key"] = v
+                _new_p6_key = v if v else None
                 v = input(f"  {BLD}Кол-во прокси [{p6cfg.get('default_count',10)}]: {RST}").strip()
                 if v.isdigit() and int(v) > 0: p6new["default_count"] = int(v)
                 v = input(f"  {BLD}Период дней   [{p6cfg.get('default_period',7)}]: {RST}").strip()
@@ -886,7 +886,10 @@ def screen_proxy():
                 if v in ("http", "https", "socks5"): p6new["type"] = v
             except KeyboardInterrupt:
                 continue
+            p6new.pop("api_key", None)   # api_key не пишем в config.yaml
             _p6_write_cfg(p6new)
+            if _new_p6_key:
+                _write_secret("proxy6", "api_key", _new_p6_key)
             print(f"\n  {G}✅ Сохранено{RST}")
             time.sleep(1.5)
 

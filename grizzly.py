@@ -49,25 +49,12 @@ def _read_secrets_standalone() -> dict:
 
 
 def _get_telegram_token_standalone() -> str:
-    """Получает токен TG-бота из secrets.yaml / config.yaml."""
+    """Получает токен TG-бота исключительно из secrets.yaml."""
     try:
-        sec = _read_secrets_standalone()
-        tok = (sec.get("telegram") or {}).get("token", "").strip()
-        if tok:
-            return tok
+        tok = (_read_secrets_standalone().get("telegram") or {}).get("token", "").strip()
+        return tok
     except Exception:
-        pass
-    try:
-        cp = _HERE / "config.yaml"
-        if cp.exists():
-            with open(cp, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-            tok = (cfg.get("telegram") or {}).get("token", "").strip()
-            if tok and "YOUR_" not in tok:
-                return tok
-    except Exception:
-        pass
-    return ""
+        return ""
 
 
 def _get_tg_subscribers_standalone() -> list:
