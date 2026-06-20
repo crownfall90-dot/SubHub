@@ -218,6 +218,46 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
         print(f"  TG отправка: {_e}")
 
 
+def _send_tg_error(phone: str, error_text: str) -> None:
+    """Отправляет уведомление об ошибке покупки в Telegram (синхронно)."""
+    import json as _j
+    import urllib.request as _ur
+    try:
+        tg_token = _get_telegram_token()
+        if not tg_token:
+            return
+        subs_path = _HERE / "data" / "tg_subscribers.json"
+        if not subs_path.exists():
+            return
+        _sd = _j.loads(subs_path.read_text(encoding="utf-8"))
+        _ss = _sd.get("settings", {})
+        chat_ids = [int(c) for c in _sd.get("chats", [])
+                    if _ss.get(str(c), {}).get("buy_number", True)]
+        if not chat_ids:
+            return
+        msg = (
+            f"⚠️ <b>Ошибка покупки</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📱 Профиль: <code>+91 {phone}</code>\n\n"
+            f"❌ {error_text}"
+        )
+        for cid in chat_ids:
+            try:
+                data = _j.dumps({
+                    "chat_id": cid, "text": msg,
+                    "parse_mode": "HTML", "disable_web_page_preview": True,
+                }).encode("utf-8")
+                req = _ur.Request(
+                    f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                    data=data, headers={"Content-Type": "application/json"},
+                )
+                _ur.urlopen(req, timeout=8)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 _DATA               = _HERE / "data"
 _DATA.mkdir(exist_ok=True)
 TG_SUBSCRIBERS_FILE = _DATA / "tg_subscribers.json"
@@ -4987,12 +5027,14 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     if any(kw in cur_url for kw in _FK_FAIL_URLS):
         print(f"  {Y}⚠ Redirect на страницу оплаты/ошибки — платёж отклонён{RST}")
         result["error"] = f"payment_fail_redirect:{cur_url[:60]}"
+        _send_tg_error(phone_number, "Redirect на страницу ошибки — платёж отклонён")
         return result
     if "uiscoop.flipkart.com" in cur_url and "errorMessage" in cur_url:
         import urllib.parse as _up
         _err = _up.unquote(cur_url.split("errorMessage=")[-1].split("&")[0][:80])
         print(f"  {Y}⚠ Paytm ошибка: {_err}{RST}")
         result["error"] = f"paytm_error:{_err[:40]}"
+        _send_tg_error(phone_number, f"Paytm ошибка: {_err[:60]}")
         return result
 
     # Проверяем текст страницы на признаки отклонения
@@ -5003,6 +5045,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         if any(kw in body_text for kw in _FAIL_KW):
             print(f"  {Y}⚠ Страница содержит признаки отклонения платежа{RST}")
             result["error"] = "payment_page_text_failure"
+            _send_tg_error(phone_number, "Платёж отклонён (payment failed на странице)")
             return result
     except Exception:
         pass
@@ -5869,6 +5912,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         # ── Шаг C: проверяем что попали на payments ──────────────────────────
         if "payments" not in page.url:
             _keep_open = not _auto_close
+            _send_tg_error(_pp_phone, f"Не удалось перейти на страницу оплаты ({page.url.split('?')[0].split('/')[-1]})")
             return True, (f"{'✅ ' + addr_msg if addr_msg else '✅ Адрес уже был сохранён'}"
                           f" → ⚠️ Оплата не загрузилась ({page.url.split('?')[0].split('/')[-1]})"
                           f", браузер {'оставлен открытым' if _keep_open else 'закрыт'}")
@@ -5937,9 +5981,15 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 if _post_result.get("paid"):
                     break  # ✅ оплата подтверждена
                 # Флипкарт не подтвердил — пробуем следующую карту
-                print(f"  {Y}Оплата не подтверждена — {'пробую следующую карту' if _ci + 1 < len(_cards_seq) else 'карты закончились'}{RST}")
+                _is_last_card = _ci + 1 >= len(_cards_seq)
+                print(f"  {Y}Оплата не подтверждена — {'пробую следующую карту' if not _is_last_card else 'карты закончились'}{RST}")
+                if _is_last_card:
+                    _send_tg_error(_pp_phone, "Оплата не подтверждена — все карты исчерпаны")
             else:
-                print(f"  {Y}Карта не прошла — {'пробую следующую' if _ci + 1 < len(_cards_seq) else 'карты закончились'}{RST}")
+                _is_last_card = _ci + 1 >= len(_cards_seq)
+                print(f"  {Y}Карта не прошла — {'пробую следующую' if not _is_last_card else 'карты закончились'}{RST}")
+                if _is_last_card:
+                    _send_tg_error(_pp_phone, "Карта не прошла — все карты исчерпаны")
 
         _keep_open = not _auto_close
         base = f"✅ {addr_msg}" if addr_msg else "✅ Адрес уже был сохранён"
