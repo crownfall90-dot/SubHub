@@ -519,8 +519,8 @@ def _menu_tg_bot_thread() -> None:
                 "⚙️ *Настройки и утилиты*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"🌐 Прокси: {px_s}\n"
-                f"📣 Покупка: {'✅ вкл' if buy_on else '❌ выкл'}  "
-                f"·  🔑 OTP: {'✅ вкл' if otp_on else '❌ выкл'}\n"
+                f"📣 Покупка: {'✅ вкл' if buy_on else '❌ выкл'}\n"
+                f"🔑 OTP: {'✅ вкл' if otp_on else '❌ выкл'}\n"
                 f"🔄 Версия: {upd_s}"
             )
 
