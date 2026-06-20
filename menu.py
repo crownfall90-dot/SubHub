@@ -8422,6 +8422,7 @@ if __name__ == "__main__":
         pass
 
     _cli = sys.argv[1:]
+    _exit_code = [0]
 
     try:
         if "--full-cycle" in _cli or "--login-only" in _cli:
@@ -8484,7 +8485,8 @@ if __name__ == "__main__":
                         _send_tg_error("", f"🌐 {_ping_msg}")
                     except Exception:
                         pass
-                    import sys as _sys; _sys.exit(2)
+                    _exit_code[0] = 2
+                    return
 
                 # max_concurrent_accounts из config.yaml
                 try:
@@ -8558,4 +8560,4 @@ if __name__ == "__main__":
             _gz.cleanup_all_rentals_on_exit()
         except Exception as _e:
             print(f"Ошибка при очистке номеров при выходе: {_e}")
-        sys.exit(0)
+        sys.exit(_exit_code[0])
