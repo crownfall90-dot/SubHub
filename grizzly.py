@@ -674,51 +674,75 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                     await page2.keyboard.type(otp_code, delay=100)
                 except Exception: pass
 
-            # Цикл ввода OTP и кликов на вход (до 120 секунд)
+            # Цикл верификации OTP (до 120 секунд)
             login_success = False
             deadline = time.time() + 120.0
-            
+            _btn_clicked = False
+
             try:
-                await page2.wait_for_timeout(200)
+                await page2.wait_for_timeout(300)
             except Exception: pass
 
             while time.time() < deadline:
-                # Проверяем, пустое ли поле ввода OTP
-                try:
-                    otp_val = await page2.eval_on_selector(_OTP_SEL, "el => el.value")
-                    if not otp_val:
-                        print(f"  [BG] Поле OTP пустое, ввожу заново для +91 {phone_10}...")
-                        otp_el = page2.locator(_OTP_SEL).first
-                        await otp_el.click()
-                        await page2.keyboard.type(otp_code, delay=50)
-                except Exception:
-                    pass
-
-                # Кликаем кнопку входа или нажимаем Enter
-                try:
-                    otp_btn = page2.locator(
-                        "button:has-text('VERIFY'), button:has-text('Verify'), "
-                        "button:has-text('LOGIN'), button:has-text('CONTINUE'), "
-                        "button:has-text('Continue'), "
-                        "button:has-text('Signup'), button:has-text('Sign up'), button:has-text('SIGNUP')"
-                    ).last
-                    if await otp_btn.is_visible():
-                        await otp_btn.click()
-                    else:
-                        await page2.keyboard.press("Enter")
-                except Exception:
-                    try:
-                        await page2.keyboard.press("Enter")
-                    except Exception:
-                        pass
-
-                # Ждем 2 секунды перед следующей проверкой
-                await page2.wait_for_timeout(2000)
-
-                # Проверяем, вошли ли (нет "login" в URL)
+                # Проверяем редирект в начале каждой итерации
                 if "login" not in page2.url.lower():
                     login_success = True
                     break
+
+                # Если кнопку ещё не нажали — проверяем и переводим OTP
+                if not _btn_clicked:
+                    try:
+                        otp_val = await page2.eval_on_selector(_OTP_SEL, "el => el.value")
+                        if not otp_val:
+                            print(f"  [BG] Поле OTP пустое, ввожу заново для +91 {phone_10}...")
+                            otp_el = page2.locator(_OTP_SEL).first
+                            await otp_el.click()
+                            await page2.keyboard.type(otp_code, delay=80)
+                            await page2.wait_for_timeout(200)
+                    except Exception:
+                        pass
+
+                # Нажимаем кнопку VERIFY (trusted click через координаты)
+                if not _btn_clicked:
+                    _verify_sels = [
+                        "button:has-text('VERIFY')", "button:has-text('Verify')",
+                        "button:has-text('LOGIN')",  "button:has-text('Login')",
+                        "button:has-text('CONTINUE')", "button:has-text('Continue')",
+                        "button:has-text('Signup')",   "button:has-text('SIGNUP')",
+                    ]
+                    _clicked = False
+                    for _sel in _verify_sels:
+                        try:
+                            _btn = page2.locator(_sel).first
+                            if await _btn.is_visible():
+                                _bb = await _btn.bounding_box()
+                                if _bb:
+                                    await page2.mouse.click(
+                                        _bb["x"] + _bb["width"] / 2,
+                                        _bb["y"] + _bb["height"] / 2,
+                                    )
+                                else:
+                                    await _btn.click()
+                                _clicked = True
+                                _btn_clicked = True
+                                break
+                        except Exception:
+                            pass
+                    if not _clicked:
+                        # Fallback: Enter на OTP-поле
+                        try:
+                            _otp_loc = page2.locator(_OTP_SEL).first
+                            if await _otp_loc.count() > 0:
+                                await _otp_loc.press("Enter")
+                            else:
+                                await page2.keyboard.press("Enter")
+                        except Exception:
+                            try:
+                                await page2.keyboard.press("Enter")
+                            except Exception:
+                                pass
+
+                await page2.wait_for_timeout(1000)
 
             if login_success:
                 try:
