@@ -1127,7 +1127,7 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
                     print(f"  ║  {R}Ошибка: {err}{RST}")
                     time.sleep(3)
                 elif st == "explore_now":
-                    print(f"  ║  {G}✅ Explore Now — аккаунт доступен, готов к работе{RST}")
+                    print(f"  ║  {C}💳 Explore Now — доступен для оплаты{RST}")
                 elif st == "activate_now":
                     print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                 elif st == "activated":
@@ -1835,7 +1835,7 @@ def screen_check_all_activated():
             not_activated.append(username)
 
         elif status == "explore_now":
-            print(f"  {R}⛔ Explore Now — не оплачен{RST}\n")
+            print(f"  {C}💳 Explore Now — доступен для оплаты{RST}\n")
             unknown_list.append(username)
 
         elif status == "not_logged_in":
@@ -2002,24 +2002,7 @@ def screen_profiles():
                             else:
                                 print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                         elif st == "explore_now":
-                            print(f"  ║  {R}⚠ Explore Now — ещё не оплачен{RST}")
-                            _msg = f"⚠ Профиль +91 {_un} ещё не оплачен (Explore Now)"
-                            try:
-                                import yaml as _y, json as _j2, httpx as _hx2
-                                _tok = _get_telegram_token()
-                                if _tok and TG_SUBSCRIBERS_FILE.exists():
-                                    _cids = [int(c) for c in (
-                                        _j2.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
-                                        .get("chats", []))]
-                                    async def _ntf():
-                                        async with _hx2.AsyncClient(timeout=10) as _s:
-                                            for _c in _cids:
-                                                await _s.post(
-                                                    f"https://api.telegram.org/bot{_tok}/sendMessage",
-                                                    json={"chat_id": _c, "text": _msg})
-                                    asyncio.run(_ntf())
-                            except Exception:
-                                pass
+                            print(f"  ║  {C}💳 Explore Now — доступен для оплаты{RST}")
                         elif st == "not_logged_in":
                             print(f"  ║  {R}Не залогинен{RST}")
                         else:
