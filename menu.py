@@ -4044,47 +4044,99 @@ async def _handle_3ds_verification(page) -> bool:
 
         if otp_code:
             print(f"  3DS OTP из Telegram: {otp_code}")
-            await _human_click(page, otp_inp, before=0.2)
-            for ch in otp_code:
-                await page.keyboard.type(ch)
-                await asyncio.sleep(_r.uniform(0.08, 0.15))
-            await page.wait_for_timeout(500)
 
-            submit_btn = page.locator(
+            # Уровень 1: ищем OTP-поле во всех фреймах, кликаем trusted click по координатам
+            _otp_inp_all = None
+            _otp_frame   = None
+            _sub_sel = (
                 "button:has-text('SUBMIT'), button:has-text('Submit'), "
-                "input[value='SUBMIT'], input[value='Submit']"
-            ).first
-            submit_clicked = False
-            if await submit_btn.count() > 0:
+                "input[value='SUBMIT'], input[value='Submit'], "
+                "button[type='submit'], input[type='submit']"
+            )
+            for _fr in [page] + list(page.frames):
                 try:
-                    bb = await submit_btn.bounding_box()
-                    if bb:
-                        await page.mouse.click(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
-                    else:
-                        await _human_click(page, submit_btn, before=_r.uniform(0.2, 0.4))
+                    _candidate = _fr.locator(
+                        "input[placeholder*='code' i], input[placeholder*='OTP' i], "
+                        "input[type='text'], input[type='number'], input[type='tel']"
+                    ).first
+                    if await _candidate.count() > 0:
+                        _otp_inp_all = _candidate
+                        _otp_frame   = _fr
+                        break
+                except Exception:
+                    pass
+
+            _inp_to_use = _otp_inp_all or otp_inp
+            try:
+                bb_inp = await _inp_to_use.bounding_box()
+                if bb_inp:
+                    await page.mouse.click(
+                        bb_inp["x"] + bb_inp["width"] / 2,
+                        bb_inp["y"] + bb_inp["height"] / 2
+                    )
+                else:
+                    await _inp_to_use.click()
+            except Exception:
+                pass
+            await _inp_to_use.fill(otp_code)
+            await page.wait_for_timeout(400)
+
+            submit_clicked = False
+
+            # Уровень 1: ищем Submit во всех фреймах, trusted click по координатам
+            for _fr in ([_otp_frame] if _otp_frame else []) + [page] + list(page.frames):
+                if submit_clicked:
+                    break
+                try:
+                    _sub = _fr.locator(_sub_sel).first
+                    if await _sub.count() > 0:
+                        bb = await _sub.bounding_box()
+                        if bb:
+                            await page.mouse.click(
+                                bb["x"] + bb["width"] / 2,
+                                bb["y"] + bb["height"] / 2
+                            )
+                        else:
+                            await _sub.click()
+                        print("  3DS: SUBMIT нажат (trusted click)")
+                        submit_clicked = True
+                        await page.wait_for_timeout(2_000)
+                except Exception:
+                    pass
+
+            # Уровень 2: Enter в OTP-поле — самый надёжный способ
+            if not submit_clicked:
+                try:
+                    await _inp_to_use.press("Enter")
+                    print("  3DS: SUBMIT через Enter в OTP-поле")
                     submit_clicked = True
                     await page.wait_for_timeout(2_000)
                 except Exception:
                     pass
+
+            # Уровень 3: JS fallback — el.click() + form.submit() во всех фреймах
             if not submit_clicked:
-                # JS fallback — кликаем по любому SUBMIT-элементу
-                try:
-                    clicked_js = await page.evaluate("""() => {
-                        for (const el of document.querySelectorAll(
-                                'button, input[type="submit"], [role="button"], div, a')) {
-                            const t = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
-                            if (t === 'submit') {
-                                el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
-                                return true;
+                for _fr in [page] + list(page.frames):
+                    try:
+                        clicked_js = await _fr.evaluate("""() => {
+                            for (const el of document.querySelectorAll(
+                                    'button, input[type="submit"], [role="button"]')) {
+                                const t = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                                if (t === 'submit') {
+                                    el.click();
+                                    if (el.form) el.form.submit();
+                                    return true;
+                                }
                             }
-                        }
-                        return false;
-                    }""")
-                    if clicked_js:
-                        print("  SUBMIT нажат (JS fallback)")
-                        await page.wait_for_timeout(2_000)
-                except Exception:
-                    pass
+                            return false;
+                        }""")
+                        if clicked_js:
+                            print("  3DS: SUBMIT нажат (JS el.click fallback)")
+                            submit_clicked = True
+                            await page.wait_for_timeout(2_000)
+                            break
+                    except Exception:
+                        pass
         else:
             # Авто-получение не настроено — ждём ручного ввода
             print()
