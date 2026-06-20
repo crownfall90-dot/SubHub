@@ -230,9 +230,7 @@ def _send_tg_error(phone: str, error_text: str) -> None:
         if not subs_path.exists():
             return
         _sd = _j.loads(subs_path.read_text(encoding="utf-8"))
-        _ss = _sd.get("settings", {})
-        chat_ids = [int(c) for c in _sd.get("chats", [])
-                    if _ss.get(str(c), {}).get("buy_number", True)]
+        chat_ids = [int(c) for c in _sd.get("chats", [])]
         if not chat_ids:
             return
         _phone_line = f"📱 Профиль: <code>+91 {phone}</code>\n\n" if phone else ""
