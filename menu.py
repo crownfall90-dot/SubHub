@@ -3851,26 +3851,40 @@ async def _handle_paytm_currency_page(page) -> bool:
                     pass
 
             if not _btn_clicked:
-                # Пробуем iframe-кнопки
+                # Пробуем iframe-кнопки через Playwright locator (cross-origin + trusted click)
                 for fr in page.frames:
                     if _btn_clicked:
                         break
-                    try:
-                        _fr_clicked = await fr.evaluate("""() => {
-                            const words = ['next','submit','continue','proceed','ok'];
-                            for (const el of document.querySelectorAll('button,input[type=submit]')) {
-                                const t = (el.innerText||el.value||'').trim().toLowerCase();
-                                if (words.some(w => t === w || t.startsWith(w))) {
-                                    el.click(); return t;
-                                }
-                            }
-                            return null;
-                        }""")
-                        if _fr_clicked:
-                            print(f"  3DS iframe: нажал «{_fr_clicked}»")
-                            _btn_clicked = True
-                    except Exception:
-                        pass
+                    for _isel in [
+                        "button:has-text('Next')",
+                        "button:has-text('Submit')",
+                        "button:has-text('Continue')",
+                        "button:has-text('Proceed')",
+                        "button:has-text('OK')",
+                        "input[type='submit']",
+                        "button[type='submit']",
+                    ]:
+                        try:
+                            _fb = fr.locator(_isel).first
+                            if await _fb.count() > 0:
+                                _bb = await _fb.bounding_box()
+                                if _bb:
+                                    await page.mouse.click(
+                                        _bb["x"] + _bb["width"] / 2,
+                                        _bb["y"] + _bb["height"] / 2,
+                                    )
+                                else:
+                                    await _fb.click()
+                                _fbtxt = _isel
+                                try:
+                                    _fbtxt = (await _fb.inner_text()).strip()
+                                except Exception:
+                                    pass
+                                print(f"  3DS iframe: нажал «{_fbtxt[:30]}»")
+                                _btn_clicked = True
+                                break
+                        except Exception:
+                            pass
 
             if not _btn_clicked:
                 _3ds_body_low = all_text.lower()
@@ -4002,33 +4016,50 @@ async def _handle_3ds_verification(page) -> bool:
     """
     import random as _r
 
-    # Ждём 3DS страницы (hitrust, visa, mastercard ACS) — до 15 сек
-    try:
-        await page.wait_for_url(
-            "**/challenge/**",
-            timeout=15_000,
-        )
-    except Exception:
-        # Пробуем по заголовку страницы
+    # Если уже на 3DS/ACS странице — не ждём навигации
+    _3ds_doms = ("cardinalcommerce.com", "3dsecure", "verify.visa.com",
+                 "mastercard.com/ac", "hitrust.com", "acs-auth", "challenge",
+                 "threeDSecure", "threedsecure", "StepUp", "stepup")
+    _on_3ds = any(d in page.url for d in _3ds_doms) or "3ds" in page.url.lower()
+    if not _on_3ds:
+        # Ждём 3DS страницы (hitrust, visa, mastercard ACS) — до 15 сек
         try:
-            await page.wait_for_function(
-                "() => document.title.includes('Verification') || "
-                "      document.title.includes('Secure') || "
-                "      document.body.innerText.includes('Transaction Verification')",
-                timeout=8_000,
-            )
+            await page.wait_for_url("**/challenge/**", timeout=15_000)
         except Exception:
-            return False
+            try:
+                await page.wait_for_function(
+                    "() => document.title.includes('Verification') || "
+                    "      document.title.includes('Secure') || "
+                    "      document.body.innerText.includes('Transaction Verification')",
+                    timeout=8_000,
+                )
+            except Exception:
+                return False
 
     await page.wait_for_timeout(_r.uniform(600, 1_000))
     print("  3DS: страница верификации открыта — нажимаю Next...")
 
-    # Нажимаем «Next» на первой странице (выбор метода)
-    next_btn = page.locator(
-        "button:has-text('Next'), input[value='Next'], a:has-text('Next')"
-    ).first
-    if await next_btn.count() > 0:
-        await _human_click(page, next_btn, before=_r.uniform(0.3, 0.6))
+    # Нажимаем «Next» на первой странице (выбор метода) — ищем во всех фреймах
+    _next_clicked = False
+    for _nfr in [page] + list(page.frames):
+        try:
+            _nb = _nfr.locator(
+                "button:has-text('Next'), input[value='Next'], a:has-text('Next')"
+            ).first
+            if await _nb.count() > 0:
+                _nbb = await _nb.bounding_box()
+                if _nbb:
+                    await page.mouse.click(
+                        _nbb["x"] + _nbb["width"] / 2,
+                        _nbb["y"] + _nbb["height"] / 2,
+                    )
+                else:
+                    await _nb.click()
+                _next_clicked = True
+                break
+        except Exception:
+            pass
+    if _next_clicked:
         await page.wait_for_timeout(1_200)
 
     # Ждём поле ввода OTP («Enter verification code»)
