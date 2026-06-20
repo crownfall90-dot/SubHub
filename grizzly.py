@@ -797,9 +797,15 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 print(f"  [BG] Фоновый вход +91 {phone_10} не прошёл в течение 120 секунд")
                 await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (120 секунд истекло, сайт не перенаправил)")
                 _bg_del_profile = True
-        except Exception as e:
-            print(f"  [BG] Ошибка при фоновом входе +91 {phone_10}: {e}")
-            await _tg_login_fail_notify(phone_10, otp_code, f"Критическое исключение: {e}")
+        except BaseException as e:
+            if not isinstance(e, Exception):
+                print(f"  [BG] Прервано ({type(e).__name__}) для +91 {phone_10} — профиль удаляется")
+            else:
+                print(f"  [BG] Ошибка при фоновом входе +91 {phone_10}: {e}")
+            try:
+                await _tg_login_fail_notify(phone_10, otp_code, f"{type(e).__name__}: {e}")
+            except Exception:
+                pass
             _bg_del_profile = True
         finally:
             try:

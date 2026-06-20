@@ -7534,8 +7534,8 @@ def screen_all_in_one():
         except KeyboardInterrupt:
             print(f"\n\n  {Y}[!] Остановка по Ctrl+C...{RST}")
             break
-        except Exception as exc:
-            print(f"  [{i+1}/{_n}] ❌ Ошибка: {exc}")
+        except BaseException as exc:
+            print(f"  [{i+1}/{_n}] ❌ Ошибка: {type(exc).__name__}: {exc}")
 
     print()
     section(f"Итого: {ok_count}/{_n} аккаунтов обработано")
