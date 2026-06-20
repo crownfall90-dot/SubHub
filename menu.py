@@ -8486,7 +8486,7 @@ if __name__ == "__main__":
                         _send_tg_error("", f"🌐 {_ping_msg}")
                     except Exception:
                         pass
-                    return
+                    import sys as _sys; _sys.exit(2)
 
                 # max_concurrent_accounts из config.yaml
                 try:

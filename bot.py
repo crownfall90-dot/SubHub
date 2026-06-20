@@ -1140,6 +1140,7 @@ def _menu_tg_bot_thread() -> None:
             _paused[0] = False
             text = ("✅ Автоматизация завершена успешно" if code == 0
                     else "🛑 Автоматизация остановлена" if code in (-1, None, -15)
+                    else "🌐 Flipkart недоступен — повторите позже" if code == 2
                     else f"⚠️ Завершена с кодом {code}")
             for c in list(notify):
                 try:
