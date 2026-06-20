@@ -1604,6 +1604,57 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             else:
                 print(f"  {Y}Кнопка «Activate now» не найдена на странице{RST}")
 
+            # Сокращаем ссылку через clck.ru
+            if result.get("activation_url"):
+                _short = result["activation_url"]
+                _clck_page = await ctx.new_page()
+                try:
+                    await _clck_page.goto("https://clck.ru/", wait_until="domcontentloaded", timeout=15_000)
+                    await _clck_page.wait_for_timeout(2_000)
+                    _inp = _clck_page.locator("input[name='url'], input[type='url'], input[type='text']").first
+                    if await _inp.count() > 0:
+                        await _inp.fill(result["activation_url"])
+                        await _clck_page.wait_for_timeout(400)
+                        _sbt = await _clck_page.evaluate("""() => {
+                            for (const el of document.querySelectorAll('button, input[type="submit"], a')) {
+                                const t = (el.innerText || el.value || el.textContent || '').trim();
+                                if (/сократ/i.test(t) || /shorten/i.test(t) || /submit/i.test(t.toLowerCase())) {
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width >= 20 && r.height >= 8)
+                                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                                }
+                            }
+                            return null;
+                        }""")
+                        if _sbt:
+                            await _clck_page.mouse.click(_sbt["x"], _sbt["y"])
+                        else:
+                            await _inp.press("Enter")
+                        await _clck_page.wait_for_timeout(4_000)
+                    _SHORT_JS = """() => {
+                        for (const el of document.querySelectorAll('input, a, .result, .short-url, [class*="result"], span, div')) {
+                            const v = (el.value || el.href || el.innerText || el.textContent || '').trim();
+                            const m = v.match(/(?:https?:\\/\\/)?clck\\.ru\\/[A-Za-z0-9_-]+/);
+                            if (m && m[0].length > 12) return m[0];
+                        }
+                        return '';
+                    }"""
+                    _short_raw = (await _clck_page.evaluate(_SHORT_JS) or "").strip()
+                    if _short_raw:
+                        _short = _short_raw if _short_raw.startswith("http") else "https://" + _short_raw
+                    elif "clck.ru/" in _clck_page.url and _clck_page.url != "https://clck.ru/":
+                        _short = _clck_page.url
+                    result["short_link"] = _short
+                    print(f"  {G}Короткая ссылка: {_short}{RST}")
+                except Exception as _ce:
+                    print(f"  clck.ru ошибка: {_ce}")
+                    result["short_link"] = result["activation_url"]
+                finally:
+                    try:
+                        await _clck_page.close()
+                    except Exception:
+                        pass
+
         # При unknown — скриншот + дамп текста для диагностики
         if result["status"] == "unknown":
             try:
@@ -1947,8 +1998,11 @@ def screen_profiles():
                                 print(f"  ║  {M}Профиль сохранён в архив{RST}")
                         elif st == "activate_now":
                             _act_url = chk.get("activation_url", "")
+                            _short_url = chk.get("short_link", "")
                             if _act_url:
                                 print(f"  ║  {G}🔗 Ссылка активации получена:{RST}")
+                                if _short_url and _short_url != _act_url:
+                                    print(f"  ║  {G}Короткая ссылка: {_short_url}{RST}")
                                 print(f"  ║  {B}{_act_url}{RST}")
                             else:
                                 print(f"  ║  {Y}⏳ Activate Now — ссылка не получена{RST}")
@@ -6536,7 +6590,24 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     except Exception as exc:
                         print(f"  {Y}Доп. номер #{n}: {exc}{RST}")
                         if isinstance(exc, InsufficientBalanceError) or "NO_BALANCE" in str(exc) or "Недостаточно средств" in str(exc):
-                            stop_spawning[0] = True
+                            print(f"  {R}Недостаточно средств (доп. номер) — отменяю все активные номера...{RST}")
+                            try:
+                                _acts = await sms_client.get_active_activations()
+                                _n_c = 0
+                                for _a in _acts:
+                                    _aid = str(_a.get("activationId") or _a.get("id") or "")
+                                    if _aid:
+                                        try:
+                                            await sms_client.cancel(_aid)
+                                            _n_c += 1
+                                        except Exception:
+                                            pass
+                                _nb = await sms_client.get_balance()
+                                print(f"  {Y}Отменено {_n_c} активаций. 💰 Баланс: ${_nb:.4f} — продолжаю...{RST}")
+                            except Exception as _cbe:
+                                print(f"  {Y}Ошибка при отмене: {_cbe}{RST}")
+                            await asyncio.sleep(5)
+                            # Не устанавливаем stop_spawning — внешний цикл запустит новую задачу
                         if nid:
                             _grizzly_module.mark_failed(nid)
                         if n_ctx:
