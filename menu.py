@@ -4061,16 +4061,50 @@ async def _handle_3ds_verification(page) -> bool:
             pass
     if _next_clicked:
         await page.wait_for_timeout(1_200)
+    else:
+        # Next не нашли сразу — ждём немного и пробуем ещё раз (страница могла не догрузиться)
+        await page.wait_for_timeout(2_000)
+        for _nfr in [page] + list(page.frames):
+            try:
+                _nb2 = _nfr.locator(
+                    "button:has-text('Next'), input[value='Next'], a:has-text('Next')"
+                ).first
+                if await _nb2.count() > 0:
+                    _nbb2 = await _nb2.bounding_box()
+                    if _nbb2:
+                        await page.mouse.click(
+                            _nbb2["x"] + _nbb2["width"] / 2,
+                            _nbb2["y"] + _nbb2["height"] / 2,
+                        )
+                    else:
+                        await _nb2.click()
+                    _next_clicked = True
+                    print("  3DS: Next нажат (повторная попытка)")
+                    await page.wait_for_timeout(1_200)
+                    break
+            except Exception:
+                pass
 
-    # Ждём поле ввода OTP («Enter verification code»)
-    otp_inp = page.locator(
-        "input[placeholder*='code' i], input[placeholder*='OTP' i], "
-        "input[type='text'], input[type='number'], input[type='tel']"
-    ).first
-    try:
-        await otp_inp.wait_for(state="visible", timeout=10_000)
-    except Exception:
-        otp_inp = None
+    # Ждём поле ввода OTP — ищем во всех фреймах (может быть в cross-origin iframe)
+    otp_inp = None
+    _otp_frame_found = None
+    _otp_dl = asyncio.get_event_loop().time() + 12
+    while asyncio.get_event_loop().time() < _otp_dl:
+        for _fr in [page] + list(page.frames):
+            try:
+                _c = _fr.locator(
+                    "input[placeholder*='code' i], input[placeholder*='OTP' i], "
+                    "input[type='text'], input[type='number'], input[type='tel']"
+                ).first
+                if await _c.count() > 0 and await _c.is_visible():
+                    otp_inp = _c
+                    _otp_frame_found = _fr
+                    break
+            except Exception:
+                pass
+        if otp_inp:
+            break
+        await page.wait_for_timeout(500)
 
     if otp_inp:
         # Пробуем получить OTP автоматически из Telegram
@@ -4079,26 +4113,14 @@ async def _handle_3ds_verification(page) -> bool:
         if otp_code:
             print(f"  3DS OTP из Telegram: {otp_code}")
 
-            # Уровень 1: ищем OTP-поле во всех фреймах, кликаем trusted click по координатам
-            _otp_inp_all = None
-            _otp_frame   = None
+            # OTP-поле уже найдено выше (_otp_frame_found / otp_inp)
+            _otp_inp_all = otp_inp
+            _otp_frame   = _otp_frame_found
             _sub_sel = (
                 "button:has-text('SUBMIT'), button:has-text('Submit'), "
                 "input[value='SUBMIT'], input[value='Submit'], "
                 "button[type='submit'], input[type='submit']"
             )
-            for _fr in [page] + list(page.frames):
-                try:
-                    _candidate = _fr.locator(
-                        "input[placeholder*='code' i], input[placeholder*='OTP' i], "
-                        "input[type='text'], input[type='number'], input[type='tel']"
-                    ).first
-                    if await _candidate.count() > 0:
-                        _otp_inp_all = _candidate
-                        _otp_frame   = _fr
-                        break
-                except Exception:
-                    pass
 
             _inp_to_use = _otp_inp_all or otp_inp
             try:
