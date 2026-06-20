@@ -1,0 +1,33 @@
+# Chrome profiles (runtime data)
+chrome_profiles/
+chrome_profiles_done/
+chrome_profiles_used/
+chrome_profiles_backup/
+
+# Cookies backup
+cookies_backup/
+
+# Sensitive data (never commit)
+config.yaml
+secrets.yaml
+cards.json
+
+# Runtime / stats (machine-specific)
+data/
+._update_sha
+
+# Debug screenshots and operational screenshots
+debug_*.png
+viewcheckout_debug_*.png
+*.screenshot.png
+screenshots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor
+.vscode/
+*.log
