@@ -58,12 +58,14 @@ def _get_telegram_token_standalone() -> str:
 
 
 def _get_tg_subscribers_standalone() -> list:
-    """Возвращает список chat_id подписчиков из data/tg_subscribers.json."""
+    """Возвращает список chat_id подписчиков с включённым buy_number."""
     try:
         sp = _HERE / "data" / "tg_subscribers.json"
         if sp.exists():
             data = json.loads(sp.read_text(encoding="utf-8"))
-            return [int(c) for c in data.get("chats", [])]
+            ss = data.get("settings", {})
+            return [int(c) for c in data.get("chats", [])
+                    if ss.get(str(c), {}).get("buy_number", True)]
     except Exception:
         pass
     return []
@@ -278,7 +280,6 @@ async def _cancel_rental_task(aid):
             await client.cancel(aid)
             print(f"\n  {_G}✅ Номер +91 {r['phone_10']} (id={aid}) успешно отменён на GrizzlySMS.{_RST}")
             r["status"] = "cancelled"
-            await _tg_cancel_notify(r["phone_10"], "Отменён по таймауту/ошибке")
             _RENTALS.pop(aid, None)
         except Exception as ce:
             r["cancel_attempts"] += 1
