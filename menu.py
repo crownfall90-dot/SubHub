@@ -6954,11 +6954,12 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         except Exception: pass
                     try: await pw.stop()
                     except Exception: pass
-                if _del_profile and profile_path and profile_path.exists():
+                _no_meta = profile_path is not None and not (profile_path / ".profile_meta.json").exists()
+                if profile_path and profile_path.exists() and (_del_profile or _no_meta):
                     import shutil as _sh
                     try:
                         _sh.rmtree(profile_path, ignore_errors=True)
-                        print(f"  {DIM}Профиль +91 {phone_10} удалён.{RST}")
+                        print(f"  {DIM}Профиль +91 {phone_10} удалён (вход не выполнен).{RST}")
                     except Exception:
                         pass
 
