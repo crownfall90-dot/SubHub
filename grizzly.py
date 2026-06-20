@@ -282,14 +282,18 @@ async def _cancel_rental_task(aid):
             r["status"] = "cancelled"
             _RENTALS.pop(aid, None)
         except Exception as ce:
-            r["cancel_attempts"] += 1
-            now = time.monotonic()
-            if r["cancel_attempts"] == 1:
-                r["next_attempt_at"] = r["rented_at"] + 320.0 # retry at 5m 20s
-                print(f"\n  {_Y}⚠ Не удалось отменить +91 {r['phone_10']} (id={aid}) через 2м 30с ({ce}). Повтор запланирован на 5м 20с.{_RST}")
+            if "BAD_ACTION" in str(ce):
+                print(f"\n  {_Y}⚠ Номер +91 {r['phone_10']} (id={aid}) уже не существует (BAD_ACTION) — удаляю из очереди.{_RST}")
+                _RENTALS.pop(aid, None)
             else:
-                r["next_attempt_at"] = now + 30.0 # retry every 30s
-                print(f"\n  {_Y}⚠ Повторная отмена +91 {r['phone_10']} (id={aid}) не удалась ({ce}). Повтор через 30с.{_RST}")
+                r["cancel_attempts"] += 1
+                now = time.monotonic()
+                if r["cancel_attempts"] == 1:
+                    r["next_attempt_at"] = r["rented_at"] + 320.0 # retry at 5m 20s
+                    print(f"\n  {_Y}⚠ Не удалось отменить +91 {r['phone_10']} (id={aid}) через 2м 30с ({ce}). Повтор запланирован на 5м 20с.{_RST}")
+                else:
+                    r["next_attempt_at"] = now + 30.0 # retry every 30s
+                    print(f"\n  {_Y}⚠ Повторная отмена +91 {r['phone_10']} (id={aid}) не удалась ({ce}). Повтор через 30с.{_RST}")
         
         await client.close()
     finally:
@@ -576,12 +580,13 @@ def cleanup_all_rentals_on_exit():
                     except Exception:
                         pass
                     err_str = str(e)
-                    if "EARLY_CANCEL_DENIED" in err_str:
+                    if "BAD_ACTION" in err_str:
+                        print(f"  {_Y}[Выход] +91 {r['phone_10']}: BAD_ACTION — номер уже не существует, удаляю.{_RST}")
+                        _RENTALS.pop(aid, None)
+                    elif "EARLY_CANCEL_DENIED" in err_str:
                         now_mt = time.monotonic()
-                        # Первый приоритет: ждать до конца lifetime + 5 сек буфер
                         retry_at = r["rented_at"] + _lifetime + 5
                         if retry_at <= now_mt:
-                            # Lifetime уже прошёл, а отмена всё ещё denied — пробуем через 30 сек
                             retry_at = now_mt + 30
                         r["next_attempt_at"] = retry_at
                         wait_sec = max(1, int(retry_at - now_mt))
