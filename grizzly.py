@@ -299,7 +299,7 @@ async def _tg_cancel_notify(ph: str, reason: str = "") -> None:
         if reason:
             _msg += f"\n_{reason}_"
         _msg += _bal_line
-        async with _hx_c.AsyncClient(timeout=8) as _hcn:
+        async with _hx_c.AsyncClient(timeout=8, trust_env=False) as _hcn:
             for _c in _nc:
                 try:
                     await _hcn.post(
@@ -327,7 +327,7 @@ async def _tg_login_fail_notify(phone_10: str, otp_code: str, error_msg: str) ->
             f"🔑 OTP: `{otp_code}`\n"
             f"📝 Статус: _{error_msg}_"
         )
-        async with _hx_c.AsyncClient(timeout=8) as _hcn:
+        async with _hx_c.AsyncClient(timeout=8, trust_env=False) as _hcn:
             for _c in _nc:
                 try:
                     await _hcn.post(
@@ -350,7 +350,7 @@ async def _tg_login_ok_notify(phone_10: str) -> None:
         if not _nc:
             return
         _msg = f"✅ *Вход выполнен*\n\n`{phone_10}`\n_Профиль готов_"
-        async with _hx_ok.AsyncClient(timeout=8) as _hok:
+        async with _hx_ok.AsyncClient(timeout=8, trust_env=False) as _hok:
             for _c in _nc:
                 try:
                     await _hok.post(
@@ -420,7 +420,7 @@ async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = ""
         MAX_CHUNK = 3800
         json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
 
-        async with _hx.AsyncClient(timeout=15) as _client:
+        async with _hx.AsyncClient(timeout=15, trust_env=False) as _client:
             for _chat in _nc:
                 try:
                     # 1. Отправка файла
@@ -595,7 +595,7 @@ def cleanup_all_rentals_on_exit():
                 _nc = _get_tg_subscribers_standalone()
                 if _tok and _nc:
                     _msg = "♻️ *Все номера удалены/отменены*\n\nОчистка успешно завершена. Бот готов к новому запуску!"
-                    async with _hx_ex.AsyncClient(timeout=10) as _client:
+                    async with _hx_ex.AsyncClient(timeout=10, trust_env=False) as _client:
                         for _c in _nc:
                             try:
                                 await _client.post(

@@ -37,6 +37,7 @@ class GrizzlySMSClient:
             timeout=http_timeout,
             headers={"Accept": "text/plain"},
             follow_redirects=True,
+            trust_env=False,
             limits=httpx.Limits(
                 max_connections=64,       # 5 слотов × 5 аккаунтов = 25 макс, 64 с запасом
                 max_keepalive_connections=20,

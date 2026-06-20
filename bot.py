@@ -1333,7 +1333,7 @@ def _menu_tg_bot_thread() -> None:
                         for _cid in list(subs):
                             try:
                                 async with httpx.AsyncClient(
-                                        timeout=httpx.Timeout(8.0)) as c2:
+                                        timeout=httpx.Timeout(8.0), trust_env=False) as c2:
                                     await c2.post(
                                         f"https://api.telegram.org/bot{token}/sendMessage",
                                         json={"chat_id": _cid, "text": msg,
@@ -2114,7 +2114,7 @@ def _menu_tg_bot_thread() -> None:
         # ══════════════════════════════════════════════════════════════════════
 
         _timeout_obj = httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=_timeout_obj) as client:
+        async with httpx.AsyncClient(timeout=_timeout_obj, trust_env=False) as client:
 
             asyncio.ensure_future(_bg_update_loop())
 

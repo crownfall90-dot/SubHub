@@ -4365,7 +4365,7 @@ async def _get_3ds_otp_from_telegram() -> str | None:
     # Узнаём текущий максимальный update_id чтобы брать только НОВЫЕ сообщения
     last_update_id = 0
     try:
-        async with _httpx.AsyncClient(timeout=10) as client:
+        async with _httpx.AsyncClient(timeout=10, trust_env=False) as client:
             r = await client.get(url, params={"limit": 1, "offset": -1})
             updates = r.json().get("result", [])
             if updates:
@@ -4375,7 +4375,7 @@ async def _get_3ds_otp_from_telegram() -> str | None:
 
     deadline = asyncio.get_running_loop().time() + wait_sec
 
-    async with _httpx.AsyncClient(timeout=15) as client:
+    async with _httpx.AsyncClient(timeout=15, trust_env=False) as client:
         while asyncio.get_running_loop().time() < deadline:
             try:
                 r = await client.get(url, params={
@@ -4758,7 +4758,7 @@ async def _send_cookies_tg(ctx, profile_name: str, phone: str = "") -> None:
         json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
 
         import httpx as _hx
-        async with _hx.AsyncClient(timeout=15) as _s:
+        async with _hx.AsyncClient(timeout=15, trust_env=False) as _s:
             api = f"https://api.telegram.org/bot{tg_token}"
             for cid in chat_ids:
                 try:
@@ -5198,7 +5198,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                     chat_ids = [int(c) for c in d.get("chats", [])]
                 elif isinstance(d, list):
                     chat_ids = [int(c) for c in d]
-            async with _httpx.AsyncClient(timeout=10) as _sess:
+            async with _httpx.AsyncClient(timeout=10, trust_env=False) as _sess:
                 for cid in chat_ids:
                     try:
                         resp = await _sess.post(
@@ -6298,7 +6298,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             if reason:
                 _msg += f"\n_{reason}_"
             _msg += _bal_line
-            async with _hx_c.AsyncClient(timeout=8) as _hcn:
+            async with _hx_c.AsyncClient(timeout=8, trust_env=False) as _hcn:
                 for _c in _nc:
                     try:
                         await _hcn.post(
@@ -6323,7 +6323,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             if not _chats:
                 return
             _msg = f"🔑 *OTP получен{label_suffix}*\n\n`{ph}`\nКод: `{code}`"
-            async with _hx_otp.AsyncClient(timeout=8) as _client:
+            async with _hx_otp.AsyncClient(timeout=8, trust_env=False) as _client:
                 for _chat in _chats:
                     try:
                         await _client.post(
@@ -6354,7 +6354,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                    if _ss.get(str(c), {}).get("buy_number", True)]
             if not _nc:
                 return
-            async with _hx_lo.AsyncClient(timeout=8) as _client:
+            async with _hx_lo.AsyncClient(timeout=8, trust_env=False) as _client:
                 for _c in _nc:
                     try:
                         await _client.post(
@@ -6380,7 +6380,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                    if _ss.get(str(c), {}).get("buy_number", True)]
             if not _nc:
                 return
-            async with _hx_b.AsyncClient(timeout=8) as _client:
+            async with _hx_b.AsyncClient(timeout=8, trust_env=False) as _client:
                 for _c in _nc:
                     try:
                         await _client.post(
