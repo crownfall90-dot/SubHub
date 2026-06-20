@@ -187,7 +187,7 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
         if _btn_url:
             reply_markup = _j.dumps({
                 "inline_keyboard": [[
-                    {"text": "🚀 Активировать", "url": _btn_url}
+                    {"text": f"👤 +91 {phone}  |  Перейти к профилю", "url": _btn_url}
                 ]]
             })
 
