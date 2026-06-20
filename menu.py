@@ -1880,7 +1880,7 @@ def screen_restore_from_cookies():
 
 
 def screen_check_all_activated():
-    """Проверить ВСЕ выданные профили на Activated. Активированные — удалить."""
+    """Проверить активацию Black для всех профилей со статусом «Выдан»."""
     cls()
     header("ПРОВЕРКА АКТИВАЦИИ — ВСЕ ПРОФИЛИ", G)
 
@@ -1906,7 +1906,7 @@ def screen_check_all_activated():
 
         try:
             chk = asyncio.run(
-                _check_black_store_activation(p["path"], username=username))
+                _check_black_store_activation(p["path"], username=username, headless=True))
         except KeyboardInterrupt:
             print(f"\n  {Y}Прервано пользователем.{RST}")
             break
@@ -8035,7 +8035,7 @@ def screen_main():
 
         section("ПРОФИЛИ", C)
         opt("3", "Открыть сохранённый профиль Chrome", C)
-        opt("П", "Проверить всех выданных → Activated → удалить", G)
+        opt("П", "Проверить активацию всех выданных", G)
         opt("К", "Восстановить профиль из JSON куков (cookies_backup/)", C)
         opt("6", "Архив использованных профилей", M)
 
