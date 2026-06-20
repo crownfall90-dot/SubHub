@@ -1283,15 +1283,20 @@ def _menu_tg_bot_thread() -> None:
             def _fetch():
                 if not (_cwd / ".git").exists():
                     return _m("_http_check_updates")()
+                _git_ok = False
                 try:
-                    subprocess.run([_GIT, "fetch", "--quiet", "origin"],
-                                   capture_output=True, timeout=20, cwd=_cwd)
-                    r2 = subprocess.run(
-                        [_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
-                        capture_output=True, text=True, timeout=10, cwd=_cwd,
-                        encoding="utf-8", errors="replace")
-                    return [l.strip() for l in r2.stdout.strip().splitlines() if l.strip()]
+                    _fr = subprocess.run([_GIT, "fetch", "--quiet", "origin"],
+                                         capture_output=True, timeout=20, cwd=_cwd)
+                    if _fr.returncode == 0:
+                        r2 = subprocess.run(
+                            [_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
+                            capture_output=True, text=True, timeout=10, cwd=_cwd,
+                            encoding="utf-8", errors="replace")
+                        _git_ok = True
+                        return [l.strip() for l in r2.stdout.strip().splitlines() if l.strip()]
                 except Exception:
+                    pass
+                if not _git_ok:
                     return _m("_http_check_updates")()
 
             # Инициализация: не уведомляем о существующих обновлениях после рестарта

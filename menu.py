@@ -155,6 +155,53 @@ def _get_telegram_token() -> str:
         return ""
 
 
+def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
+                        valid_till: str = "") -> None:
+    """Отправляет ссылку активации YouTube Premium в Telegram (синхронно)."""
+    import json as _j
+    import urllib.request as _ur
+    import urllib.parse as _up
+    try:
+        tg_token = _get_telegram_token()
+        if not tg_token:
+            return
+        subs_path = _HERE / "data" / "tg_subscribers.json"
+        chat_ids: list = []
+        if subs_path.exists():
+            d = _j.loads(subs_path.read_text(encoding="utf-8"))
+            chat_ids = [int(c) for c in (d.get("chats", []) if isinstance(d, dict) else d)]
+        if not chat_ids:
+            return
+        _has_short = short_url and short_url != act_url
+        _till_line = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
+        _url_line  = (f'\n\n🔗 <a href="{act_url}">Ссылка активации</a>'
+                      if act_url else "\n\n⚠️ Ссылка активации не получена")
+        _short_line = f"\n🔗 Короткая: {short_url}" if _has_short else ""
+        msg = (
+            f"🎉 <b>Activate Now — YouTube Premium</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📱 Номер: <code>+91 {phone}</code>"
+            f"{_till_line}"
+            f"{_url_line}"
+            f"{_short_line}"
+        )
+        for cid in chat_ids:
+            try:
+                data = _up.urlencode({
+                    "chat_id": cid, "text": msg,
+                    "parse_mode": "HTML", "disable_web_page_preview": "true"
+                }).encode()
+                _ur.urlopen(
+                    f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                    data=data, timeout=10
+                )
+                print(f"  TG [{cid}]: ссылка активации отправлена")
+            except Exception as _te:
+                print(f"  TG [{cid}]: {_te}")
+    except Exception as _e:
+        print(f"  TG отправка: {_e}")
+
+
 _DATA               = _HERE / "data"
 _DATA.mkdir(exist_ok=True)
 TG_SUBSCRIBERS_FILE = _DATA / "tg_subscribers.json"
@@ -1131,12 +1178,14 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
                 elif st == "activate_now":
                     _aurl = chk.get("activation_url", "")
                     _slink = chk.get("short_link", "")
+                    _vt2 = chk.get("valid_till", "")
                     print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                     if _aurl:
                         print(f"  ║  {G}🔗 Ссылка активации:{RST}")
                         if _slink and _slink != _aurl:
                             print(f"  ║  {G}Короткая: {_slink}{RST}")
                         print(f"  ║  {B}{_aurl}{RST}")
+                        _send_tg_activation(_un, _aurl, _slink, _vt2)
                     else:
                         print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                 elif st == "activated":
@@ -1590,6 +1639,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         # При activate_now — нажимаем кнопку и получаем ссылку активации
         if result["status"] == "activate_now":
             _ACT_SEL = (
+                "[aria-label='Activate Now'], [aria-label='Activate now'], "
                 "button:has-text('Activate now'), a:has-text('Activate now'), "
                 "[role='button']:has-text('Activate now'), span:has-text('Activate now')"
             )
@@ -1605,19 +1655,22 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                     pass
             if _act_btn is None:
                 # Скролл вниз и ещё попытка
-                try:
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
-                    await page.wait_for_timeout(800)
-                except Exception:
-                    pass
-                for _afr in [page] + list(page.frames):
+                for _scroll in [0.4, 0.6, 0.8]:
                     try:
-                        _c = _afr.locator(_ACT_SEL).first
-                        if await _c.count() > 0 and await _c.is_visible():
-                            _act_btn = _c
-                            break
+                        await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {_scroll})")
+                        await page.wait_for_timeout(600)
                     except Exception:
                         pass
+                    for _afr in [page] + list(page.frames):
+                        try:
+                            _c = _afr.locator(_ACT_SEL).first
+                            if await _c.count() > 0 and await _c.is_visible():
+                                _act_btn = _c
+                                break
+                        except Exception:
+                            pass
+                    if _act_btn:
+                        break
             if _act_btn:
                 try:
                     await _act_btn.scroll_into_view_if_needed(timeout=3_000)
@@ -1641,13 +1694,67 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                     except Exception:
                         # Нет новой вкладки — навигация в той же странице
                         await page.wait_for_timeout(3_000)
-                        if page.url != "https://www.flipkart.com/flipkart-black-store":
+                        if "flipkart-black-store" not in page.url:
                             result["activation_url"] = page.url
                             print(f"  Ссылка активации: {page.url[:120]}")
                 except Exception as _ae:
                     print(f"  Ошибка клика Activate now: {_ae}")
             else:
-                print(f"  {Y}Кнопка «Activate now» не найдена на странице{RST}")
+                # JS fallback — ищем cursor:pointer div с картинкой (кнопка — PNG-изображение)
+                print(f"  {Y}Локатор не нашёл кнопку — пробую JS-клик...{RST}")
+                try:
+                    _new_page_ev2 = ctx.wait_for_event("page", timeout=10_000)
+                    _js_ok = await page.evaluate("""() => {
+                        for (const el of document.querySelectorAll('[aria-label]')) {
+                            const al = (el.getAttribute('aria-label') || '').trim();
+                            if (al === 'Activate Now' || al === 'Activate now') {
+                                el.scrollIntoView({behavior:'instant', block:'center'});
+                                el.click(); return 'aria';
+                            }
+                        }
+                        for (const img of document.querySelectorAll('img[width="1200"]')) {
+                            if (img.getAttribute('height') !== '213') continue;
+                            if (!(img.src||'').includes('/promos/')) continue;
+                            let el = img.parentElement;
+                            for (let i = 0; i < 6 && el; i++) {
+                                if (el.style && el.style.cursor === 'pointer') {
+                                    el.scrollIntoView({behavior:'instant', block:'center'});
+                                    el.click(); return 'img-1200x213';
+                                }
+                                el = el.parentElement;
+                            }
+                            img.scrollIntoView({behavior:'instant', block:'center'});
+                            img.click(); return 'img-direct';
+                        }
+                        const cands = [...document.querySelectorAll('div[style*="cursor"]')]
+                            .filter(el => {
+                                if (el.style.cursor !== 'pointer') return false;
+                                const r = el.getBoundingClientRect();
+                                return r.width > 200 && r.height > 50 && r.top > 200 && el.querySelector('img');
+                            })
+                            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+                        if (cands.length > 0) {
+                            cands[0].scrollIntoView({behavior:'instant', block:'center'});
+                            cands[0].click(); return 'cursor';
+                        }
+                        return null;
+                    }""")
+                    if _js_ok:
+                        print(f"  JS-клик Activate now: {_js_ok}")
+                        try:
+                            _new_tab2 = await _new_page_ev2
+                            await _new_tab2.wait_for_load_state("domcontentloaded", timeout=12_000)
+                            result["activation_url"] = _new_tab2.url
+                            print(f"  Ссылка активации: {_new_tab2.url[:120]}")
+                        except Exception:
+                            await page.wait_for_timeout(3_000)
+                            if "flipkart-black-store" not in page.url:
+                                result["activation_url"] = page.url
+                                print(f"  Ссылка активации: {page.url[:120]}")
+                    else:
+                        print(f"  {Y}Кнопка «Activate now» не найдена на странице{RST}")
+                except Exception as _je:
+                    print(f"  {Y}JS-клик не удался: {_je}{RST}")
 
             # Сокращаем ссылку через clck.ru
             if result.get("activation_url"):
@@ -1838,11 +1945,13 @@ def screen_check_all_activated():
         elif status == "activate_now":
             _aurl = chk.get("activation_url", "")
             _slink = chk.get("short_link", "")
+            _vt3 = chk.get("valid_till", "")
             print(f"  {G}⭐ Activate Now — доступен к выдаче{RST}")
             if _aurl:
                 if _slink and _slink != _aurl:
                     print(f"  {G}   🔗 Короткая: {_slink}{RST}")
                 print(f"  {B}   Ссылка: {_aurl}{RST}")
+                _send_tg_activation(username, _aurl, _slink, _vt3)
             else:
                 print(f"  {Y}   ⏳ Ссылка не получена{RST}")
             print()
@@ -2007,11 +2116,13 @@ def screen_profiles():
                             print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                             _act_url = chk.get("activation_url", "")
                             _short_url = chk.get("short_link", "")
+                            _vt = chk.get("valid_till", "")
                             if _act_url:
                                 print(f"  ║  {G}🔗 Ссылка активации:{RST}")
                                 if _short_url and _short_url != _act_url:
                                     print(f"  ║  {G}Короткая: {_short_url}{RST}")
                                 print(f"  ║  {B}{_act_url}{RST}")
+                                _send_tg_activation(_un, _act_url, _short_url, _vt)
                             else:
                                 print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                         elif st == "explore_now":
@@ -4953,22 +5064,34 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         pass
 
     # Проверяем "Welcome to BLACK" баннер на orderresponse странице = оплата подтверждена
+    # Надёжный признак: ссылка на flipkart-black-store присутствует в HTML
+    _black_banner_link = ""
     try:
+        _order_html = (await page.evaluate("() => document.documentElement.innerHTML")) or ""
         _order_body = (await page.evaluate("() => (document.body.innerText||'')")).lower()
-        if "welcome to black" in _order_body or "orderresponse" in cur_url:
+        if "flipkart-black-store" in _order_html or "welcome to black" in _order_body or "orderresponse" in cur_url:
             print(f"  {G}✅ «Welcome to BLACK» — оплата подтверждена{RST}")
             result["paid"] = True
+            # Ищем точную ссылку на Black Store в HTML
+            import re as _re_bp
+            _m = _re_bp.search(r'href="([^"]*flipkart-black-store[^"]*)"', _order_html)
+            if _m:
+                _black_banner_link = _m.group(1)
+                if _black_banner_link.startswith("/"):
+                    _black_banner_link = "https://www.flipkart.com" + _black_banner_link
+                print(f"  {G}🔗 Ссылка на Black Store из баннера: {_black_banner_link[:80]}{RST}")
     except Exception:
         pass
 
-    print("  Оплата отправлена — ждём 40 сек для активации membership...")
-    await page.wait_for_timeout(40_000)
+    print("  Оплата подтверждена — ждём 15 сек для активации membership...")
+    await page.wait_for_timeout(15_000)
 
     # ── 1. Открываем flipkart-black-store ────────────────────────────────────
+    _black_url = _black_banner_link or "https://www.flipkart.com/flipkart-black-store"
     black_page = await ctx.new_page()
     try:
         await black_page.goto(
-            "https://www.flipkart.com/flipkart-black-store",
+            _black_url,
             wait_until="domcontentloaded", timeout=20_000
         )
     except Exception:
@@ -5011,14 +5134,55 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
 
     # ── 3. Нажимаем Activate Now (refresh если Explore Now) ──────────────────
     _BTN_SEL = (
+        "[aria-label='Activate Now'], [aria-label='Activate now'], "
         "button:has-text('Activate now'), a:has-text('Activate now'), "
         "[role='button']:has-text('Activate now'), span:has-text('Activate now'), "
         "button:has-text('Activate Now'), a:has-text('Activate Now')"
     )
     _EXPLORE_SEL = (
+        "[aria-label='Explore Now'], [aria-label='Explore now'], "
         "button:has-text('Explore Now'), a:has-text('Explore Now'), "
         "[role='button']:has-text('Explore Now'), span:has-text('Explore Now')"
     )
+
+    _ACTIVATE_JS = """() => {
+        // 1. aria-label (самый надёжный)
+        for (const el of document.querySelectorAll('[aria-label]')) {
+            const al = (el.getAttribute('aria-label') || '').trim();
+            if (al === 'Activate Now' || al === 'Activate now') {
+                el.scrollIntoView({behavior:'instant', block:'center'});
+                el.click(); return 'aria';
+            }
+        }
+        // 2. Promos-картинка 1200x213 (конкретные размеры кнопки Activate Now)
+        for (const img of document.querySelectorAll('img[width="1200"]')) {
+            if (img.getAttribute('height') !== '213') continue;
+            if (!(img.src||'').includes('/promos/')) continue;
+            let el = img.parentElement;
+            for (let i = 0; i < 6 && el; i++) {
+                if (el.style && el.style.cursor === 'pointer') {
+                    el.scrollIntoView({behavior:'instant', block:'center'});
+                    el.click(); return 'img-1200x213';
+                }
+                el = el.parentElement;
+            }
+            img.scrollIntoView({behavior:'instant', block:'center'});
+            img.click(); return 'img-direct';
+        }
+        // 3. cursor:pointer div с картинкой (общий fallback)
+        const cands = [...document.querySelectorAll('div[style*="cursor"]')]
+            .filter(el => {
+                if (el.style.cursor !== 'pointer') return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 200 && r.height > 50 && r.top > 200 && el.querySelector('img');
+            })
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        if (cands.length > 0) {
+            cands[0].scrollIntoView({behavior:'instant', block:'center'});
+            cands[0].click(); return 'cursor';
+        }
+        return null;
+    }"""
 
     async def _find_activate_btn_all_frames():
         """Ищет кнопку Activate Now во всех фреймах страницы."""
@@ -5036,6 +5200,28 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                 except Exception:
                     pass
         return None, None
+
+    async def _click_activate_now_js() -> str | None:
+        """JS-клик по Activate Now (aria-label / cursor:pointer img). Возвращает activation_url или None."""
+        try:
+            await black_page.evaluate("window.scrollTo(0, 0)")
+            await black_page.wait_for_timeout(300)
+            _new_page_ev = ctx.wait_for_event("page", timeout=10_000)
+            _method = await black_page.evaluate(_ACTIVATE_JS)
+            if not _method:
+                return None
+            print(f"  Activate Now → JS-клик ({_method})")
+            try:
+                _tab = await _new_page_ev
+                await _tab.wait_for_load_state("domcontentloaded", timeout=12_000)
+                return _tab.url
+            except Exception:
+                await black_page.wait_for_timeout(3_000)
+                if "flipkart-black-store" not in black_page.url:
+                    return black_page.url
+        except Exception as _je:
+            print(f"  JS-клик ошибка: {_je}")
+        return None
 
     activation_url = ""
     for attempt in range(15):
@@ -5065,13 +5251,27 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                     print(f"  Activate Now → новая вкладка: {activation_url[:80]}")
                 except Exception:
                     await black_page.wait_for_timeout(3_000)
-                    if black_page.url != "https://www.flipkart.com/flipkart-black-store":
+                    if "flipkart-black-store" not in black_page.url:
                         activation_url = black_page.url
                     print(f"  Activate Now → текущая страница: {activation_url[:80]}")
                 result["activation_url"] = activation_url
             except Exception as e:
                 print(f"  Ошибка клика Activate Now: {e}")
+            if not activation_url:
+                # Локатор нашёл но клик не дал URL — пробуем JS
+                activation_url = await _click_activate_now_js() or ""
+                result["activation_url"] = activation_url
             break
+        elif attempt == 0:
+            # Первая попытка: пробуем JS-клик сразу
+            _url_js = await _click_activate_now_js()
+            if _url_js:
+                result["paid"] = True
+                result["button_seen"] = "Activate Now (JS)"
+                activation_url = _url_js
+                result["activation_url"] = activation_url
+                print(f"  Activate Now → URL: {activation_url[:80]}")
+                break
 
         # Explore Now → обновляем страницу
         explore_found = False
@@ -5080,6 +5280,14 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                 if await _fr2.locator(_EXPLORE_SEL).first.count() > 0:
                     explore_found = True
                     break
+            except Exception:
+                pass
+        # HTML fallback для Explore Now (кнопка тоже PNG-изображение)
+        if not explore_found:
+            try:
+                _hp = await black_page.evaluate("() => document.documentElement.innerHTML")
+                if "black-youtube-premium-benefit-faq-store" in _hp:
+                    explore_found = True
             except Exception:
                 pass
 
@@ -7626,16 +7834,19 @@ def _check_updates_bg() -> None:
     global _update_available, _update_commits, _update_checked
     _cwd = Path(__file__).parent
     lines: list[str] = []
+    _git_ok = False
     if (_cwd / ".git").exists():
         try:
-            subprocess.run([_GIT, "fetch", "--quiet", "origin"],
-                           capture_output=True, timeout=20, cwd=_cwd)
-            r = subprocess.run([_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
-                               capture_output=True, text=True, timeout=10, cwd=_cwd)
-            lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+            _fr = subprocess.run([_GIT, "fetch", "--quiet", "origin"],
+                                 capture_output=True, timeout=20, cwd=_cwd)
+            if _fr.returncode == 0:
+                r = subprocess.run([_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
+                                   capture_output=True, text=True, timeout=10, cwd=_cwd)
+                lines   = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+                _git_ok = True
         except Exception:
-            lines = _http_check_updates()
-    else:
+            pass
+    if not _git_ok:
         lines = _http_check_updates()
     _update_available = bool(lines)
     _update_commits   = lines
@@ -7688,15 +7899,20 @@ def screen_update() -> None:
     _cwd = Path(__file__).parent
     commits: list[str] = []
     _via_git = False
+    _git_ok = False
     try:
-        subprocess.run([_GIT, "fetch", "--quiet", "origin"],
-                       capture_output=True, timeout=20, cwd=_cwd)
-        r = subprocess.run([_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
-                           capture_output=True, text=True, timeout=10, cwd=_cwd)
-        commits  = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
-        _via_git = True
+        _fr = subprocess.run([_GIT, "fetch", "--quiet", "origin"],
+                             capture_output=True, timeout=20, cwd=_cwd)
+        if _fr.returncode == 0:
+            r = subprocess.run([_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
+                               capture_output=True, text=True, timeout=10, cwd=_cwd)
+            commits  = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+            _via_git = True
+            _git_ok  = True
     except Exception:
-        print(f"  {DIM}Git недоступен — использую GitHub API...{RST}")
+        pass
+    if not _git_ok:
+        print(f"  {DIM}Git fetch не удался — использую GitHub API...{RST}")
         try:
             commits = _http_check_updates()
         except Exception as _he:
