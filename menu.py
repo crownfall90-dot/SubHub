@@ -6199,10 +6199,10 @@ def screen_buy_membership():
 
 
 _OTP_SEL = (
-    "input[type='text']:not([placeholder*='Mobile']):not([placeholder*='mobile']):not([placeholder*='Email']):not([placeholder*='email']):not([placeholder*='search']):not([placeholder*='Search']), "
-    "input[type='number']:not([placeholder*='Mobile']):not([placeholder*='mobile']):not([placeholder*='Email']):not([placeholder*='email']):not([placeholder*='search']):not([placeholder*='Search']), "
-    "input[type='tel']:not([placeholder*='Mobile']):not([placeholder*='mobile']):not([placeholder*='Email']):not([placeholder*='email']):not([placeholder*='search']):not([placeholder*='Search']), "
-    "input[class*='r4vIwl'], input.r4vIwl, "
+    "input[type='text']:not([readonly]):not([placeholder*='Mobile']):not([placeholder*='mobile']):not([placeholder*='Email']):not([placeholder*='email']):not([placeholder*='search']):not([placeholder*='Search']), "
+    "input[type='number']:not([readonly]):not([placeholder*='Mobile']):not([placeholder*='mobile']):not([placeholder*='Email']):not([placeholder*='email']):not([placeholder*='search']):not([placeholder*='Search']), "
+    "input[type='tel']:not([readonly]):not([placeholder*='Mobile']):not([placeholder*='mobile']):not([placeholder*='Email']):not([placeholder*='email']):not([placeholder*='search']):not([placeholder*='Search']), "
+    "input[class*='r4vIwl']:not([readonly]), input.r4vIwl:not([readonly]), "
     "input[placeholder*='OTP'], input[placeholder*='otp']"
 )
 _PHONE_FIELD_JS = """
