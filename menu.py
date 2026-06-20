@@ -6310,6 +6310,32 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
         except Exception:
             pass
 
+    async def _send_tg_login_ok(ph: str) -> None:
+        """Отправляет TG-уведомление об успешном входе."""
+        try:
+            import httpx as _hx_lo, json as _jlo
+            _tok = _get_telegram_token()
+            if not _tok or not TG_SUBSCRIBERS_FILE.exists():
+                return
+            _sd = _jlo.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
+            _ss = _sd.get("settings", {})
+            _nc = [int(c) for c in _sd.get("chats", [])
+                   if _ss.get(str(c), {}).get("buy_number", True)]
+            if not _nc:
+                return
+            async with _hx_lo.AsyncClient(timeout=8) as _client:
+                for _c in _nc:
+                    try:
+                        await _client.post(
+                            f"https://api.telegram.org/bot{_tok}/sendMessage",
+                            json={"chat_id": _c,
+                                  "text": f"✅ *Вход выполнен*\n\n`{ph}`\n_Профиль готов_",
+                                  "parse_mode": "Markdown"})
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     async def _send_tg_buy(ph: str) -> None:
         """Отправляет TG-уведомление о покупке номера."""
         try:
@@ -6849,6 +6875,15 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 elif o_pg: await o_pg.close()
                             except Exception:
                                 pass
+                            # Удаляем профили без мета-файла (_pending и неудавшиеся _active)
+                            _lp = DONE_PROFILES_DIR / f"profile_{o_ph}"
+                            if _lp.exists() and not (_lp / ".profile_meta.json").exists():
+                                try:
+                                    import shutil as _sh2
+                                    _sh2.rmtree(_lp, ignore_errors=True)
+                                    print(f"  {DIM}Профиль +91 {o_ph} удалён (вход не выполнен){RST}")
+                                except Exception:
+                                    pass
 
                 # Победитель определён
                 is_first_winner = (win_id == _active[0][0])
@@ -7009,6 +7044,10 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 except Exception:
                     pass
                 print(f"  {G}✔ Вход выполнен: +91 {phone_10}{RST}")
+                try:
+                    await _send_tg_login_ok(phone_10)
+                except Exception:
+                    pass
                 # Re-grant после входа — страница сменилась на Flipkart главную
                 await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
 
@@ -7094,6 +7133,10 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     except Exception:
                         pass
                     print(f"  {G}✔ Вход выполнен, адрес и почта сохранены: +91 {phone_10}{RST}")
+                    try:
+                        await _send_tg_login_ok(phone_10)
+                    except Exception:
+                        pass
                     try:
                         await _send_cookies_to_tg(ctx, phone_10)
                     except Exception:

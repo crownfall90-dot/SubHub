@@ -339,6 +339,29 @@ async def _tg_login_fail_notify(phone_10: str, otp_code: str, error_msg: str) ->
         pass
 
 
+async def _tg_login_ok_notify(phone_10: str) -> None:
+    """Шлёт TG-уведомление об успешном фоновом входе."""
+    try:
+        import httpx as _hx_ok
+        _tok = _get_telegram_token_standalone()
+        if not _tok:
+            return
+        _nc = _get_tg_subscribers_standalone()
+        if not _nc:
+            return
+        _msg = f"✅ *Вход выполнен*\n\n`{phone_10}`\n_Профиль готов_"
+        async with _hx_ok.AsyncClient(timeout=8) as _hok:
+            for _c in _nc:
+                try:
+                    await _hok.post(
+                        f"https://api.telegram.org/bot{_tok}/sendMessage",
+                        json={"chat_id": _c, "text": _msg, "parse_mode": "Markdown"})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = "") -> None:
     """Отправляет куки из фонового контекста в Telegram (файл и текст)."""
     try:
@@ -761,6 +784,10 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 except Exception:
                     pass
                 print(f"  [BG✓] Профиль +91 {phone_10} сохранён (фоновый вход)")
+                try:
+                    await _tg_login_ok_notify(phone_10)
+                except Exception:
+                    pass
                 # TG: отправка кук
                 try:
                     await _send_cookies_to_tg_standalone(ctx2, phone_10, otp_code)
