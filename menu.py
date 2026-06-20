@@ -2310,10 +2310,10 @@ async def _do_fill_address(profile_path: Path, addr: dict,
     _MAX_PROXY_RETRIES = 3
     if _skip_proxies is None:
         _skip_proxies = set()
-    if _retry_n == 0:
-        if _is_profile_locked(profile_path):
-            return False, "Профиль уже открыт в Chrome — закройте его и попробуйте снова"
-    else:
+    if _is_profile_locked(profile_path):
+        print(f"  {Y}Профиль занят — закрываю Chrome и очищаю локи...{RST}")
+        _clear_stale_profile_locks(profile_path)
+    elif _retry_n > 0:
         _clear_stale_profile_locks(profile_path)
     try:
         from playwright.async_api import async_playwright
@@ -5503,10 +5503,10 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
     _auto_close = _forced_proxy is not None   # proxy-попытки всегда закрывают браузер
     if _skip_proxies is None:
         _skip_proxies = set()
-    if _retry_n == 0:
-        if _is_profile_locked(profile_path):
-            return False, "Профиль уже открыт в Chrome — закройте его и попробуйте снова"
-    else:
+    if _is_profile_locked(profile_path):
+        print(f"  {Y}Профиль занят — закрываю Chrome и очищаю локи...{RST}")
+        _clear_stale_profile_locks(profile_path)
+    elif _retry_n > 0:
         _clear_stale_profile_locks(profile_path)
     try:
         from playwright.async_api import async_playwright
