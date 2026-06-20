@@ -8375,6 +8375,25 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Подавляем шум от Playwright-тасков при завершении asyncio.run()
+    # (CancelledError → TargetClosedError в pending-тасках — не ошибка логики)
+    import asyncio as _aio
+    def _quiet_exc_handler(loop, context):
+        exc = context.get("exception")
+        if exc is None:
+            return
+        name = type(exc).__name__
+        if name in ("CancelledError", "TargetClosedError", "ConnectionClosedError"):
+            return
+        msg = context.get("message", "")
+        if "TargetClosed" in msg or "Task was destroyed" in msg:
+            return
+        loop.default_exception_handler(context)
+    try:
+        _aio.get_event_loop().set_exception_handler(_quiet_exc_handler)
+    except Exception:
+        pass
+
     _cli = sys.argv[1:]
 
     try:
