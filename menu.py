@@ -6354,7 +6354,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             if not _tok or not TG_SUBSCRIBERS_FILE.exists():
                 return
             _sd = _jc.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
-            _nc = [int(c) for c in _sd.get("chats", [])]
+            _ss = _sd.get("settings", {})
+            _nc = [int(c) for c in _sd.get("chats", [])
+                   if _ss.get(str(c), {}).get("buy_number", True)]
             if not _nc:
                 return
             try:
