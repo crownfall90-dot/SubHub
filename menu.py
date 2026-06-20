@@ -160,7 +160,6 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
     """Отправляет ссылку активации YouTube Premium в Telegram (синхронно)."""
     import json as _j
     import urllib.request as _ur
-    import urllib.parse as _up
     try:
         tg_token = _get_telegram_token()
         if not tg_token:
@@ -172,30 +171,44 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             chat_ids = [int(c) for c in (d.get("chats", []) if isinstance(d, dict) else d)]
         if not chat_ids:
             return
-        _has_short = short_url and short_url != act_url
+
+        _btn_url = (short_url if short_url and short_url != act_url else act_url) or ""
         _till_line = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
-        _url_line  = (f'\n\n🔗 <a href="{act_url}">Ссылка активации</a>'
-                      if act_url else "\n\n⚠️ Ссылка активации не получена")
-        _short_line = f"\n🔗 Короткая: {short_url}" if _has_short else ""
         msg = (
             f"🎉 <b>Activate Now — YouTube Premium</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📱 Номер: <code>+91 {phone}</code>"
+            f"📱 Профиль: <code>+91 {phone}</code>"
             f"{_till_line}"
-            f"{_url_line}"
-            f"{_short_line}"
         )
+        if not act_url:
+            msg += "\n\n⚠️ Ссылка активации не получена"
+
+        reply_markup = None
+        if _btn_url:
+            reply_markup = _j.dumps({
+                "inline_keyboard": [[
+                    {"text": "🚀 Активировать", "url": _btn_url}
+                ]]
+            })
+
         for cid in chat_ids:
             try:
-                data = _up.urlencode({
-                    "chat_id": cid, "text": msg,
-                    "parse_mode": "HTML", "disable_web_page_preview": "true"
-                }).encode()
-                _ur.urlopen(
+                payload = {
+                    "chat_id": cid,
+                    "text": msg,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": "true",
+                }
+                if reply_markup:
+                    payload["reply_markup"] = reply_markup
+                data = _j.dumps(payload).encode("utf-8")
+                req = _ur.Request(
                     f"https://api.telegram.org/bot{tg_token}/sendMessage",
-                    data=data, timeout=10
+                    data=data,
+                    headers={"Content-Type": "application/json"},
                 )
-                print(f"  TG [{cid}]: ссылка активации отправлена")
+                _ur.urlopen(req, timeout=10)
+                print(f"  TG [{cid}]: отправлено (+91 {phone})")
             except Exception as _te:
                 print(f"  TG [{cid}]: {_te}")
     except Exception as _e:
