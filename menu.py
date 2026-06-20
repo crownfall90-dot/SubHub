@@ -6270,8 +6270,26 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         price_tiers=price_tiers,
                         cycle=True,
                     )
-                except InsufficientBalanceError as exc:
-                    return False, f"Недостаточно средств: {exc}"
+                except InsufficientBalanceError:
+                    print(f"  {R}Недостаточно средств на балансе GrizzlySMS — отменяю все активные номера...{RST}")
+                    try:
+                        _acts = await sms_client.get_active_activations()
+                        _n_cancelled = 0
+                        for _a in _acts:
+                            _aid = str(_a.get("activationId") or _a.get("id") or "")
+                            if _aid:
+                                try:
+                                    await sms_client.cancel(_aid)
+                                    _n_cancelled += 1
+                                except Exception:
+                                    pass
+                        _new_bal = await sms_client.get_balance()
+                        print(f"  {Y}Отменено {_n_cancelled} активаций. 💰 Баланс: ${_new_bal:.4f} — повторяю поиск...{RST}")
+                    except Exception as _be:
+                        print(f"  {Y}Ошибка при отмене активаций: {_be}{RST}")
+                    await asyncio.sleep(5)
+                    _try_next = True
+                    continue
                 except NumberUnavailableError as exc:
                     return False, f"Нет номеров: {exc}"
                 except GrizzlySMSError as exc:
