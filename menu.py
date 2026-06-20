@@ -4193,38 +4193,46 @@ async def _handle_3ds_verification(page) -> bool:
 
             submit_clicked = False
 
-            # Уровень 1: ищем Submit во всех фреймах, trusted click по координатам
+            # Уровень 1: скролл к кнопке + trusted mouse click по координатам
             for _fr in ([_otp_frame] if _otp_frame else []) + [page] + list(page.frames):
                 if submit_clicked:
                     break
                 try:
                     _sub = _fr.locator(_sub_sel).first
                     if await _sub.count() > 0:
+                        try:
+                            await _sub.scroll_into_view_if_needed(timeout=2_000)
+                            await page.wait_for_timeout(300)
+                        except Exception:
+                            pass
                         bb = await _sub.bounding_box()
-                        if bb:
+                        if bb and bb["width"] > 0:
                             await page.mouse.click(
                                 bb["x"] + bb["width"] / 2,
                                 bb["y"] + bb["height"] / 2
                             )
+                            print("  3DS: SUBMIT нажат (trusted click)")
+                            submit_clicked = True
+                            await page.wait_for_timeout(2_000)
                         else:
                             await _sub.click()
-                        print("  3DS: SUBMIT нажат (trusted click)")
-                        submit_clicked = True
-                        await page.wait_for_timeout(2_000)
+                            print("  3DS: SUBMIT нажат (.click)")
+                            submit_clicked = True
+                            await page.wait_for_timeout(2_000)
                 except Exception:
                     pass
 
-            # Уровень 2: Enter в OTP-поле — самый надёжный способ
+            # Уровень 2: page.keyboard.press("Enter") — шлёт в текущий сфокусированный элемент
             if not submit_clicked:
                 try:
-                    await _inp_to_use.press("Enter")
-                    print("  3DS: SUBMIT через Enter в OTP-поле")
+                    await page.keyboard.press("Enter")
+                    print("  3DS: SUBMIT через keyboard.Enter")
                     submit_clicked = True
                     await page.wait_for_timeout(2_000)
                 except Exception:
                     pass
 
-            # Уровень 3: JS fallback — el.click() + form.submit() во всех фреймах
+            # Уровень 3: JS form.submit() + el.click() во всех фреймах
             if not submit_clicked:
                 for _fr in [page] + list(page.frames):
                     try:
@@ -4238,10 +4246,13 @@ async def _handle_3ds_verification(page) -> bool:
                                     return true;
                                 }
                             }
+                            // Fallback: submit any form on page
+                            const forms = document.querySelectorAll('form');
+                            if (forms.length > 0) { forms[0].submit(); return true; }
                             return false;
                         }""")
                         if clicked_js:
-                            print("  3DS: SUBMIT нажат (JS el.click fallback)")
+                            print("  3DS: SUBMIT нажат (JS form.submit)")
                             submit_clicked = True
                             await page.wait_for_timeout(2_000)
                             break
