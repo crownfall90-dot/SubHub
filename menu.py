@@ -1129,7 +1129,16 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
                 elif st == "explore_now":
                     print(f"  ║  {C}💳 Explore Now — доступен для оплаты{RST}")
                 elif st == "activate_now":
+                    _aurl = chk.get("activation_url", "")
+                    _slink = chk.get("short_link", "")
                     print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
+                    if _aurl:
+                        print(f"  ║  {G}🔗 Ссылка активации:{RST}")
+                        if _slink and _slink != _aurl:
+                            print(f"  ║  {G}Короткая: {_slink}{RST}")
+                        print(f"  ║  {B}{_aurl}{RST}")
+                    else:
+                        print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                 elif st == "activated":
                     print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — аккаунт уже активирован{RST}")
                 elif st == "not_logged_in":
@@ -1437,28 +1446,52 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
 
         status = None
 
-        async def _check_frames():
-            for _frame in page.frames:
+        async def _check_frames(verbose: bool = False):
+            """Собирает текст ВСЕХ фреймов, потом расставляет приоритеты.
+            activate_now побеждает даже если в другом фрейме есть activated."""
+            _texts = []
+            _frame_list = [page] + list(page.frames)
+            _frame_info = []
+            for _fi, _frame in enumerate(_frame_list):
                 try:
                     _ft = (await _frame.evaluate(
                         "() => (document.body?.textContent||'').toLowerCase()"))
-                    if "activate now" in _ft:
-                        return "activate_now"
-                    elif "explore now" in _ft:
-                        return "explore_now"
-                    elif "activated" in _ft and "not activated" not in _ft:
-                        return "activated"
+                    if _ft:
+                        _tags = []
+                        if "activate now" in _ft:
+                            _tags.append("ACTIVATE_NOW")
+                        if "explore now" in _ft:
+                            _tags.append("EXPLORE_NOW")
+                        if "activated" in _ft and "not activated" not in _ft:
+                            _tags.append("ACTIVATED")
+                        if "membership valid till" in _ft:
+                            _tags.append("VALID_TILL")
+                        if _tags:
+                            _u = (_frame.url or "")[:50]
+                            _frame_info.append(f"Frame{_fi}[{_u}]: {','.join(_tags)}")
+                        _texts.append(_ft)
                 except Exception:
                     pass
+            if verbose:
+                _info_str = " | ".join(_frame_info) if _frame_info else "нет ключевых слов"
+                print(f"  {DIM}Фреймов: {len(_frame_list)} | {_info_str}{RST}")
+            # Приоритет: activate_now > explore_now > activated
+            if any("activate now" in t for t in _texts):
+                return "activate_now"
+            if any("explore now" in t for t in _texts):
+                return "explore_now"
+            if any("activated" in t and "not activated" not in t for t in _texts):
+                return "activated"
             return None
 
-        # Быстрая проверка: сразу прокручиваем до конца страницы и смотрим весь DOM
+        # Сначала проверяем ВСЕ фреймы (activate_now может быть в iframe)
+        # потом COMPREHENSIVE_JS как запасной
         try:
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await page.wait_for_timeout(1_000)
-            status = await page.evaluate(_COMPREHENSIVE_JS)
+            status = await _check_frames(verbose=True)
             if not status:
-                status = await _check_frames()
+                status = await page.evaluate(_COMPREHENSIVE_JS)
         except Exception:
             pass
 
@@ -1472,6 +1505,13 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         # Медленный скролл если статус не найден: 20 шагов × 200px × 0.8с = ~16 сек макс
         if not status:
             for _scroll_i in range(20):
+                # Фреймы — первый приоритет (activate_now может быть в iframe)
+                _fs = await _check_frames()
+                if _fs:
+                    status = _fs
+                    print(f"  Найдено в frame (шаг {_scroll_i}): {_fs}")
+                    break
+
                 try:
                     _s = await page.evaluate(_COMPREHENSIVE_JS)
                     if _s:
@@ -1480,13 +1520,6 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                         break
                 except Exception:
                     pass
-
-                if not status:
-                    _fs = await _check_frames()
-                    if _fs:
-                        status = _fs
-                        print(f"  Найдено в frame (шаг {_scroll_i})")
-                        break
 
                 if not result["valid_till"]:
                     try:
@@ -1790,7 +1823,16 @@ def screen_check_all_activated():
             not_activated.append(username)
 
         elif status == "activate_now":
-            print(f"  {G}⭐ Activate Now — доступен к выдаче{RST}\n")
+            _aurl = chk.get("activation_url", "")
+            _slink = chk.get("short_link", "")
+            print(f"  {G}⭐ Activate Now — доступен к выдаче{RST}")
+            if _aurl:
+                if _slink and _slink != _aurl:
+                    print(f"  {G}   🔗 Короткая: {_slink}{RST}")
+                print(f"  {B}   Ссылка: {_aurl}{RST}")
+            else:
+                print(f"  {Y}   ⏳ Ссылка не получена{RST}")
+            print()
             not_activated.append(username)
 
         elif status == "explore_now":
