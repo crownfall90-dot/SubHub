@@ -7214,13 +7214,8 @@ def screen_install(auto: bool = False):
 def _notify_tg_update(commits: list[str]) -> None:
     """Отправляет уведомление об обновлении всем TG-подписчикам (синхронно)."""
     try:
-        import yaml as _y, urllib.request as _ur, urllib.parse as _up
-        cfg_path = Path(__file__).parent / "config.yaml"
-        if not cfg_path.exists():
-            return
-        with open(cfg_path, encoding="utf-8") as _f:
-            _cfg = _y.safe_load(_f) or {}
-        token = ((_cfg.get("telegram") or {}).get("token") or "").strip()
+        import urllib.request as _ur, urllib.parse as _up
+        token = _get_telegram_token()
         if not token or not TG_SUBSCRIBERS_FILE.exists():
             return
         subs = json.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8")) or {}
