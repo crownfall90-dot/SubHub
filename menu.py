@@ -1129,10 +1129,9 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
                 elif st == "explore_now":
                     print(f"  ║  {G}✅ Explore Now — аккаунт доступен, готов к работе{RST}")
                 elif st == "activate_now":
-                    print(f"  ║  {Y}⭐ Activate Now — оплата прошла, готов к выдаче!{RST}")
+                    print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                 elif st == "activated":
-                    print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — уже полностью активирован{RST}")
-                    print(f"  ║  {Y}⚠ Удалите профиль вручную через пункт 3 → П{RST}")
+                    print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — аккаунт уже активирован{RST}")
                 elif st == "not_logged_in":
                     print(f"  ║  {R}Не залогинен{RST}")
                 else:
@@ -1990,22 +1989,18 @@ def screen_profiles():
                             print(f"  ║  {R}Ошибка: {err}{RST}")
                             time.sleep(3)
                         elif st == "activated":
-                            print(f"  ║  {G}✅ АКТИВИРОВАНО{RST}" +
-                                  (f"  до {vt}" if vt else ""))
-                            ok_arch = _archive_profile(
-                                _path, used_ts=time.time(), black_valid_till=vt or "")
-                            if ok_arch:
-                                print(f"  ║  {M}Профиль сохранён в архив{RST}")
+                            print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — аккаунт уже активирован{RST}")
                         elif st == "activate_now":
+                            print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                             _act_url = chk.get("activation_url", "")
                             _short_url = chk.get("short_link", "")
                             if _act_url:
-                                print(f"  ║  {G}🔗 Ссылка активации получена:{RST}")
+                                print(f"  ║  {G}🔗 Ссылка активации:{RST}")
                                 if _short_url and _short_url != _act_url:
-                                    print(f"  ║  {G}Короткая ссылка: {_short_url}{RST}")
+                                    print(f"  ║  {G}Короткая: {_short_url}{RST}")
                                 print(f"  ║  {B}{_act_url}{RST}")
                             else:
-                                print(f"  ║  {Y}⏳ Activate Now — ссылка не получена{RST}")
+                                print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                         elif st == "explore_now":
                             print(f"  ║  {R}⚠ Explore Now — ещё не оплачен{RST}")
                             _msg = f"⚠ Профиль +91 {_un} ещё не оплачен (Explore Now)"
