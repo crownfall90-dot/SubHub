@@ -4944,62 +4944,79 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     # ── 3. Нажимаем Activate Now (refresh если Explore Now) ──────────────────
     _BTN_SEL = (
         "button:has-text('Activate now'), a:has-text('Activate now'), "
-        "[role='button']:has-text('Activate now'), span:has-text('Activate now')"
+        "[role='button']:has-text('Activate now'), span:has-text('Activate now'), "
+        "button:has-text('Activate Now'), a:has-text('Activate Now')"
     )
     _EXPLORE_SEL = (
         "button:has-text('Explore Now'), a:has-text('Explore Now'), "
         "[role='button']:has-text('Explore Now'), span:has-text('Explore Now')"
     )
+
+    async def _find_activate_btn_all_frames():
+        """Ищет кнопку Activate Now во всех фреймах страницы."""
+        for scroll_pos in [0.3, 0.5, 0.7, 1.0]:
+            try:
+                await black_page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {scroll_pos})")
+                await black_page.wait_for_timeout(400)
+            except Exception:
+                pass
+            for _fr in [black_page] + list(black_page.frames):
+                try:
+                    _btn = _fr.locator(_BTN_SEL).first
+                    if await _btn.count() > 0 and await _btn.is_visible():
+                        return _btn, _fr
+                except Exception:
+                    pass
+        return None, None
+
     activation_url = ""
-    for attempt in range(12):
-        # Прокручиваем страницу вниз — кнопка обычно в середине страницы
-        try:
-            await black_page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
-            await black_page.wait_for_timeout(600)
-        except Exception:
-            pass
+    for attempt in range(15):
+        _act_btn, _act_fr = await _find_activate_btn_all_frames()
 
-        activate_btn = black_page.locator(_BTN_SEL).first
-        activate_found = False
-        try:
-            activate_found = await activate_btn.count() > 0
-        except Exception:
-            pass
-
-        if activate_found:
+        if _act_btn:
             result["paid"] = True
             try:
-                await activate_btn.scroll_into_view_if_needed(timeout=5_000)
-                await black_page.wait_for_timeout(800)
-                # Слушаем новую вкладку И навигацию в текущей
+                await _act_btn.scroll_into_view_if_needed(timeout=3_000)
+                await black_page.wait_for_timeout(600)
+                _bb = await _act_btn.bounding_box()
                 _new_page_ev = ctx.wait_for_event("page", timeout=12_000)
-                await activate_btn.click()
+                if _bb and _bb["width"] > 0:
+                    await black_page.mouse.click(
+                        _bb["x"] + _bb["width"] / 2,
+                        _bb["y"] + _bb["height"] / 2,
+                    )
+                    print(f"  Activate Now → trusted click (попытка {attempt+1})")
+                else:
+                    await _act_btn.click()
+                    print(f"  Activate Now → .click() (попытка {attempt+1})")
                 try:
                     _new_tab = await _new_page_ev
                     await _new_tab.wait_for_load_state("domcontentloaded", timeout=12_000)
                     activation_url = _new_tab.url
                     print(f"  Activate Now → новая вкладка: {activation_url[:80]}")
                 except Exception:
-                    # Нет новой вкладки — навигация в той же странице
                     await black_page.wait_for_timeout(3_000)
-                    activation_url = black_page.url
+                    if black_page.url != "https://www.flipkart.com/flipkart-black-store":
+                        activation_url = black_page.url
                     print(f"  Activate Now → текущая страница: {activation_url[:80]}")
                 result["activation_url"] = activation_url
             except Exception as e:
                 print(f"  Ошибка клика Activate Now: {e}")
             break
 
-        # Проверяем Explore Now → обновляем
-        explore_btn = black_page.locator(_EXPLORE_SEL).first
+        # Explore Now → обновляем страницу
         explore_found = False
-        try:
-            explore_found = await explore_btn.count() > 0
-        except Exception:
-            pass
+        for _fr2 in [black_page] + list(black_page.frames):
+            try:
+                if await _fr2.locator(_EXPLORE_SEL).first.count() > 0:
+                    explore_found = True
+                    break
+            except Exception:
+                pass
 
         if explore_found:
             result["paid"] = True
-            print(f"  Найдена кнопка «Explore Now» — обновляю страницу (попытка {attempt+1}/12)...")
+            print(f"  «Explore Now» — обновляю страницу (попытка {attempt+1}/15)...")
             try:
                 await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
             except Exception:
