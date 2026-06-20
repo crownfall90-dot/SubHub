@@ -674,9 +674,9 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                     await page2.keyboard.type(otp_code, delay=100)
                 except Exception: pass
 
-            # Цикл ввода OTP и кликов на вход (до 60 секунд)
+            # Цикл ввода OTP и кликов на вход (до 120 секунд)
             login_success = False
-            deadline = time.time() + 60.0
+            deadline = time.time() + 120.0
             
             try:
                 await page2.wait_for_timeout(200)
@@ -743,8 +743,8 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 except Exception as _bgcke:
                     print(f"  [BG] Ошибка отправки кук в TG: {_bgcke}")
             else:
-                print(f"  [BG] Фоновый вход +91 {phone_10} не прошёл в течение 60 секунд")
-                await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (60 секунд истекло, сайт не перенаправил)")
+                print(f"  [BG] Фоновый вход +91 {phone_10} не прошёл в течение 120 секунд")
+                await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (120 секунд истекло, сайт не перенаправил)")
                 _bg_del_profile = True
         except Exception as e:
             print(f"  [BG] Ошибка при фоновом входе +91 {phone_10}: {e}")
