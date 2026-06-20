@@ -548,10 +548,14 @@ def cleanup_all_rentals_on_exit():
                         pass
                     err_str = str(e)
                     if "EARLY_CANCEL_DENIED" in err_str:
-                        # Ждём до конца lifetime номера, потом повторяем
-                        retry_at = r["rented_at"] + _lifetime
+                        now_mt = time.monotonic()
+                        # Первый приоритет: ждать до конца lifetime + 5 сек буфер
+                        retry_at = r["rented_at"] + _lifetime + 5
+                        if retry_at <= now_mt:
+                            # Lifetime уже прошёл, а отмена всё ещё denied — пробуем через 30 сек
+                            retry_at = now_mt + 30
                         r["next_attempt_at"] = retry_at
-                        wait_sec = max(1, int(retry_at - time.monotonic()))
+                        wait_sec = max(1, int(retry_at - now_mt))
                         print(f"  {_Y}[Выход⏳] +91 {r['phone_10']}: EARLY_CANCEL_DENIED, повтор через {wait_sec} сек{_RST}")
                     else:
                         r["next_attempt_at"] = time.monotonic() + 10
