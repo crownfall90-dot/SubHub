@@ -1563,6 +1563,19 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             if not status or status == "explore_now":
                 status = "explore_now"
 
+        # Если статус всё ещё не определён — проверяем наличие benefit-секции в HTML
+        # Ссылка /black-youtube-premium-benefit-faq-store = страница загрузилась корректно
+        # → без "membership valid till" = explore_now (не оплачен)
+        if not status:
+            try:
+                _html_check = await page.evaluate(
+                    "() => document.documentElement.innerHTML")
+                if "black-youtube-premium-benefit-faq-store" in _html_check:
+                    status = "explore_now"
+                    print(f"  {C}💳 Benefit-секция найдена → explore_now{RST}")
+            except Exception:
+                pass
+
         result["status"] = status or "unknown"
 
         # Если Activated — пробуем ещё раз найти valid_till
