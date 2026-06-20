@@ -173,15 +173,22 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             return
 
         _btn_url = (short_url if short_url and short_url != act_url else act_url) or ""
+        _has_short = short_url and short_url != act_url
         _till_line = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
+        _url_lines = ""
+        if act_url:
+            _url_lines += f"\n🔗 <a href=\"{act_url}\">{act_url}</a>"
+        if _has_short:
+            _url_lines += f"\n🔗 {short_url}"
+        if not act_url:
+            _url_lines = "\n⚠️ Ссылка активации не получена"
         msg = (
             f"🎉 <b>Activate Now — YouTube Premium</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
             f"📱 Профиль: <code>+91 {phone}</code>"
             f"{_till_line}"
+            f"{_url_lines}"
         )
-        if not act_url:
-            msg += "\n\n⚠️ Ссылка активации не получена"
 
         reply_markup = None
         if _btn_url:
