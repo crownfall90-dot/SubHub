@@ -425,12 +425,18 @@ def _menu_tg_bot_thread() -> None:
             vt = m.get("black_valid_till") or ""
             st = m.get("status") or ""
             is_active = (st in ("activated", "explore_now", "activate_now")) or bool(vt)
+            is_issued = bool(m.get("issued_ts"))
 
             if is_active:
+                _issued_btn = (
+                    {"text": "🟢 Выдан", "callback_data": "noop"}
+                    if is_issued else
+                    {"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}
+                )
                 return {"inline_keyboard": [
                     [{"text": f"📱 {phone}", "callback_data": "noop"}],
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
-                    [{"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}],
+                    [_issued_btn],
                     [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:active"}],
