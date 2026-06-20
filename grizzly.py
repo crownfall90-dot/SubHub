@@ -489,16 +489,39 @@ def cleanup_all_rentals_on_exit():
             print(f"  {_R}[Выход] Нет API-ключа для отмены номеров{_RST}")
             return
         client = GrizzlySMSClient(api_key, http_timeout=15)
-            
+
+        # Читаем number_lifetime_seconds из config.yaml (по умолчанию 180)
+        _lifetime = 180
+        try:
+            with open(_HERE / "config.yaml", encoding="utf-8") as _fh:
+                _lifetime = int((yaml.safe_load(_fh) or {}).get("grizzlysms", {}).get("number_lifetime_seconds", 180))
+        except Exception:
+            pass
+
         # Пытаемся отменить все номера
-        max_retries = 20  # Максимум ~200 секунд ожидания
+        max_retries = 60  # достаточно для ожидания lifetime + запасные попытки
         for retry in range(max_retries):
             remaining = {aid: r for aid, r in _RENTALS.items() if r["status"] in ("active", "failed")}
             if not remaining:
                 break
-                
+
             now = time.monotonic()
-            for aid, r in list(remaining.items()):
+            # Пропускаем номера у которых ещё не наступило время повтора
+            ready = {aid: r for aid, r in remaining.items()
+                     if now >= r.get("next_attempt_at", 0)}
+            if not ready:
+                # Спим до ближайшего next_attempt_at
+                wait_sec = min(r.get("next_attempt_at", now + 5) for r in remaining.values()) - now
+                wait_sec = max(1.0, min(wait_sec, 30.0))
+                phones = ", ".join(f"+91 {r['phone_10']}" for r in remaining.values())
+                print(f"  [Выход] Ждём {int(wait_sec)} сек до следующей попытки для: {phones}")
+                try:
+                    await asyncio.sleep(wait_sec)
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    break
+                continue
+
+            for aid, r in list(ready.items()):
                 age = now - r["rented_at"]
                 print(f"  [Выход] Попытка отмены +91 {r['phone_10']} (id={aid}), прошло {int(age)} сек...")
                 try:
@@ -523,17 +546,19 @@ def cleanup_all_rentals_on_exit():
                             continue
                     except Exception:
                         pass
-                    print(f"  {_R}[Выход⚠] Не удалось отменить +91 {r['phone_10']} ({e}). Ждём...{_RST}")
-            
+                    err_str = str(e)
+                    if "EARLY_CANCEL_DENIED" in err_str:
+                        # Ждём до конца lifetime номера, потом повторяем
+                        retry_at = r["rented_at"] + _lifetime
+                        r["next_attempt_at"] = retry_at
+                        wait_sec = max(1, int(retry_at - time.monotonic()))
+                        print(f"  {_Y}[Выход⏳] +91 {r['phone_10']}: EARLY_CANCEL_DENIED, повтор через {wait_sec} сек{_RST}")
+                    else:
+                        r["next_attempt_at"] = time.monotonic() + 10
+                        print(f"  {_R}[Выход⚠] Не удалось отменить +91 {r['phone_10']} ({e}). Повтор через 10 сек{_RST}")
+
             rem_list = [r for r in _RENTALS.values() if r["status"] in ("active", "failed")]
             if not rem_list:
-                break
-                
-            phones = ", ".join(f"+91 {r['phone_10']}" for r in rem_list)
-            print(f"  [Выход] Ожидание для: {phones}. Пауза 10 сек... (Ctrl+C для выхода)")
-            try:
-                await asyncio.sleep(10)
-            except (asyncio.CancelledError, KeyboardInterrupt):
                 break
                 
         await client.close()
