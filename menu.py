@@ -5898,7 +5898,37 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             except Exception:
                 body = ""
             if any(p in body for p in _OOS_PHRASES):
-                return False, f"OUT_OF_STOCK|{addr_msg}"
+                # Пробуем сменить адрес один раз перед сдачей
+                print(f"  {Y}⚠ Не доставляется — пробую сменить адрес...{RST}")
+                _oos_addr_ok = False
+                try:
+                    _try_btn = page.locator(
+                        "button:has-text('Try Another Address'), "
+                        "[role='button']:has-text('Try Another Address'), "
+                        "a:has-text('Try Another Address')"
+                    )
+                    if await _try_btn.count() > 0:
+                        await _try_btn.first.click()
+                        await page.wait_for_timeout(1_500)
+                except Exception:
+                    pass
+                if "changeShippingAddress" in page.url or "add/form" in page.url:
+                    _oos_addr_ok = await _fill_addr_bm()
+                if not _oos_addr_ok:
+                    return False, f"OUT_OF_STOCK|{addr_msg}"
+                # Перепроверяем после смены адреса
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=10_000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(500)
+                try:
+                    body = (await page.evaluate(
+                        "() => (document.body && document.body.textContent) || ''")).lower()
+                except Exception:
+                    body = ""
+                if any(p in body for p in _OOS_PHRASES):
+                    return False, f"OUT_OF_STOCK|{addr_msg}"
 
             reached = await _viewcheckout_to_payments(page)
 
