@@ -533,7 +533,10 @@ def cleanup_all_rentals_on_exit():
 
         # Пытаемся отменить все номера
         max_retries = 60  # достаточно для ожидания lifetime + запасные попытки
+        _cleanup_interrupted = False
         for retry in range(max_retries):
+            if _cleanup_interrupted:
+                break
             remaining = {aid: r for aid, r in _RENTALS.items() if r["status"] in ("active", "failed")}
             if not remaining:
                 break
@@ -548,13 +551,17 @@ def cleanup_all_rentals_on_exit():
                 wait_sec = max(1.0, min(wait_sec, 30.0))
                 phones = ", ".join(f"+91 {r['phone_10']}" for r in remaining.values())
                 print(f"  [Выход] Ждём {int(wait_sec)} сек до следующей попытки для: {phones}")
+                print(f"  {_Y}(Ctrl+C — прервать очистку){_RST}")
                 try:
                     await asyncio.sleep(wait_sec)
                 except (asyncio.CancelledError, KeyboardInterrupt):
+                    _cleanup_interrupted = True
                     break
                 continue
 
             for aid, r in list(ready.items()):
+                if _cleanup_interrupted:
+                    break
                 age = now - r["rented_at"]
                 print(f"  [Выход] Попытка отмены +91 {r['phone_10']} (id={aid}), прошло {int(age)} сек...")
                 try:
@@ -563,6 +570,9 @@ def cleanup_all_rentals_on_exit():
                     r["status"] = "cancelled"
                     await _tg_cancel_notify(r["phone_10"], "Отменён при выходе из скрипта")
                     _RENTALS.pop(aid, None)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    _cleanup_interrupted = True
+                    break
                 except Exception as e:
                     # Проверяем, не пришёл ли код в последний момент
                     try:
