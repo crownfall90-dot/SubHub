@@ -6738,37 +6738,81 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 # ── 3c. Вводим OTP и завершаем вход ──────────────────────────
                 import random as _r2
                 print(f"  {DIM}Поиск поля ввода OTP...{RST}")
-                try:
-                    otp_el = page.locator(_OTP_SEL).first
-                    await otp_el.wait_for(state="visible", timeout=15_000)
+
+                # Ищем OTP-поле во всех фреймах (может быть в cross-origin iframe)
+                _otp_el_found = None
+                _otp_page_ref = page
+                _otp_search_dl = asyncio.get_event_loop().time() + 15
+                while asyncio.get_event_loop().time() < _otp_search_dl:
+                    for _fr in [page] + list(page.frames):
+                        try:
+                            _c = _fr.locator(_OTP_SEL).first
+                            if await _c.count() > 0 and await _c.is_visible():
+                                _otp_el_found = _c
+                                _otp_page_ref = page  # mouse.click всегда на page
+                                break
+                        except Exception:
+                            pass
+                    if _otp_el_found:
+                        break
+                    await page.wait_for_timeout(300)
+
+                if _otp_el_found:
                     print(f"  {DIM}Поле ввода OTP найдено. Ввожу код {otp_code}...{RST}")
-                    await _human_click(page, otp_el, before=_r2.uniform(0.1, 0.2))
-                    await _human_type(page, otp_code)
-                    await asyncio.sleep(0.3)
-                except Exception as otp_err:
-                    print(f"  {R}Ошибка при вводе OTP: {otp_err}{RST}")
-                    # Резервный ввод с клавиатуры
+                    try:
+                        _bb_otp = await _otp_el_found.bounding_box()
+                        if _bb_otp:
+                            await page.mouse.click(
+                                _bb_otp["x"] + _bb_otp["width"] / 2,
+                                _bb_otp["y"] + _bb_otp["height"] / 2,
+                            )
+                        else:
+                            await _otp_el_found.click()
+                        await _otp_el_found.fill(otp_code)
+                        await asyncio.sleep(0.3)
+                    except Exception as otp_err:
+                        print(f"  {R}Ошибка при вводе OTP: {otp_err}{RST}")
+                else:
+                    print(f"  {R}Поле ввода OTP не найдено, пробую keyboard...{RST}")
                     try:
                         await page.keyboard.type(otp_code, delay=100)
-                    except Exception: pass
+                    except Exception:
+                        pass
 
+                # Ищем кнопку VERIFY во всех фреймах
                 otp_submit_sel = (
                     "button:has-text('VERIFY'), button:has-text('Verify'), "
                     "button:has-text('LOGIN'), button:has-text('CONTINUE'), "
                     "button:has-text('Continue'), "
                     "button:has-text('Signup'), button:has-text('Sign up'), button:has-text('SIGNUP')"
                 )
-                try:
-                    otp_btn = page.locator(otp_submit_sel).last
-                    await otp_btn.wait_for(state="visible", timeout=5000)
-                    print(f"  {DIM}Нажимаю кнопку подтверждения OTP (Signup/Verify)...{RST}")
-                    await _human_click(page, otp_btn, before=_r2.uniform(0.1, 0.25))
-                except Exception as btn_err:
-                    print(f"  {Y}Предупреждение: Кнопка подтверждения OTP не нажата: {btn_err}{RST}")
-                    # Попробуем нажать Enter
+                _otp_btn_clicked = False
+                for _fr in [page] + list(page.frames):
                     try:
-                        await page.keyboard.press("Enter")
-                    except Exception: pass
+                        _ob = _fr.locator(otp_submit_sel).first
+                        if await _ob.is_visible():
+                            _obb = await _ob.bounding_box()
+                            if _obb:
+                                await page.mouse.click(
+                                    _obb["x"] + _obb["width"] / 2,
+                                    _obb["y"] + _obb["height"] / 2,
+                                )
+                            else:
+                                await _ob.click()
+                            print(f"  {DIM}Нажимаю кнопку подтверждения OTP (Signup/Verify)...{RST}")
+                            _otp_btn_clicked = True
+                            break
+                    except Exception:
+                        pass
+                if not _otp_btn_clicked:
+                    # Фоллбэк: Enter на найденном поле или глобальный Enter
+                    try:
+                        if _otp_el_found:
+                            await _otp_el_found.press("Enter")
+                        else:
+                            await page.keyboard.press("Enter")
+                    except Exception:
+                        pass
                 await page.wait_for_timeout(2_000)
 
                 # Ждём редирект — до 10 секунд
