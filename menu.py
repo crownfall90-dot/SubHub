@@ -1542,6 +1542,68 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             except Exception:
                 pass
 
+        # При activate_now — нажимаем кнопку и получаем ссылку активации
+        if result["status"] == "activate_now":
+            _ACT_SEL = (
+                "button:has-text('Activate now'), a:has-text('Activate now'), "
+                "[role='button']:has-text('Activate now'), span:has-text('Activate now')"
+            )
+            _act_btn = None
+            # Ищем во всех фреймах
+            for _afr in [page] + list(page.frames):
+                try:
+                    _c = _afr.locator(_ACT_SEL).first
+                    if await _c.count() > 0 and await _c.is_visible():
+                        _act_btn = _c
+                        break
+                except Exception:
+                    pass
+            if _act_btn is None:
+                # Скролл вниз и ещё попытка
+                try:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.5)")
+                    await page.wait_for_timeout(800)
+                except Exception:
+                    pass
+                for _afr in [page] + list(page.frames):
+                    try:
+                        _c = _afr.locator(_ACT_SEL).first
+                        if await _c.count() > 0 and await _c.is_visible():
+                            _act_btn = _c
+                            break
+                    except Exception:
+                        pass
+            if _act_btn:
+                try:
+                    await _act_btn.scroll_into_view_if_needed(timeout=3_000)
+                    await page.wait_for_timeout(500)
+                    _bb = await _act_btn.bounding_box()
+                    # Слушаем новую вкладку
+                    _new_page_ev = ctx.wait_for_event("page", timeout=10_000)
+                    if _bb:
+                        await page.mouse.click(
+                            _bb["x"] + _bb["width"] / 2,
+                            _bb["y"] + _bb["height"] / 2,
+                        )
+                    else:
+                        await _act_btn.click()
+                    print(f"  Нажата кнопка «Activate now»")
+                    try:
+                        _new_tab = await _new_page_ev
+                        await _new_tab.wait_for_load_state("domcontentloaded", timeout=12_000)
+                        result["activation_url"] = _new_tab.url
+                        print(f"  Ссылка активации: {_new_tab.url[:120]}")
+                    except Exception:
+                        # Нет новой вкладки — навигация в той же странице
+                        await page.wait_for_timeout(3_000)
+                        if page.url != "https://www.flipkart.com/flipkart-black-store":
+                            result["activation_url"] = page.url
+                            print(f"  Ссылка активации: {page.url[:120]}")
+                except Exception as _ae:
+                    print(f"  Ошибка клика Activate now: {_ae}")
+            else:
+                print(f"  {Y}Кнопка «Activate now» не найдена на странице{RST}")
+
         # При unknown — скриншот + дамп текста для диагностики
         if result["status"] == "unknown":
             try:
@@ -1884,7 +1946,12 @@ def screen_profiles():
                             if ok_arch:
                                 print(f"  ║  {M}Профиль сохранён в архив{RST}")
                         elif st == "activate_now":
-                            print(f"  ║  {Y}⏳ Activate Now — нужно нажать вручную{RST}")
+                            _act_url = chk.get("activation_url", "")
+                            if _act_url:
+                                print(f"  ║  {G}🔗 Ссылка активации получена:{RST}")
+                                print(f"  ║  {B}{_act_url}{RST}")
+                            else:
+                                print(f"  ║  {Y}⏳ Activate Now — ссылка не получена{RST}")
                         elif st == "explore_now":
                             print(f"  ║  {R}⚠ Explore Now — ещё не оплачен{RST}")
                             _msg = f"⚠ Профиль +91 {_un} ещё не оплачен (Explore Now)"
