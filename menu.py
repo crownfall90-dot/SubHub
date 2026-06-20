@@ -172,7 +172,6 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
         if not chat_ids:
             return
 
-        _btn_url = (short_url if short_url and short_url != act_url else act_url) or ""
         _has_short = short_url and short_url != act_url
         _till_line = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
         _url_lines = ""
@@ -189,14 +188,12 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             f"{_till_line}"
             f"{_url_lines}"
         )
-
-        reply_markup = None
-        if _btn_url:
-            reply_markup = _j.dumps({
-                "inline_keyboard": [[
-                    {"text": f"👤 +91 {phone}  |  Перейти к профилю", "url": _btn_url}
-                ]]
-            })
+        reply_markup = _j.dumps({
+            "inline_keyboard": [[
+                {"text": f"👤 +91 {phone}  |  Перейти к профилю",
+                 "callback_data": f"profile:menu:{phone}:active"}
+            ]]
+        })
 
         for cid in chat_ids:
             try:
@@ -205,9 +202,8 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
                     "text": msg,
                     "parse_mode": "HTML",
                     "disable_web_page_preview": "true",
+                    "reply_markup": reply_markup,
                 }
-                if reply_markup:
-                    payload["reply_markup"] = reply_markup
                 data = _j.dumps(payload).encode("utf-8")
                 req = _ur.Request(
                     f"https://api.telegram.org/bot{tg_token}/sendMessage",

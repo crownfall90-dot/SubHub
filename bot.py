@@ -429,6 +429,7 @@ def _menu_tg_bot_thread() -> None:
             if is_active:
                 return {"inline_keyboard": [
                     [{"text": f"📱 {phone}", "callback_data": "noop"}],
+                    [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
                     [{"text": "🔗 Короткая ссылка", "callback_data": f"profile:shortlink:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
                     [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
