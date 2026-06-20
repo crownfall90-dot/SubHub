@@ -787,14 +787,23 @@ def _menu_tg_bot_thread() -> None:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 err_safe = escape_html(err)
 
-                msgs = {
-                    "activated":    f"✨ <b>{phone}</b> — АКТИВИРОВАН\nДо: {vt}",
-                    "activate_now": f"⭐ <b>{phone}</b> — Activate Now (готов к выдаче)",
-                    "explore_now":  f"✅ <b>{phone}</b> — Explore Now",
-                    "not_logged_in":f"🔒 <b>{phone}</b> — не авторизован",
-                }
-                await _send(cid, msgs.get(st,
-                    f"❓ <b>{phone}</b> — {st}" + (f"\n{err_safe}" if err_safe else "")), parse_mode="HTML")
+                if st == "activate_now":
+                    act_url = (result.get("activation_url") or "") if isinstance(result, dict) else ""
+                    short   = (result.get("short_link")    or "") if isinstance(result, dict) else ""
+                    msg = f"⭐ <b>{phone}</b> — Activate Now (готов к выдаче)"
+                    if act_url:
+                        msg += f"\n\n🔗 <a href=\"{act_url}\">{act_url}</a>"
+                    if short and short != act_url:
+                        msg += f"\n🔗 {short}"
+                    await _send(cid, msg, parse_mode="HTML", disable_web_page_preview=True)
+                else:
+                    msgs = {
+                        "activated":    f"✨ <b>{phone}</b> — АКТИВИРОВАН\nДо: {vt}",
+                        "explore_now":  f"✅ <b>{phone}</b> — Explore Now",
+                        "not_logged_in":f"🔒 <b>{phone}</b> — не авторизован",
+                    }
+                    await _send(cid, msgs.get(st,
+                        f"❓ <b>{phone}</b> — {st}" + (f"\n{err_safe}" if err_safe else "")), parse_mode="HTML")
             except Exception as e:
                 def escape_html(t: str) -> str:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
