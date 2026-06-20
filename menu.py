@@ -1643,125 +1643,46 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             except Exception:
                 pass
 
-        # При activate_now — нажимаем кнопку и получаем ссылку активации
+        # При activate_now — JS-клик по PNG-кнопке (img 1200x213) → ссылка активации
         if result["status"] == "activate_now":
-            _ACT_SEL = (
-                "[aria-label='Activate Now'], [aria-label='Activate now'], "
-                "button:has-text('Activate now'), a:has-text('Activate now'), "
-                "[role='button']:has-text('Activate now'), span:has-text('Activate now')"
-            )
-            _act_btn = None
-            # Ищем во всех фреймах
-            for _afr in [page] + list(page.frames):
-                try:
-                    _c = _afr.locator(_ACT_SEL).first
-                    if await _c.count() > 0 and await _c.is_visible():
-                        _act_btn = _c
-                        break
-                except Exception:
-                    pass
-            if _act_btn is None:
-                # Скролл вниз и ещё попытка
-                for _scroll in [0.4, 0.6, 0.8]:
+            _CLICK_JS = """() => {
+                for (const img of document.querySelectorAll('img[width="1200"]')) {
+                    if (img.getAttribute('height') !== '213') continue;
+                    if (!(img.src||'').includes('/promos/')) continue;
+                    let el = img.parentElement;
+                    for (let i = 0; i < 6 && el; i++) {
+                        if (el.style && el.style.cursor === 'pointer') {
+                            el.scrollIntoView({behavior:'instant', block:'center'});
+                            el.click(); return 'img-1200x213';
+                        }
+                        el = el.parentElement;
+                    }
+                    img.scrollIntoView({behavior:'instant', block:'center'});
+                    img.click(); return 'img-direct';
+                }
+                return null;
+            }"""
+            try:
+                _new_pg = ctx.wait_for_event("page", timeout=10_000)
+                _method = await page.evaluate(_CLICK_JS)
+                if _method:
+                    print(f"  {G}✅ Кнопка «Activate now» нажата{RST}")
                     try:
-                        await page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {_scroll})")
-                        await page.wait_for_timeout(600)
+                        _tab = await _new_pg
+                        await _tab.wait_for_load_state("domcontentloaded", timeout=12_000)
+                        result["activation_url"] = _tab.url
                     except Exception:
-                        pass
-                    for _afr in [page] + list(page.frames):
-                        try:
-                            _c = _afr.locator(_ACT_SEL).first
-                            if await _c.count() > 0 and await _c.is_visible():
-                                _act_btn = _c
-                                break
-                        except Exception:
-                            pass
-                    if _act_btn:
-                        break
-            if _act_btn:
-                try:
-                    await _act_btn.scroll_into_view_if_needed(timeout=3_000)
-                    await page.wait_for_timeout(500)
-                    _bb = await _act_btn.bounding_box()
-                    # Слушаем новую вкладку
-                    _new_page_ev = ctx.wait_for_event("page", timeout=10_000)
-                    if _bb:
-                        await page.mouse.click(
-                            _bb["x"] + _bb["width"] / 2,
-                            _bb["y"] + _bb["height"] / 2,
-                        )
-                    else:
-                        await _act_btn.click()
-                    print(f"  Нажата кнопка «Activate now»")
-                    try:
-                        _new_tab = await _new_page_ev
-                        await _new_tab.wait_for_load_state("domcontentloaded", timeout=12_000)
-                        result["activation_url"] = _new_tab.url
-                        print(f"  Ссылка активации: {_new_tab.url[:120]}")
-                    except Exception:
-                        # Нет новой вкладки — навигация в той же странице
                         await page.wait_for_timeout(3_000)
                         if "flipkart-black-store" not in page.url:
                             result["activation_url"] = page.url
-                            print(f"  Ссылка активации: {page.url[:120]}")
-                except Exception as _ae:
-                    print(f"  Ошибка клика Activate now: {_ae}")
-            else:
-                # JS fallback — ищем cursor:pointer div с картинкой (кнопка — PNG-изображение)
-                print(f"  {Y}Локатор не нашёл кнопку — пробую JS-клик...{RST}")
-                try:
-                    _new_page_ev2 = ctx.wait_for_event("page", timeout=10_000)
-                    _js_ok = await page.evaluate("""() => {
-                        for (const el of document.querySelectorAll('[aria-label]')) {
-                            const al = (el.getAttribute('aria-label') || '').trim();
-                            if (al === 'Activate Now' || al === 'Activate now') {
-                                el.scrollIntoView({behavior:'instant', block:'center'});
-                                el.click(); return 'aria';
-                            }
-                        }
-                        for (const img of document.querySelectorAll('img[width="1200"]')) {
-                            if (img.getAttribute('height') !== '213') continue;
-                            if (!(img.src||'').includes('/promos/')) continue;
-                            let el = img.parentElement;
-                            for (let i = 0; i < 6 && el; i++) {
-                                if (el.style && el.style.cursor === 'pointer') {
-                                    el.scrollIntoView({behavior:'instant', block:'center'});
-                                    el.click(); return 'img-1200x213';
-                                }
-                                el = el.parentElement;
-                            }
-                            img.scrollIntoView({behavior:'instant', block:'center'});
-                            img.click(); return 'img-direct';
-                        }
-                        const cands = [...document.querySelectorAll('div[style*="cursor"]')]
-                            .filter(el => {
-                                if (el.style.cursor !== 'pointer') return false;
-                                const r = el.getBoundingClientRect();
-                                return r.width > 200 && r.height > 50 && r.top > 200 && el.querySelector('img');
-                            })
-                            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-                        if (cands.length > 0) {
-                            cands[0].scrollIntoView({behavior:'instant', block:'center'});
-                            cands[0].click(); return 'cursor';
-                        }
-                        return null;
-                    }""")
-                    if _js_ok:
-                        print(f"  JS-клик Activate now: {_js_ok}")
-                        try:
-                            _new_tab2 = await _new_page_ev2
-                            await _new_tab2.wait_for_load_state("domcontentloaded", timeout=12_000)
-                            result["activation_url"] = _new_tab2.url
-                            print(f"  Ссылка активации: {_new_tab2.url[:120]}")
-                        except Exception:
-                            await page.wait_for_timeout(3_000)
-                            if "flipkart-black-store" not in page.url:
-                                result["activation_url"] = page.url
-                                print(f"  Ссылка активации: {page.url[:120]}")
+                    if result.get("activation_url"):
+                        print(f"  {G}🔗 Ссылка: {result['activation_url'][:80]}...{RST}")
                     else:
-                        print(f"  {Y}Кнопка «Activate now» не найдена на странице{RST}")
-                except Exception as _je:
-                    print(f"  {Y}JS-клик не удался: {_je}{RST}")
+                        print(f"  {Y}⚠ Ссылка не получена после клика{RST}")
+                else:
+                    print(f"  {Y}⚠ Кнопка «Activate now» не найдена на странице{RST}")
+            except Exception as _je:
+                print(f"  {Y}⚠ Ошибка клика: {_je}{RST}")
 
             # Сокращаем ссылку через clck.ru
             if result.get("activation_url"):
@@ -5139,29 +5060,8 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         result["paid"] = True
         result["button_seen"] = f"Membership valid till {valid_till}"
 
-    # ── 3. Нажимаем Activate Now (refresh если Explore Now) ──────────────────
-    _BTN_SEL = (
-        "[aria-label='Activate Now'], [aria-label='Activate now'], "
-        "button:has-text('Activate now'), a:has-text('Activate now'), "
-        "[role='button']:has-text('Activate now'), span:has-text('Activate now'), "
-        "button:has-text('Activate Now'), a:has-text('Activate Now')"
-    )
-    _EXPLORE_SEL = (
-        "[aria-label='Explore Now'], [aria-label='Explore now'], "
-        "button:has-text('Explore Now'), a:has-text('Explore Now'), "
-        "[role='button']:has-text('Explore Now'), span:has-text('Explore Now')"
-    )
-
+    # ── 3. Нажимаем Activate Now (JS-клик, refresh если Explore Now) ───────────
     _ACTIVATE_JS = """() => {
-        // 1. aria-label (самый надёжный)
-        for (const el of document.querySelectorAll('[aria-label]')) {
-            const al = (el.getAttribute('aria-label') || '').trim();
-            if (al === 'Activate Now' || al === 'Activate now') {
-                el.scrollIntoView({behavior:'instant', block:'center'});
-                el.click(); return 'aria';
-            }
-        }
-        // 2. Promos-картинка 1200x213 (конкретные размеры кнопки Activate Now)
         for (const img of document.querySelectorAll('img[width="1200"]')) {
             if (img.getAttribute('height') !== '213') continue;
             if (!(img.src||'').includes('/promos/')) continue;
@@ -5176,48 +5076,17 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
             img.scrollIntoView({behavior:'instant', block:'center'});
             img.click(); return 'img-direct';
         }
-        // 3. cursor:pointer div с картинкой (общий fallback)
-        const cands = [...document.querySelectorAll('div[style*="cursor"]')]
-            .filter(el => {
-                if (el.style.cursor !== 'pointer') return false;
-                const r = el.getBoundingClientRect();
-                return r.width > 200 && r.height > 50 && r.top > 200 && el.querySelector('img');
-            })
-            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-        if (cands.length > 0) {
-            cands[0].scrollIntoView({behavior:'instant', block:'center'});
-            cands[0].click(); return 'cursor';
-        }
         return null;
     }"""
 
-    async def _find_activate_btn_all_frames():
-        """Ищет кнопку Activate Now во всех фреймах страницы."""
-        for scroll_pos in [0.3, 0.5, 0.7, 1.0]:
-            try:
-                await black_page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {scroll_pos})")
-                await black_page.wait_for_timeout(400)
-            except Exception:
-                pass
-            for _fr in [black_page] + list(black_page.frames):
-                try:
-                    _btn = _fr.locator(_BTN_SEL).first
-                    if await _btn.count() > 0 and await _btn.is_visible():
-                        return _btn, _fr
-                except Exception:
-                    pass
-        return None, None
-
     async def _click_activate_now_js() -> str | None:
-        """JS-клик по Activate Now (aria-label / cursor:pointer img). Возвращает activation_url или None."""
+        """JS-клик по Activate Now (PNG img 1200x213). Возвращает activation_url или None."""
         try:
-            await black_page.evaluate("window.scrollTo(0, 0)")
-            await black_page.wait_for_timeout(300)
             _new_page_ev = ctx.wait_for_event("page", timeout=10_000)
             _method = await black_page.evaluate(_ACTIVATE_JS)
             if not _method:
                 return None
-            print(f"  Activate Now → JS-клик ({_method})")
+            print(f"  {G}✅ Activate Now нажата ({_method}){RST}")
             try:
                 _tab = await _new_page_ev
                 await _tab.wait_for_load_state("domcontentloaded", timeout=12_000)
@@ -5227,88 +5096,47 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                 if "flipkart-black-store" not in black_page.url:
                     return black_page.url
         except Exception as _je:
-            print(f"  JS-клик ошибка: {_je}")
+            print(f"  {Y}⚠ JS-клик ошибка: {_je}{RST}")
         return None
 
     activation_url = ""
     for attempt in range(15):
-        _act_btn, _act_fr = await _find_activate_btn_all_frames()
+        # Скролл для загрузки lazy-элементов
+        for _sp in [0.3, 0.6, 1.0, 0.0]:
+            try:
+                await black_page.evaluate(f"window.scrollTo(0, document.body.scrollHeight*{_sp})")
+                await black_page.wait_for_timeout(300)
+            except Exception:
+                pass
 
-        if _act_btn:
+        # Пробуем JS-клик по Activate Now
+        _url_js = await _click_activate_now_js()
+        if _url_js:
             result["paid"] = True
             result["button_seen"] = "Activate Now"
-            try:
-                await _act_btn.scroll_into_view_if_needed(timeout=3_000)
-                await black_page.wait_for_timeout(600)
-                _bb = await _act_btn.bounding_box()
-                _new_page_ev = ctx.wait_for_event("page", timeout=12_000)
-                if _bb and _bb["width"] > 0:
-                    await black_page.mouse.click(
-                        _bb["x"] + _bb["width"] / 2,
-                        _bb["y"] + _bb["height"] / 2,
-                    )
-                    print(f"  Activate Now → trusted click (попытка {attempt+1})")
-                else:
-                    await _act_btn.click()
-                    print(f"  Activate Now → .click() (попытка {attempt+1})")
-                try:
-                    _new_tab = await _new_page_ev
-                    await _new_tab.wait_for_load_state("domcontentloaded", timeout=12_000)
-                    activation_url = _new_tab.url
-                    print(f"  Activate Now → новая вкладка: {activation_url[:80]}")
-                except Exception:
-                    await black_page.wait_for_timeout(3_000)
-                    if "flipkart-black-store" not in black_page.url:
-                        activation_url = black_page.url
-                    print(f"  Activate Now → текущая страница: {activation_url[:80]}")
-                result["activation_url"] = activation_url
-            except Exception as e:
-                print(f"  Ошибка клика Activate Now: {e}")
-            if not activation_url:
-                # Локатор нашёл но клик не дал URL — пробуем JS
-                activation_url = await _click_activate_now_js() or ""
-                result["activation_url"] = activation_url
+            activation_url = _url_js
+            result["activation_url"] = activation_url
+            print(f"  {G}🔗 Ссылка: {activation_url[:80]}...{RST}")
             break
-        elif attempt == 0:
-            # Первая попытка: пробуем JS-клик сразу
-            _url_js = await _click_activate_now_js()
-            if _url_js:
+
+        # Кнопка не найдена — проверяем Explore Now (reload)
+        try:
+            _hp = await black_page.evaluate("() => document.documentElement.innerHTML")
+            if "black-youtube-premium-benefit-faq-store" in _hp:
                 result["paid"] = True
-                result["button_seen"] = "Activate Now (JS)"
-                activation_url = _url_js
-                result["activation_url"] = activation_url
-                print(f"  Activate Now → URL: {activation_url[:80]}")
-                break
+                result["button_seen"] = "Explore Now"
+                print(f"  «Explore Now» — обновляю страницу ({attempt+1}/15)...")
+                try:
+                    await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
+                except Exception:
+                    pass
+                await black_page.wait_for_timeout(3_000)
+                continue
+        except Exception:
+            pass
 
-        # Explore Now → обновляем страницу
-        explore_found = False
-        for _fr2 in [black_page] + list(black_page.frames):
-            try:
-                if await _fr2.locator(_EXPLORE_SEL).first.count() > 0:
-                    explore_found = True
-                    break
-            except Exception:
-                pass
-        # HTML fallback для Explore Now (кнопка тоже PNG-изображение)
-        if not explore_found:
-            try:
-                _hp = await black_page.evaluate("() => document.documentElement.innerHTML")
-                if "black-youtube-premium-benefit-faq-store" in _hp:
-                    explore_found = True
-            except Exception:
-                pass
-
-        if explore_found:
-            result["paid"] = True
-            result["button_seen"] = "Explore Now"
-            print(f"  «Explore Now» — обновляю страницу (попытка {attempt+1}/15)...")
-            try:
-                await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
-            except Exception:
-                pass
-            await black_page.wait_for_timeout(3_000)
-        else:
-            await black_page.wait_for_timeout(2_000)
+        print(f"  Ожидание кнопки Activate Now... ({attempt+1}/15)")
+        await black_page.wait_for_timeout(2_000)
 
     # ── 4. Сокращаем через clck.ru ────────────────────────────────────────────
     short_link = activation_url
