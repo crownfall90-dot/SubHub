@@ -29,7 +29,9 @@ from grizzly_sms import (
 # Statistics
 # ─────────────────────────────────────────────────────────────────────────────
 
-STATS_FILE = Path("tg_stats.json")
+_DATA = Path(__file__).parent / "data"
+_DATA.mkdir(exist_ok=True)
+STATS_FILE = _DATA / "tg_stats.json"
 
 def _stats_empty() -> dict:
     from datetime import datetime
@@ -2728,7 +2730,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 logger.warning(f"Ошибка при очистке профилей: {_e}")
 
     tracker.print_summary()
-    tracker.save_json()
+    tracker.save_json(str(_DATA / "results.json"))
 
 
 import os
