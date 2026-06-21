@@ -1047,7 +1047,7 @@ def screen_proxy():
             print(f"  {G}✅ Добавлено: {server}{RST}")
             time.sleep(1.2)
 
-        elif act in ("У", "Y"):
+        elif act == "У":
             if not display:
                 print(f"  {R}Список пуст{RST}")
                 time.sleep(3)
@@ -1951,17 +1951,21 @@ def screen_check_all_activated():
             unknown_list.append(username)
 
         elif status == "activated":
-            print(f"  {M}✨ Activated{' до ' + valid_till if valid_till else ''} — аккаунт активирован, переношу в архив...{RST}")
-            _arch_ok = _archive_profile(
-                p["path"],
-                used_ts=time.time(),
-                activation_status="activated",
-                valid_till=valid_till,
-            )
-            if _arch_ok:
-                print(f"  {G}✔ Архивирован{RST}\n")
+            print(f"  {M}✨ Activated{' до ' + valid_till if valid_till else ''} — аккаунт активирован{RST}")
+            try:
+                _confirm_arch = input(f"  Перенести в архив? [Д/Н]: ").strip().lower()
+            except KeyboardInterrupt:
+                _confirm_arch = "н"
+            if _confirm_arch == "д":
+                _arch_ok = _archive_profile(
+                    p["path"],
+                    used_ts=time.time(),
+                    activation_status="activated",
+                    valid_till=valid_till,
+                )
+                print(f"  {G}✔ Архивирован{RST}\n" if _arch_ok else f"  {Y}⚠ Не удалось архивировать{RST}\n")
             else:
-                print(f"  {Y}⚠ Не удалось архивировать{RST}\n")
+                print(f"  {DIM}Пропущено{RST}\n")
             not_activated.append(username)
 
         elif status == "activate_now":
@@ -2036,16 +2040,16 @@ def screen_profiles():
         # Кнопка удаления профилей без данных (если есть)
         no_data_count = sum(1 for p in profiles if p.get("login_ts") is None)
         if no_data_count:
-            opt("X", f"Удалить все {no_data_count} профиля без данных (нет мета-файла)", R)
+            opt("9", f"Удалить все {no_data_count} профиля без данных (нет мета-файла)", R)
         print()
         opt("0", "Назад", R)
         print()
 
-        choice = input(f"  {BLD}Выберите профиль [1-{len(profiles)}], X или 0: {RST}").strip()
+        choice = input(f"  {BLD}Выберите профиль [1-{len(profiles)}], 9 или 0: {RST}").strip()
         if choice == "0" or choice == "":
             return
 
-        if choice.upper() == "X" and no_data_count:
+        if choice == "9" and no_data_count:
             import shutil as _sh, os as _os, stat as _stat
             def _rm_err(func, path, exc_info):
                 try:
@@ -2096,7 +2100,7 @@ def screen_profiles():
                 print(f"  Выдан    : {B}{selected['issued_str']}{RST}")
             print()
 
-            opt("1 / O", "Открыть в Chrome  →  flipkart-black-store", C)
+            opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)
             opt("П / 7", "Проверить активацию  (black-store → Activated?)", G)
             opt("4",     "Открыть страницу покупки Black Membership", Y)
             opt("5",     "Заполнить рандомный адрес доставки (Индия)", Y)
@@ -2106,7 +2110,7 @@ def screen_profiles():
                 opt("2 / В", "Пометить «Выдан»        (активен, передан клиенту)", B)
             opt("3 / И", "Пометить «Использован»   (завершён, перенести в архив)", M)
             opt("К",     "Восстановить сессию из JSON куков (cookies_backup/)", C)
-            opt("D",     "Удалить профиль навсегда", R)
+            opt("9",     "Удалить профиль навсегда", R)
             print()
             opt("0", "Назад к списку", R)
             print()
@@ -2119,7 +2123,7 @@ def screen_profiles():
             # Проверка залогиненности перед действиями (кроме пометок, удаления, восстановления).
             # Для ВЫДАННЫХ профилей — НЕ удаляем при истёкшей сессии:
             # клиент мог уже активировать, а куки истечь. Пусть пользователь сам решит.
-            if action not in ("2", "В", "B", "3", "И", "I", "D", "К", "K", "П", "7"):
+            if action not in ("2", "В", "3", "И", "9", "К", "П", "7"):
                 print(f"  {DIM}Проверяю сессию профиля +91 {selected['username']}...{RST}")
                 import shutil as _sh_lck
                 _logged_in = asyncio.run(_flipkart_is_logged_in(selected["path"]))
@@ -2153,14 +2157,8 @@ def screen_profiles():
                             print(f"  ║  {R}Ошибка: {err}{RST}")
                             time.sleep(3)
                         elif st == "activated":
-                            print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — переношу в архив...{RST}")
-                            _ok = _archive_profile(
-                                _path,
-                                used_ts=time.time(),
-                                activation_status="activated",
-                                valid_till=vt or "",
-                            )
-                            print(f"  ║  {G}✔ Архивирован{RST}" if _ok else f"  ║  {Y}⚠ Не удалось архивировать{RST}")
+                            print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — аккаунт активирован{RST}")
+                            print(f"  ║  {DIM}Для архива выберите пункт «3 / И» в меню профиля{RST}")
                         elif st == "activate_now":
                             print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                             _act_url = chk.get("activation_url", "")
@@ -2255,7 +2253,7 @@ def screen_profiles():
                     print(f"\n  {R}Неверный выбор.{RST}")
                     time.sleep(2)
 
-            elif action in ("1", "O"):
+            elif action == "1":
                 ok = open_chrome(selected["path"])
                 if ok:
                     print(f"\n  {G}Chrome запущен.{RST}  "
@@ -2354,7 +2352,7 @@ def screen_profiles():
                 pause()
                 break
 
-            elif action == "D":
+            elif action == "9":
                 cls()
                 header("УДАЛЕНИЕ ПРОФИЛЯ", R)
                 print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
@@ -2363,7 +2361,7 @@ def screen_profiles():
                 print(f"  {R}{BLD}Профиль будет удалён безвозвратно!{RST}")
                 print()
                 confirm = input(f"  {BLD}Подтвердить удаление? [Д/Н]: {RST}").strip().lower()
-                if confirm in ("д", "y"):
+                if confirm == "д":
                     deleted = False
                     try:
                         shutil.rmtree(str(selected["path"]))
@@ -2825,18 +2823,18 @@ def screen_fill_address():
         print()
         print(f"  {DIM}⚠  Закройте Chrome для этого профиля перед запуском!{RST}")
         print()
-        opt("A", "Заполнить ВСЕ профили", G)
+        opt("А", "Заполнить ВСЕ профили", G)
         opt("0", "Назад", R)
         print()
 
         choice = input(
-            f"  {BLD}Выберите профиль [1-{len(profiles)}] или A/0: {RST}"
+            f"  {BLD}Выберите профиль [1-{len(profiles)}] или А/0: {RST}"
         ).strip().upper()
 
         if choice == "0" or choice == "":
             return
 
-        if choice == "A":
+        if choice in ("А", "A"):
             to_fill = profiles
         else:
             try:
@@ -6426,18 +6424,18 @@ def screen_buy_membership():
         print()
         no_data_count = sum(1 for p in profiles if p.get("login_ts") is None)
         if no_data_count:
-            opt("X", f"Удалить все {no_data_count} профиля без данных", R)
+            opt("9", f"Удалить все {no_data_count} профиля без данных", R)
         opt("0", "Назад", R)
         print()
 
         choice = input(
-            f"  {BLD}Выберите профиль [1-{len(profiles)}], X или 0: {RST}"
-        ).strip().upper()
+            f"  {BLD}Выберите профиль [1-{len(profiles)}], 9 или 0: {RST}"
+        ).strip()
 
         if choice == "0" or choice == "":
             return
 
-        if choice == "X" and no_data_count:
+        if choice == "9" and no_data_count:
             import shutil as _sh, os as _os, stat as _stat
             def _rm_err2(func, path, exc_info):
                 try:
@@ -8242,7 +8240,7 @@ def screen_update() -> None:
         ans = input(f"  {BLD}Обновить сейчас? [Д / Н]: {RST}").strip().upper()
     except KeyboardInterrupt:
         return
-    if ans not in ("Д", "ДА", "Y", "YES"):
+    if ans not in ("Д", "ДА"):
         print(f"  {DIM}Отменено.{RST}")
         pause()
         return
@@ -8416,9 +8414,9 @@ def screen_main():
         opt("У", _upd_lbl, Y if _upd_avail else DIM)
 
         print()
-        opt("Q", "Выход", R)
+        opt("В", "Выход", R)
         print()
-        print(f"  {DIM}  Ctrl+C — остановка и возврат в меню  |  Q — выход{RST}")
+        print(f"  {DIM}  Ctrl+C — остановка и возврат в меню  |  В — выход{RST}")
         print()
 
         try:
@@ -8453,7 +8451,7 @@ def screen_main():
                 screen_proxy()
             elif choice in ("У", "U"):
                 screen_update()
-            elif choice == "Q":
+            elif choice in ("В", "Q"):
                 cls()
                 print(f"\n{C}{BLD}  До свидания!{RST}\n")
                 sys.exit(0)
