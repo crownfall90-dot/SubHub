@@ -5488,6 +5488,8 @@ async def _viewcheckout_to_payments(page) -> bool:
     print(f"  {DIM}Ждём загрузки viewcheckout...{RST}")
     try:
         await page.wait_for_function("""() => {
+            const body = (document.body?.textContent || '').toLowerCase();
+            if (body.includes('currently out of stock') || body.includes('out of stock for')) return true;
             const kw = ['continue', 'place order'];
             for (const el of document.querySelectorAll('div, button, a, span, [role="button"]')) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
@@ -5499,7 +5501,7 @@ async def _viewcheckout_to_payments(page) -> bool:
         }""", timeout=40_000)
     except Exception:
         pass
-    await page.wait_for_timeout(500)
+    await page.wait_for_timeout(300)
 
     # OOS-проверка сразу после загрузки (Continue никогда не появится)
     if "viewcheckout" in page.url:
