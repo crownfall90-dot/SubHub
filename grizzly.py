@@ -309,7 +309,7 @@ async def _rental_monitor_loop():
                         print(f"\n  {_Y}[Фон] Обнаружен активный номер +91 {_ph10} (id={_aid}) в GrizzlySMS{_RST}")
                         _RENTALS[_aid] = {
                             "phone_10":      _ph10,
-                            "rented_at":     time.monotonic() - 200.0,  # считаем уже старым → отменяем
+                            "rented_at":     time.monotonic(),  # даём 150 сек; если OTP нет — отменяем
                             "status":        "active",
                             "profile_path":  None,
                             "login_url":     "https://www.flipkart.com/account/login?ret=/",
@@ -326,7 +326,7 @@ async def _rental_monitor_loop():
             # 1. Проверяем активные номера на OTP каждые 10 сек
             if api_key:
                 for aid, r in list(_RENTALS.items()):
-                    if r["status"] == "active" and not r.get("intercept_mode"):
+                    if r["status"] == "active" and not r.get("intercept_mode") and not r.get("external"):
                         last_check = _otp_last_check.get(aid, 0.0)
                         if now - last_check >= 10.0:
                             _otp_last_check[aid] = now

@@ -2472,9 +2472,10 @@ class ResultTracker:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, force_headless: bool = False) -> None:
-    setup_logging()
+    _script_dir = Path(__file__).resolve().parent
+    setup_logging(log_file=str(_script_dir / "automation.log"))
 
-    config_path = Path("config.yaml")
+    config_path = _script_dir / "config.yaml"
     if not config_path.exists():
         logger.error("Файл config.yaml не найден. Создайте его по шаблону из README.")
         sys.exit(1)
@@ -2485,7 +2486,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
         config.config.setdefault("browser", {})["headless"] = True
 
     # Читаем secrets.yaml (ключи из него всегда перекрывают плейсхолдеры из config.yaml)
-    _secrets_path = Path(__file__).parent / "secrets.yaml"
+    _secrets_path = _script_dir / "secrets.yaml"
     if not _secrets_path.exists():
         _secrets_path = Path("secrets.yaml")
     if _secrets_path.exists():
