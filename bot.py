@@ -1253,12 +1253,14 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, txt)
 
         async def _wz_execute(cid, br, mode, tariff, count, mid=0):
-            args = [sys.executable, str(Path(__file__).parent / "menu.py")]
             if mode in ("login", "intercept"):
-                args.append("--login-only")
+                args = [sys.executable, str(Path(__file__).parent / "main.py")]
                 if mode == "intercept":
-                    args.append("--intercept")
+                    args.append("--tg-intercept")
+                else:
+                    args.append("--tg-login")
             else:
+                args = [sys.executable, str(Path(__file__).parent / "menu.py")]
                 args.append("--full-cycle")
                 if mode == "address":
                     args.append("--stop-at-email")
