@@ -564,12 +564,28 @@ def get_profiles() -> list[dict]:
 
 
 def _load_done_profiles() -> list[dict]:
-    """Возвращает список профилей из DONE_PROFILES_DIR, отсортированный по дате входа."""
+    """Возвращает список профилей из DONE_PROFILES_DIR у которых есть .profile_meta.json."""
+    import time as _t
     profiles = []
-    if DONE_PROFILES_DIR.exists():
-        for p in sorted(DONE_PROFILES_DIR.glob("profile_*")):
-            if p.is_dir():
-                profiles.append(_read_profile_meta(p))
+    if not DONE_PROFILES_DIR.exists():
+        return profiles
+    _now = _t.time()
+    for p in sorted(DONE_PROFILES_DIR.glob("profile_*")):
+        if not p.is_dir():
+            continue
+        meta_file = p / ".profile_meta.json"
+        if meta_file.exists():
+            profiles.append(_read_profile_meta(p))
+        else:
+            # Удаляем неполные профили (без мета), которые старше 2 часов —
+            # активные сессии успеют получить мета за это время
+            try:
+                age = _now - p.stat().st_mtime
+                if age > 7_200:
+                    import shutil as _sh
+                    _sh.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
     profiles.sort(key=lambda x: x["login_ts"] or 0, reverse=True)
     return profiles
 
