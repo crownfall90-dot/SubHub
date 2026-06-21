@@ -5655,8 +5655,9 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
         await page.mouse.click(loc_bbox["x"], loc_bbox["y"])
         await page.wait_for_timeout(_r.uniform(1_500, 2_500))
 
-        # На address-map: нажимаем Change → вводим пинкод → Confirm
-        if "address-map" in page.url or "changeShipping" in page.url:
+        # На address-map: первые 2 попытки — только кнопки (старый флоу),
+        # с 3-й попытки — вводим пинкод через поиск на карте
+        if ("address-map" in page.url or "changeShipping" in page.url) and _outer >= 2:
             await _search_location_by_pincode(page)
 
         # Затем Update address
