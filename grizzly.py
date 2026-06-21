@@ -325,11 +325,11 @@ async def _cancel_rental_task(aid):
                 r["cancel_attempts"] += 1
                 now = time.monotonic()
                 if r["cancel_attempts"] == 1:
-                    r["next_attempt_at"] = r["rented_at"] + 320.0 # retry at 5m 20s
-                    print(f"\n  {_Y}⚠ Не удалось отменить +91 {r['phone_10']} (id={aid}) через 2м 30с ({ce}). Повтор запланирован на 5м 20с.{_RST}")
+                    r["next_attempt_at"] = r["rented_at"] + 150.0 + 10.0
+                    print(f"\n  {_Y}⚠ Не удалось отменить +91 {r['phone_10']} (id={aid}) ({ce}). Повтор через 10 сек.{_RST}")
                 else:
-                    r["next_attempt_at"] = now + 30.0 # retry every 30s
-                    print(f"\n  {_Y}⚠ Повторная отмена +91 {r['phone_10']} (id={aid}) не удалась ({ce}). Повтор через 30с.{_RST}")
+                    r["next_attempt_at"] = now + 10.0
+                    print(f"\n  {_Y}⚠ Повторная отмена +91 {r['phone_10']} (id={aid}) не удалась ({ce}). Повтор через 10 сек.{_RST}")
         
         await client.close()
     finally:
@@ -527,78 +527,64 @@ def _submit_bg_login(api_key: str, activation_id: str, otp_code: str,
 
 
 def cleanup_all_rentals_on_exit():
-    """
-    Блокирующая очистка всех номеров при выходе из процесса.
-    Standalone — не импортирует menu.py.
-    """
+    """Быстрая очистка готовых номеров при выходе из скрипта.
+    Номера у которых ещё не прошло 2 мин — остаются в фоновом мониторе (_BG_LOOP),
+    который продолжает работать пока открыта консоль."""
+    import concurrent.futures
+
     # Ждём завершения всех фоновых входов перед отчисткой номеров
     active_futures = [f for f in _BG_FUTURES if not f.done()]
     if active_futures:
         print(f"\n{_Y}{_BLD}  [Выход] Ожидание завершения фонового входа ({len(active_futures)} шт.)...{_RST}")
-        import concurrent.futures
         concurrent.futures.wait(active_futures, timeout=75)
 
     active_ids = [aid for aid, r in _RENTALS.items() if r["status"] in ("active", "failed")]
     if not active_ids:
         return
-        
-    print(f"\n{_Y}{_BLD}  [Выход] Завершение работы. Очищаю оставшиеся номера ({len(active_ids)} шт.)...{_RST}")
-    
+
     # Убиваем Chrome-процессы для всех профилей
     for aid in list(_RENTALS.keys()):
         r = _RENTALS.get(aid)
         if r:
             _cleanup_profile(r)
-    
+
+    # Переводим active → failed
+    now = time.monotonic()
+    for aid in active_ids:
+        r = _RENTALS.get(aid)
+        if r and r["status"] == "active":
+            r["status"] = "failed"
+
+    # Разделяем: готовые к отмене прямо сейчас, и те что ещё нельзя (< 2 мин)
+    ready_ids   = [aid for aid in active_ids
+                   if aid in _RENTALS and now >= _RENTALS[aid].get("next_attempt_at", 0)]
+    pending_ids = [aid for aid in active_ids
+                   if aid in _RENTALS and now < _RENTALS[aid].get("next_attempt_at", 0)]
+
+    if pending_ids:
+        phones = ", ".join(f"+91 {_RENTALS[aid]['phone_10']}" for aid in pending_ids if aid in _RENTALS)
+        print(f"\n  {_Y}[Фон] {len(pending_ids)} номер(ов) < 2 мин — отмена в фоне: {phones}{_RST}")
+        _start_monitor_if_needed()
+
+    if not ready_ids:
+        return
+
+    print(f"\n{_Y}{_BLD}  [Выход] Завершение работы. Очищаю оставшиеся номера ({len(ready_ids)} шт.)...{_RST}")
+
     loop = asyncio.new_event_loop()
-    
+
     async def _async_cleanup():
         api_key = _get_grizzly_api_key()
         if not api_key:
             print(f"  {_R}[Выход] Нет API-ключа для отмены номеров{_RST}")
             return
         client = GrizzlySMSClient(api_key, http_timeout=15)
-
-        # Читаем number_lifetime_seconds из config.yaml (по умолчанию 180)
-        _lifetime = 180
         try:
-            with open(_HERE / "config.yaml", encoding="utf-8") as _fh:
-                _lifetime = int((yaml.safe_load(_fh) or {}).get("grizzlysms", {}).get("number_lifetime_seconds", 180))
-        except Exception:
-            pass
-
-        # Пытаемся отменить все номера
-        max_retries = 60  # достаточно для ожидания lifetime + запасные попытки
-        _cleanup_interrupted = False
-        for retry in range(max_retries):
-            if _cleanup_interrupted:
-                break
-            remaining = {aid: r for aid, r in _RENTALS.items() if r["status"] in ("active", "failed")}
-            if not remaining:
-                break
-
-            now = time.monotonic()
-            # Пропускаем номера у которых ещё не наступило время повтора
-            ready = {aid: r for aid, r in remaining.items()
-                     if now >= r.get("next_attempt_at", 0)}
-            if not ready:
-                # Спим до ближайшего next_attempt_at
-                wait_sec = min(r.get("next_attempt_at", now + 5) for r in remaining.values()) - now
-                wait_sec = max(1.0, min(wait_sec, 30.0))
-                phones = ", ".join(f"+91 {r['phone_10']}" for r in remaining.values())
-                print(f"  [Выход] Ждём {int(wait_sec)} сек до следующей попытки для: {phones}")
-                print(f"  {_Y}(Ctrl+C — прервать очистку){_RST}")
-                try:
-                    await asyncio.sleep(wait_sec)
-                except (asyncio.CancelledError, KeyboardInterrupt):
-                    _cleanup_interrupted = True
-                    break
-                continue
-
-            for aid, r in list(ready.items()):
-                if _cleanup_interrupted:
-                    break
-                age = now - r["rented_at"]
+            for aid in list(ready_ids):
+                r = _RENTALS.get(aid)
+                if not r:
+                    continue
+                age = time.monotonic() - r["rented_at"]
                 print(f"  [Выход] Попытка отмены +91 {r['phone_10']} (id={aid}), прошло {int(age)} сек...")
                 try:
                     await client.cancel(aid)
@@ -607,17 +593,15 @@ def cleanup_all_rentals_on_exit():
                     _STATS["numbers_cancelled"] += 1
                     await _tg_cancel_notify(r["phone_10"], "Отменён при выходе из скрипта")
                     _RENTALS.pop(aid, None)
-                except (KeyboardInterrupt, asyncio.CancelledError):
-                    _cleanup_interrupted = True
-                    break
                 except Exception as e:
                     # Проверяем, не пришёл ли код в последний момент
                     try:
                         _st = await client.get_status(aid)
                         if _st.get("type") == "OK" and _st.get("code"):
-                            print(f"  {_G}[Выход✓] Обнаружен код при попытке отмены для +91 {r['phone_10']}: {_st['code']}{_RST}")
+                            print(f"  {_G}[Выход✓] Код {_st['code']} обнаружен — вход в фоне{_RST}")
                             fut = asyncio.run_coroutine_threadsafe(
-                                _bg_login_with_otp(api_key, aid, _st["code"], r.get("login_url", ""), r.get("months", 3), r["phone_10"]),
+                                _bg_login_with_otp(api_key, aid, _st["code"],
+                                                   r.get("login_url", ""), r.get("months", 3), r["phone_10"]),
                                 _get_bg_loop(),
                             )
                             _BG_FUTURES.append(fut)
@@ -628,61 +612,31 @@ def cleanup_all_rentals_on_exit():
                         pass
                     err_str = str(e)
                     if "BAD_ACTION" in err_str:
-                        print(f"  {_Y}[Выход] +91 {r['phone_10']}: BAD_ACTION — номер уже не существует, удаляю.{_RST}")
+                        print(f"  {_Y}[Выход] +91 {r['phone_10']}: BAD_ACTION — удаляю.{_RST}")
                         _STATS["numbers_bad_action"] += 1
                         _RENTALS.pop(aid, None)
-                    elif "EARLY_CANCEL_DENIED" in err_str:
-                        now_mt = time.monotonic()
-                        retry_at = r["rented_at"] + _lifetime + 5
-                        if retry_at <= now_mt:
-                            retry_at = now_mt + 30
-                        r["next_attempt_at"] = retry_at
-                        wait_sec = max(1, int(retry_at - now_mt))
-                        print(f"  {_Y}[Выход⏳] +91 {r['phone_10']}: EARLY_CANCEL_DENIED, повтор через {wait_sec} сек{_RST}")
                     else:
+                        # EARLY_CANCEL_DENIED или сеть — оставляем фоновому монитору
                         r["next_attempt_at"] = time.monotonic() + 10
-                        print(f"  {_R}[Выход⚠] Не удалось отменить +91 {r['phone_10']} ({e}). Повтор через 10 сек{_RST}")
+                        print(f"  {_Y}[Фон⏳] +91 {r['phone_10']} — повтор в фоне через 10 сек ({e}){_RST}")
+        finally:
+            await client.close()
 
-            rem_list = [r for r in _RENTALS.values() if r["status"] in ("active", "failed")]
-            if not rem_list:
-                break
-                
-        await client.close()
-        
     try:
         loop.run_until_complete(_async_cleanup())
-        
         # Ждём завершения новых фоновых входов, запущенных во время очистки
         active_futures = [f for f in _BG_FUTURES if not f.done()]
         if active_futures:
-            print(f"\n{_Y}{_BLD}  [Выход] Ожидание завершения фонового входа, запущенного во время очистки ({len(active_futures)} шт.)...{_RST}")
-            import concurrent.futures
+            print(f"\n{_Y}{_BLD}  [Выход] Ожидание фоновых входов ({len(active_futures)} шт.)...{_RST}")
             concurrent.futures.wait(active_futures, timeout=75)
-        
-        # Отправляем TG-уведомление о завершении очистки
-        async def _send_exit_done_tg():
-            try:
-                import httpx as _hx_ex
-                _tok = _get_telegram_token_standalone()
-                _nc = _get_tg_subscribers_standalone()
-                if _tok and _nc:
-                    _msg = "♻️ *Все номера удалены/отменены*\n\nОчистка успешно завершена. Бот готов к новому запуску!"
-                    async with _hx_ex.AsyncClient(timeout=10, trust_env=False) as _client:
-                        for _c in _nc:
-                            try:
-                                await _client.post(
-                                    f"https://api.telegram.org/bot{_tok}/sendMessage",
-                                    json={"chat_id": _c, "text": _msg, "parse_mode": "Markdown"}
-                                )
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-        loop.run_until_complete(_send_exit_done_tg())
     except KeyboardInterrupt:
-        print(f"\n{_R}  [Выход] Очистка прервана пользователем.{_RST}")
+        print(f"\n{_R}  [Выход] Очистка прервана.{_RST}")
     finally:
         loop.close()
+
+    # Запускаем монитор для номеров что остались (EARLY_CANCEL_DENIED, pending и т.д.)
+    if any(r["status"] in ("active", "failed") for r in _RENTALS.values()):
+        _start_monitor_if_needed()
 
 
 async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
