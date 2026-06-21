@@ -6954,6 +6954,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         if otp_code:
                             async def _do_loser(o_id, o_ph, o_pg, o_ctx):
                                 has_otp = False
+                                _loser_login_ok = False
                                 try:
                                     _lst = await sms_client.get_status(o_id)
                                     if _lst.get("type") == "OK" and _lst.get("code"):
@@ -6965,9 +6966,56 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                             except Exception: pass
                                             _grizzly_module.mark_completed(o_id)
                                         else:
-                                            print(f"  {G}[BG] +91 {o_ph} OTP={_lst['code']} → фон{RST}")
-                                            _submit_bg_login(api_key, o_id, _lst["code"], login_url, months, phone_10=o_ph)
-                                            _grizzly_module.mark_completed(o_id)
+                                            _loser_otp = _lst["code"]
+                                            print(f"  {G}[BG] +91 {o_ph} OTP={_loser_otp} → вхожу{RST}")
+                                            try:
+                                                _lo_el = o_pg.locator(_OTP_SEL).first
+                                                try: await _lo_el.wait_for(state="visible", timeout=8_000)
+                                                except Exception: pass
+                                                if await _lo_el.count() > 0:
+                                                    await _lo_el.click()
+                                                    await _lo_el.fill(_loser_otp)
+                                                else:
+                                                    await o_pg.keyboard.type(_loser_otp, delay=80)
+                                                await o_pg.wait_for_timeout(300)
+                                                for _vs in [
+                                                    "button:has-text('VERIFY')", "button:has-text('Verify')",
+                                                    "button:has-text('LOGIN')", "button:has-text('CONTINUE')",
+                                                    "button:has-text('Continue')", "button:has-text('Signup')",
+                                                ]:
+                                                    try:
+                                                        _vb = o_pg.locator(_vs).first
+                                                        if await _vb.is_visible():
+                                                            _vbb = await _vb.bounding_box()
+                                                            if _vbb:
+                                                                await o_pg.mouse.click(_vbb["x"] + _vbb["width"]/2, _vbb["y"] + _vbb["height"]/2)
+                                                            else:
+                                                                await _vb.click()
+                                                            break
+                                                    except Exception: pass
+                                                _lo_dl = asyncio.get_event_loop().time() + 30
+                                                while asyncio.get_event_loop().time() < _lo_dl:
+                                                    if "login" not in o_pg.url.lower():
+                                                        _loser_login_ok = True
+                                                        break
+                                                    await asyncio.sleep(1)
+                                            except Exception as _le:
+                                                print(f"  {Y}[BG] +91 {o_ph} ошибка входа: {_le}{RST}")
+                                            if _loser_login_ok:
+                                                try: await sms_client.complete(o_id)
+                                                except Exception: pass
+                                                _grizzly_module.mark_completed(o_id)
+                                                try:
+                                                    _lp = DONE_PROFILES_DIR / f"profile_{o_ph}"
+                                                    (_lp / ".profile_meta.json").write_text(
+                                                        json.dumps({"username": o_ph, "login_ts": time.time(),
+                                                                    "otp_code": _loser_otp, "source": "parallel_loser"},
+                                                                   ensure_ascii=False), encoding="utf-8")
+                                                except Exception: pass
+                                                print(f"  {G}[BG✓] Профиль +91 {o_ph} сохранён{RST}")
+                                            else:
+                                                print(f"  {Y}[BG] +91 {o_ph} вход не прошёл — отменяю{RST}")
+                                                _grizzly_module.mark_failed(o_id)
                                 except Exception: pass
                                 if not has_otp:
                                     _grizzly_module.mark_failed(o_id)
@@ -6976,7 +7024,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 except Exception:
                                     try: await o_pg.close()
                                     except Exception: pass
-                                if not has_otp or intercept_mode:
+                                if not has_otp or intercept_mode or not _loser_login_ok:
                                     try:
                                         import shutil as _sh
                                         _sh.rmtree(DONE_PROFILES_DIR / f"profile_{o_ph}", ignore_errors=True)
