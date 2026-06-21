@@ -2482,7 +2482,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     if force_headless:
         config.config.setdefault("browser", {})["headless"] = True
 
-    # Читаем secrets.yaml (актуальная версия хранит ключи там)
+    # Читаем secrets.yaml (ключи из него всегда перекрывают плейсхолдеры из config.yaml)
     _secrets_path = Path(__file__).parent / "secrets.yaml"
     if not _secrets_path.exists():
         _secrets_path = Path("secrets.yaml")
@@ -2490,14 +2490,12 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
         try:
             import yaml as _sy
             _sec = _sy.safe_load(_secrets_path.read_text(encoding="utf-8")) or {}
-            if not config.config.get("grizzlysms", {}).get("api_key"):
-                _key = (_sec.get("grizzlysms") or {}).get("api_key", "")
-                if _key:
-                    config.config.setdefault("grizzlysms", {})["api_key"] = _key
-            if not config.config.get("telegram", {}).get("token"):
-                _tok = (_sec.get("telegram") or {}).get("token", "")
-                if _tok:
-                    config.config.setdefault("telegram", {})["token"] = _tok
+            _key = (_sec.get("grizzlysms") or {}).get("api_key", "").strip()
+            if _key:
+                config.config.setdefault("grizzlysms", {})["api_key"] = _key
+            _tok = (_sec.get("telegram") or {}).get("token", "").strip()
+            if _tok:
+                config.config.setdefault("telegram", {})["token"] = _tok
         except Exception:
             pass
 
@@ -2541,6 +2539,9 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     is_auto = config.auto_accounts_count > 0 or accounts_target is not None
     if is_auto:
         target = accounts_target if accounts_target is not None else config.auto_accounts_count
+        if not sms_client:
+            logger.error("Авто-режим требует GrizzlySMS. Проверьте api_key в secrets.yaml → grizzlysms.api_key")
+            sys.exit(1)
         logger.info(f"Режим auto: цель — {target} аккаунт(ов) через GrizzlySMS")
     else:
         manual_accounts = config.accounts
