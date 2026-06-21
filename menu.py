@@ -156,7 +156,8 @@ def _get_telegram_token() -> str:
 
 
 def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
-                        valid_till: str = "") -> None:
+                        valid_till: str = "", login_str: str = "",
+                        issued_str: str = "") -> None:
     """Отправляет ссылку активации YouTube Premium в Telegram (синхронно)."""
     import json as _j
     import urllib.request as _ur
@@ -173,7 +174,12 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             return
 
         _has_short = short_url and short_url != act_url
-        _till_line = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
+        _dates_line = ""
+        if login_str:
+            _dates_line += f"\n📆 Создан:  <code>{login_str}</code>"
+        if issued_str:
+            _dates_line += f"\n📋 Выдан:   <code>{issued_str}</code>"
+        _till_line = f"\n⏳ Действует до: <b>{valid_till}</b>" if valid_till else ""
         _url_lines = ""
         if act_url:
             _url_lines += f"\n🔗 <a href=\"{act_url}\">{act_url}</a>"
@@ -185,6 +191,7 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             f"🎉 <b>Activate Now — YouTube Premium</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
             f"📱 Профиль: <code>+91 {phone}</code>"
+            f"{_dates_line}"
             f"{_till_line}"
             f"{_url_lines}"
         )
@@ -505,6 +512,7 @@ def _read_profile_meta(p: Path) -> dict:
         "subscription_bought_str": None,
         "subscription_expires_ts": None,
         "subscription_expires_str": None,
+        "black_valid_till":        None,
     }
     meta_file = p / ".profile_meta.json"
     if not meta_file.exists():
@@ -1229,13 +1237,20 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
             print(f"\n  {G}Найдено {len(_new_profiles)} новых профиля(ей) — запускаю проверку активации...{RST}")
 
             def _activation_worker(prof_path: Path):
-                # Читаем username из метаданных
+                # Читаем username и даты из метаданных
+                _un = prof_path.name
+                _login_str_w = ""
+                _issued_str_w = ""
                 try:
                     import json as _j
                     _meta = _j.loads((prof_path / ".profile_meta.json").read_text(encoding="utf-8"))
                     _un = _meta.get("username", prof_path.name)
+                    if _meta.get("login_ts"):
+                        _login_str_w = _fmt_msk(float(_meta["login_ts"]))
+                    if _meta.get("issued_ts"):
+                        _issued_str_w = _fmt_msk(float(_meta["issued_ts"]))
                 except Exception:
-                    _un = prof_path.name
+                    pass
 
                 chk = asyncio.run(_check_black_store_activation(
                     prof_path, username=_un, headless=True))
@@ -1259,7 +1274,8 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
                         if _slink and _slink != _aurl:
                             print(f"  ║  {G}Короткая: {_slink}{RST}")
                         print(f"  ║  {B}{_aurl}{RST}")
-                        _send_tg_activation(_un, _aurl, _slink, _vt2)
+                        _send_tg_activation(_un, _aurl, _slink, _vt2,
+                                            login_str=_login_str_w, issued_str=_issued_str_w)
                     else:
                         print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                 elif st == "activated":
@@ -1977,7 +1993,9 @@ def screen_check_all_activated():
                 if _slink and _slink != _aurl:
                     print(f"  {G}   🔗 Короткая: {_slink}{RST}")
                 print(f"  {B}   Ссылка: {_aurl}{RST}")
-                _send_tg_activation(username, _aurl, _slink, _vt3)
+                _send_tg_activation(username, _aurl, _slink, _vt3,
+                                    login_str=p.get("login_str", ""),
+                                    issued_str=p.get("issued_str", ""))
             else:
                 print(f"  {Y}   ⏳ Ссылка не получена{RST}")
             print()
@@ -2021,21 +2039,27 @@ def screen_profiles():
         print()
         for i, p in enumerate(profiles, 1):
             no_meta = p.get("login_ts") is None
+            _vt_disp = p.get("subscription_expires_str") or p.get("black_valid_till") or ""
             if p.get("issued_ts"):
-                status = f"{B}🔵 Выдан: {p['issued_str']}{RST}"
+                _ln = (f"{DIM}{p['login_str']}{RST}"
+                       f"  {DIM}|{RST}  {B}выдан: {p['issued_str']}{RST}"
+                       + (f"  {DIM}|{RST}  {M}до: {_vt_disp}{RST}" if _vt_disp else ""))
+                status_pre = f"  {B}🔵{RST}"
             elif no_meta:
-                status = f"{R}⚠ Нет данных{RST}"
+                _ln = f"{R}⚠ Нет данных{RST}"
+                status_pre = f"  {R}⚠{RST}"
             elif p.get("black_valid_till") or p.get("paid_ready"):
-                _vt = p.get("black_valid_till", "")
-                status = f"{G}✅ Оплачен · готов к выдаче{RST}" + (f"  {DIM}до {_vt}{RST}" if _vt else "")
+                _ln = (f"{DIM}{p['login_str']}{RST}"
+                       + (f"  {DIM}|{RST}  {G}до: {_vt_disp}{RST}" if _vt_disp else ""))
+                status_pre = f"  {G}✅{RST}"
             else:
-                status = f"{G}● Доступен{RST}"
+                _ln = f"{DIM}{p['login_str']}{RST}"
+                status_pre = f"  {G}●{RST}"
             login_col = R if no_meta else DIM
             print(
-                f"  {BLD}{Y}[{i:>2}]{RST}  "
+                f"  {BLD}{Y}[{i:>2}]{RST}{status_pre}  "
                 f"{W}+91 {p['username']:<15}{RST}  "
-                f"{login_col}создан: {p['login_str']:<40}{RST}  "
-                f"{status}"
+                f"{_ln}"
             )
         # Кнопка удаления профилей без данных (если есть)
         no_data_count = sum(1 for p in profiles if p.get("login_ts") is None)
@@ -2094,10 +2118,14 @@ def screen_profiles():
         while True:
             cls()
             header("ДЕЙСТВИЕ С ПРОФИЛЕМ", C)
+            _sel_vt = selected.get("subscription_expires_str") or selected.get("black_valid_till") or ""
             print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
-            print(f"  Создан   : {G}{selected['login_str']}{RST}")
+            _info_line = f"{G}{selected['login_str']}{RST}"
             if selected.get("issued_str"):
-                print(f"  Выдан    : {B}{selected['issued_str']}{RST}")
+                _info_line += f"  {DIM}|{RST}  {B}выдан: {selected['issued_str']}{RST}"
+            if _sel_vt:
+                _info_line += f"  {DIM}|{RST}  {M}до: {_sel_vt}{RST}"
+            print(f"  Даты     : {_info_line}")
             print()
 
             opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)
@@ -2169,7 +2197,9 @@ def screen_profiles():
                                 if _short_url and _short_url != _act_url:
                                     print(f"  ║  {G}Короткая: {_short_url}{RST}")
                                 print(f"  ║  {B}{_act_url}{RST}")
-                                _send_tg_activation(_un, _act_url, _short_url, _vt)
+                                _send_tg_activation(_un, _act_url, _short_url, _vt,
+                                                    login_str=selected.get("login_str", ""),
+                                                    issued_str=selected.get("issued_str", ""))
                             else:
                                 print(f"  ║  {Y}⏳ Ссылка не получена{RST}")
                         elif st == "explore_now":
