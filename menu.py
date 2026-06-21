@@ -8366,7 +8366,7 @@ def _select_card_prompt() -> dict | None:
         idx = int(ch)
         if 1 <= idx <= len(cards):
             return cards[idx - 1]
-    except (ValueError, KeyboardInterrupt):
+    except (ValueError, KeyboardInterrupt, EOFError):
         pass
     return None
 

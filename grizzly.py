@@ -623,7 +623,10 @@ def cleanup_all_rentals_on_exit():
     active_futures = [f for f in _BG_FUTURES if not f.done()]
     if active_futures:
         print(f"\n{_Y}{_BLD}  [Выход] Ожидание завершения фонового входа ({len(active_futures)} шт.)...{_RST}")
-        concurrent.futures.wait(active_futures, timeout=75)
+        try:
+            concurrent.futures.wait(active_futures, timeout=75)
+        except KeyboardInterrupt:
+            print(f"  {_Y}[Выход] Прервано — пропускаю ожидание фонового входа{_RST}")
 
     active_ids = [aid for aid, r in _RENTALS.items() if r["status"] in ("active", "failed")]
     if not active_ids:
