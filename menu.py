@@ -9073,6 +9073,15 @@ if __name__ == "__main__":
                 _start_log_tee()     # дублируем вывод в automation.log
                 # Фоновый монитор GrizzlySMS — сканирует активные номера с первой секунды
                 _grizzly_module.start_global_monitor()
+                # Фоновый монитор GGSell — следит за новыми заказами
+                try:
+                    from ggsell.monitor import start_monitor as _ggsel_start
+                    _gs = (_read_secrets().get("ggsel") or {})
+                    _gs_key = _gs.get("api_key", "").strip()
+                    _gs_sid = int(_gs.get("seller_id") or 0)
+                    _ggsel_start(_gs_key, _gs_sid)
+                except Exception as _e:
+                    pass  # GGSell не обязателен
                 # TG-бот стартует после инициализации секретов (токен уже в config.yaml)
                 threading.Thread(target=_menu_tg_bot_thread, daemon=True, name="tg-menu").start()
                 # Фоновая проверка обновлений (один раз при старте)
