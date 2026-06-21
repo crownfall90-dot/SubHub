@@ -11,6 +11,7 @@ Browser cleanup is done via OS process kill + shutil.rmtree.
 import asyncio
 import json
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
@@ -33,6 +34,35 @@ _BLD = "\033[1m"
 _RST = "\033[0m"
 
 _HERE = Path(__file__).parent
+
+# ── Временные (transient) сообщения в консоли — стираются через N секунд ─────
+_TPRINT_LOCK  = threading.Lock()
+_TPRINT_LINES = 0
+_TPRINT_TIMER: "threading.Timer | None" = None
+
+def _transient_print(text: str, delay: float = 5.0) -> None:
+    """Печатает 1–2-строчное сообщение и стирает его через delay секунд (ANSI)."""
+    global _TPRINT_LINES, _TPRINT_TIMER
+    with _TPRINT_LOCK:
+        if _TPRINT_TIMER is not None:
+            _TPRINT_TIMER.cancel()
+        n = text.count('\n') + 1
+        _TPRINT_LINES += n
+        print(text, flush=True)
+        total = _TPRINT_LINES
+
+        def _erase():
+            global _TPRINT_LINES
+            with _TPRINT_LOCK:
+                if _TPRINT_LINES <= 0:
+                    return
+                sys.stdout.write(f'\033[{_TPRINT_LINES}A\033[J')
+                sys.stdout.flush()
+                _TPRINT_LINES = 0
+
+        _TPRINT_TIMER = threading.Timer(delay, _erase)
+        _TPRINT_TIMER.daemon = True
+        _TPRINT_TIMER.start()
 
 # ── Статистика запуска ────────────────────────────────────────────────────────
 _STATS: dict = {
@@ -328,7 +358,6 @@ async def _rental_monitor_loop():
             for aid, r in list(_RENTALS.items()):
                 if r["status"] == "active":
                     if now - r["rented_at"] >= 150.0:
-                        print(f"\n  {_Y}⚠ Номер +91 {r['phone_10']} (id={aid}) не получил OTP за 2м 30с. Отмена...{_RST}")
                         r["status"] = "failed"
                         r["next_attempt_at"] = r["rented_at"] + 150.0
                         _cleanup_profile(r)
@@ -399,13 +428,13 @@ async def _cancel_rental_task(aid):
             
         try:
             await client.cancel(aid)
-            print(f"\n  {_G}✅ Номер +91 {r['phone_10']} (id={aid}) успешно отменён на GrizzlySMS.{_RST}")
+            _transient_print(f"  {_G}[Фон] ✅ +91 {r['phone_10']} отменён{_RST}")
             r["status"] = "cancelled"
             _STATS["numbers_cancelled"] += 1
             _RENTALS.pop(aid, None)
         except Exception as ce:
             if "BAD_ACTION" in str(ce):
-                print(f"\n  {_Y}⚠ Номер +91 {r['phone_10']} (id={aid}) уже не существует (BAD_ACTION) — удаляю из очереди.{_RST}")
+                _transient_print(f"  {_Y}[Фон] ⚠ +91 {r['phone_10']} — уже не существует{_RST}")
                 _STATS["numbers_bad_action"] += 1
                 _RENTALS.pop(aid, None)
             else:
@@ -413,10 +442,9 @@ async def _cancel_rental_task(aid):
                 now = time.monotonic()
                 if r["cancel_attempts"] == 1:
                     r["next_attempt_at"] = r["rented_at"] + 150.0 + 10.0
-                    print(f"\n  {_Y}⚠ Не удалось отменить +91 {r['phone_10']} (id={aid}) ({ce}). Повтор через 10 сек.{_RST}")
                 else:
                     r["next_attempt_at"] = now + 10.0
-                    print(f"\n  {_Y}⚠ Повторная отмена +91 {r['phone_10']} (id={aid}) не удалась ({ce}). Повтор через 10 сек.{_RST}")
+                _transient_print(f"  {_Y}[Фон] ↺ +91 {r['phone_10']} — повтор через 10 сек{_RST}")
         
         await client.close()
     finally:

@@ -373,7 +373,7 @@ class GrizzlySMSClient:
             "id": str(activation_id),
             "status": str(status),
         })
-        logger.debug(f"setStatus({activation_id}, {status}) → {raw}")
+        logger.trace(f"setStatus({activation_id}, {status}) → {raw}")
         return raw
 
     async def complete(self, activation_id: str) -> None:
