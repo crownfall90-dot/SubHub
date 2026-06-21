@@ -8541,7 +8541,11 @@ if __name__ == "__main__":
                 except Exception:
                     pass
 
-                await asyncio.gather(*[_one(i, m) for i, m in enumerate(_tariff_list)])
+                _interrupted = False
+                try:
+                    await asyncio.gather(*[_one(i, m) for i, m in enumerate(_tariff_list)])
+                except asyncio.CancelledError:
+                    _interrupted = True
 
                 # Баланс после завершения задач
                 try:
@@ -8578,6 +8582,8 @@ if __name__ == "__main__":
                     print(f"  💰  Баланс после       : ${b_end:.4f}")
                 if spent is not None:
                     print(f"  💸  Потрачено          : {R}${spent:.4f}{RST}")
+                if _interrupted:
+                    print(f"  {Y}⚠  Остановлено досрочно (Ctrl+C){RST}")
                 print(f"  {'─'*48}\n")
 
                 # ── TG-уведомление ─────────────────────────────────────────────
@@ -8589,7 +8595,7 @@ if __name__ == "__main__":
                         _sd_st = _jst.loads(_subs_st.read_text(encoding="utf-8"))
                         _cids_st = [int(c) for c in _sd_st.get("chats", [])]
                         _tg_lines = [
-                            "📊 <b>Итоги запуска</b>",
+                            "📊 <b>Итоги запуска</b>" + (" ⚠️ прервано" if _interrupted else ""),
                             "━━━━━━━━━━━━━━━━━━━",
                             f"✅ Успешных аккаунтов: <b>{ok_count}/{total}</b>",
                             f"❌ Неудачных: <b>{fail_count}</b>",
