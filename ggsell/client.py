@@ -145,12 +145,27 @@ class GGSellClient:
     async def get_balance(self) -> float:
         """Вернуть баланс продавца."""
         data = await self._get("/sellers/account/balance/info", {"locale": "ru"})
-        # поле может называться balance или total_balance — пробуем оба
-        for field in ("balance", "total_balance", "amount"):
-            if field in data:
-                return float(data[field])
+        # API возвращает {"content": {"amount_t_free": 171.08, ...}}
+        content = data.get("content") if isinstance(data, dict) else None
+        if isinstance(content, dict):
+            for field in ("amount_t_free", "amount_t_lock", "amount_t_plus"):
+                val = content.get(field)
+                if val is not None:
+                    return float(val)
         logger.debug(f"GGSell balance raw: {data}")
         return 0.0
+
+    async def get_buyer_email(self, invoice_id: int) -> Optional[str]:
+        """Извлечь email покупателя для YouTube из деталей заказа."""
+        info = await self.get_order_info(invoice_id)
+        content = info.get("content", {}) if isinstance(info, dict) else {}
+        for opt in content.get("options", []):
+            name = (opt.get("name") or "").lower()
+            if "youtube" in name or "почт" in name or "email" in name.lower():
+                return (opt.get("user_data") or "").strip() or None
+        # fallback: buyer_info.email
+        buyer = content.get("buyer_info", {}) or {}
+        return buyer.get("email") or None
 
     # ── Orders ───────────────────────────────────────────────────────────────
 

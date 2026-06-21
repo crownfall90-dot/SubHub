@@ -24,6 +24,9 @@ _ORDERS_FILE = _DATA / "ggsel_orders.json"
 
 POLL_INTERVAL = 60.0  # секунды между опросами
 
+# Обрабатываем только заказы YouTube Premium
+YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
+
 # Сообщение покупателю при получении ссылки
 MSG_TEMPLATE = (
     "Спасибо за покупку! Ваша ссылка:\n\n"
@@ -161,12 +164,35 @@ class GGSellMonitor:
             if not invoice_id or invoice_id in processed:
                 continue
 
-            logger.info(f"GGSell: новый заказ #{invoice_id}: {order}")
+            # Проверяем product_id — обрабатываем только YouTube Premium
+            product = order.get("product") or {}
+            product_id = int(product.get("id") or 0)
+            if product_id and product_id != YOUTUBE_PREMIUM_PRODUCT_ID:
+                logger.debug(
+                    f"GGSell: заказ #{invoice_id} пропущен (product_id={product_id}, не YouTube Premium)"
+                )
+                processed.add(invoice_id)
+                _save_processed(processed)
+                continue
+
+            logger.info(
+                f"GGSell: новый заказ YouTube Premium #{invoice_id} "
+                f"(продукт: {product.get('name', '?')})"
+            )
             await self._handle_order(invoice_id, order)
             processed.add(invoice_id)
             _save_processed(processed)
 
     async def _handle_order(self, invoice_id: int, order: dict) -> None:
+        # Получаем email покупателя для YouTube из деталей заказа
+        buyer_email: Optional[str] = None
+        try:
+            buyer_email = await self.client.get_buyer_email(invoice_id)
+        except Exception as exc:
+            logger.warning(f"GGSell #{invoice_id}: не удалось получить email покупателя: {exc}")
+
+        logger.info(f"GGSell #{invoice_id}: email покупателя = {buyer_email!r}")
+
         # 1. Проверяем пул накопленных ссылок
         link = _pop_link()
 
@@ -182,8 +208,12 @@ class GGSellMonitor:
 
         # 3. Вызываем колбэк для генерации ссылки (если задан)
         if self.on_new_order:
+            # Передаём обогащённый dict с email покупателя
+            order_info = dict(order)
+            order_info["invoice_id"] = invoice_id
+            order_info["buyer_email"] = buyer_email
             try:
-                link = await self.on_new_order(order)
+                link = await self.on_new_order(order_info)
             except Exception as exc:
                 logger.error(f"GGSell #{invoice_id}: on_new_order ошибка: {exc}")
                 link = None
