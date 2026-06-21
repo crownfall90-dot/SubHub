@@ -5491,23 +5491,41 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
     }"""
 
     async def _search_location_by_pincode(pg):
-        """Вводит пинкод в поле 'Search by area, name, street.' и выбирает первый результат."""
+        """Нажимает Change (рядом с Area/Locality), вводит пинкод в оверлей поиска карты."""
         try:
             _pincode = await pg.evaluate("""() => {
                 const m = (document.body.innerText || '').match(/\\b(\\d{6})\\b/);
                 return m ? m[1] : "400001";
             }""")
-            # Поле поиска на карте (видно сразу, без нажатия Change)
+            # Нажать Change рядом с полем Area/Locality (не в шапке сайта)
+            # Ищем кнопку Change, у которой y > 150px (не в header)
+            _chg = await pg.evaluate("""() => {
+                for (const el of document.querySelectorAll(
+                        'button,a,span,div,[role="button"]')) {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    if (t !== 'change') continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 10 || r.height < 8) continue;
+                    if (r.y < 150) continue;  // пропускаем элементы в шапке
+                    return {x: r.x + r.width/2, y: r.y + r.height/2};
+                }
+                return null;
+            }""")
+            if not _chg:
+                return False
+            print(f"  карта: нажимаю «Change» (locality)...")
+            await pg.mouse.click(_chg["x"], _chg["y"])
+            await pg.wait_for_timeout(1_500)
+
+            # Поле поиска появляется как оверлей на карте
+            # Placeholder: "Search by area, name, street." — содержит 'area' или 'street'
             _sf = await pg.evaluate("""() => {
                 for (const el of document.querySelectorAll('input')) {
                     const ph = (el.placeholder || '').toLowerCase();
-                    if (ph.includes('area') || ph.includes('street') ||
-                        ph.includes('search') || ph.includes('name'))
-                    {
-                        const r = el.getBoundingClientRect();
-                        if (r.width >= 80 && r.height >= 10)
-                            return {x: r.x + r.width/2, y: r.y + r.height/2};
-                    }
+                    if (!ph.includes('area') && !ph.includes('street')) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width >= 80 && r.height >= 10)
+                        return {x: r.x + r.width/2, y: r.y + r.height/2};
                 }
                 return null;
             }""")
@@ -5520,6 +5538,7 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
             await pg.keyboard.press("Delete")
             await pg.keyboard.type(_pincode, delay=80)
             await pg.wait_for_timeout(2_500)
+
             # Выбрать первый результат автодополнения
             _sugg = await pg.evaluate("""() => {
                 const sels = [
@@ -5541,9 +5560,11 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
                 print(f"  карта: выбираю «{_sugg.get('text','?')}»...")
                 await pg.mouse.click(_sugg["x"], _sugg["y"])
                 await pg.wait_for_timeout(1_500)
-            # Нажать Confirm
+
+            # Нажать Confirm (в оверлее)
             _conf = await pg.evaluate("""() => {
-                for (const el of document.querySelectorAll('button,div,a,[role="button"]')) {
+                for (const el of document.querySelectorAll(
+                        'button,div,a,[role="button"]')) {
                     const t = (el.innerText || '').trim().toLowerCase();
                     if (t !== 'confirm') continue;
                     const r = el.getBoundingClientRect();
@@ -5562,7 +5583,7 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
             return False
 
     handled = False
-    for _outer in range(3):  # повторяем цикл пока Set Location не уйдёт
+    for _outer in range(3):
         try:
             loc_bbox = await page.evaluate(_FIND_SET_LOC_JS)
         except Exception:
@@ -5576,11 +5597,11 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
         await page.mouse.click(loc_bbox["x"], loc_bbox["y"])
         await page.wait_for_timeout(_r.uniform(1_500, 2_500))
 
-        # На address-map: сначала вводим пинкод в поле поиска
+        # На address-map: нажимаем Change → вводим пинкод → Confirm
         if "address-map" in page.url or "changeShipping" in page.url:
             await _search_location_by_pincode(page)
 
-        # Затем нажимаем кнопки (Update address / Confirm)
+        # Затем Update address
         for _btn_step in range(3):
             if "viewcheckout" in page.url:
                 break
@@ -5595,7 +5616,6 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
             else:
                 await page.wait_for_timeout(1_500)
 
-        # Если всё ещё на address-map — идём назад
         if "address-map" in page.url or "changeShipping" in page.url:
             print("  Set Location: нажимаю Back...")
             try:
