@@ -90,6 +90,18 @@ def _get_tg_subscribers_standalone() -> list:
     return []
 
 
+def _get_all_tg_chat_ids() -> list:
+    """Все chat_id без фильтра buy_number — для системных уведомлений."""
+    try:
+        sp = _HERE / "data" / "tg_subscribers.json"
+        if sp.exists():
+            data = json.loads(sp.read_text(encoding="utf-8"))
+            return [int(c) for c in data.get("chats", [])]
+    except Exception:
+        pass
+    return []
+
+
 def _get_grizzly_api_key() -> str:
     """Получает API-ключ GrizzlySMS из secrets.yaml."""
     return _read_secrets_standalone().get("grizzlysms", {}).get("api_key", "").strip()
@@ -357,13 +369,13 @@ async def _tg_cancel_notify(ph: str, reason: str = "") -> None:
 
 
 async def _tg_login_fail_notify(phone_10: str, otp_code: str, error_msg: str) -> None:
-    """Шлёт TG-уведомление об ошибке фонового входа с данными для входа."""
+    """Шлёт TG-уведомление об ошибке фонового входа всем подписчикам."""
     try:
         import httpx as _hx_c
         _tok = _get_telegram_token_standalone()
         if not _tok:
             return
-        _nc = _get_tg_subscribers_standalone()
+        _nc = _get_all_tg_chat_ids()
         if not _nc:
             return
         _msg = (
@@ -738,6 +750,24 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 await _tg_login_fail_notify(phone_10, otp_code, f"Фаза 1 не прошла (ввод номера): {r2}")
                 _bg_del_profile = True
                 return
+
+            # Phase 1 триггерит новый OTP — ждём актуальный код из GrizzlySMS
+            _fresh_otp = otp_code
+            _otp_poll_dl = time.time() + 60.0
+            while time.time() < _otp_poll_dl:
+                try:
+                    _st2 = await client.get_status(activation_id)
+                    if _st2.get("type") == "OK" and _st2.get("code"):
+                        _fresh_otp = _st2["code"]
+                        break
+                    elif _st2.get("type") in ("CANCEL", "ERROR"):
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(3)
+            if _fresh_otp != otp_code:
+                print(f"  [BG] Обновлённый OTP для +91 {phone_10}: {_fresh_otp}")
+            otp_code = _fresh_otp
 
             # Вводим OTP
             print(f"  [BG] Поиск поля ввода OTP для +91 {phone_10}...")

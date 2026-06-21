@@ -6688,8 +6688,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 _active    = [[phone_id, phone_10, page, time.monotonic(), ctx]]
                 _pending   : list = []
                 _buy_tasks : list = []
-                otp_code   = None
-                win_id     = phone_id
+                otp_code     = None
+                _loser_tasks: list = []
+                win_id       = phone_id
                 win_ph     = phone_10
                 win_page   = page
                 win_ctx    = ctx
@@ -6981,7 +6982,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                         _sh.rmtree(DONE_PROFILES_DIR / f"profile_{o_ph}", ignore_errors=True)
                                     except Exception: pass
                             losers = [e for e in _active if e[0] != win_id]
-                            await asyncio.gather(*[_do_loser(e[0], e[1], e[2], e[4]) for e in losers])
+                            _loser_tasks = [asyncio.create_task(_do_loser(e[0], e[1], e[2], e[4])) for e in losers]
                             for t in _buy_tasks:
                                 t.cancel()
                             _buy_tasks.clear()
@@ -7207,6 +7208,10 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 except Exception:
                     pass
                 _grizzly_module.mark_completed(phone_id)
+
+                if _loser_tasks:
+                    await asyncio.gather(*_loser_tasks, return_exceptions=True)
+                    _loser_tasks = []
 
                 try:
                     (profile_path / ".profile_meta.json").write_text(
