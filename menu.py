@@ -7649,33 +7649,25 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 except Exception as _pp_e:
                     print(f"  Post-payment: {_pp_e}")
 
-                _keep_open = True
-                pay_url = page.url
-
                 try:
                     await _send_cookies_to_tg(ctx, phone_10)
                 except Exception:
                     pass
 
-                if headless:
-                    try:
-                        await ctx.close()
-                        await pw.stop()
-                    except Exception:
-                        pass
-                    chrome = _find_chrome()
-                    if chrome:
-                        subprocess.Popen([chrome,
-                                          f"--user-data-dir={profile_path.resolve()}",
-                                          pay_url])
-                        pay_suffix = " → ✅ Chrome открыт"
-                    else:
-                        pay_suffix = " → ✅ Откройте профиль вручную"
-                else:
-                    pay_suffix = " → ✅ Готово"
+                # Ссылка отправлена — закрываем браузер
+                _keep_open = True  # чтобы finally не дублировал закрытие
+                print(f"  {DIM}Закрываю браузер профиля +91 {phone_10}...{RST}")
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
 
                 suffix = f" | {addr_msg}" if addr_msg else ""
-                return True, f"✅ +91 {phone_10}{suffix}{pay_suffix}"
+                return True, f"✅ +91 {phone_10}{suffix} → ✅ Готово"
 
             except Exception as exc:
                 print(f"  {R}Ошибка: {exc} — пробую следующий номер...{RST}")
