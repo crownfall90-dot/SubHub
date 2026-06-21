@@ -5577,6 +5577,41 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
                 print("  карта: нажимаю «confirm»...")
                 await pg.mouse.click(_conf["x"], _conf["y"])
                 await pg.wait_for_timeout(2_000)
+
+            # После Confirm поле Area/Locality могло получить текст на местном языке.
+            # Находим его (смежное с кнопкой Change) и заменяем на английский текст.
+            try:
+                _area_fld = await pg.evaluate("""() => {
+                    // Ищем Change-кнопку (y > 150), потом ближайший input/textarea в контейнере
+                    for (const chg of document.querySelectorAll(
+                            'button,a,span,div,[role="button"]')) {
+                        const t = (chg.innerText || '').trim().toLowerCase();
+                        if (t !== 'change') continue;
+                        const cr = chg.getBoundingClientRect();
+                        if (cr.y < 150) continue;
+                        // ищем input/textarea-сосед в той же секции
+                        const sect = chg.closest('div,section,fieldset') || chg.parentElement;
+                        if (!sect) continue;
+                        const inp = sect.querySelector('input,textarea');
+                        if (inp) {
+                            const r = inp.getBoundingClientRect();
+                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                        }
+                    }
+                    return null;
+                }""")
+                if _area_fld:
+                    _eng_text = f"Main Road {_pincode}"
+                    print(f"  карта: заменяю Area на английский: «{_eng_text}»...")
+                    await pg.mouse.click(_area_fld["x"], _area_fld["y"])
+                    await pg.wait_for_timeout(200)
+                    await pg.keyboard.press("Control+a")
+                    await pg.keyboard.press("Delete")
+                    await pg.keyboard.type(_eng_text, delay=60)
+                    await pg.wait_for_timeout(300)
+            except Exception:
+                pass
+
             return True
         except Exception as _sle:
             print(f"  карта: поиск пинкода: {_sle}")
