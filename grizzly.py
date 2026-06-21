@@ -34,6 +34,25 @@ _RST = "\033[0m"
 
 _HERE = Path(__file__).parent
 
+# ── Статистика запуска ────────────────────────────────────────────────────────
+_STATS: dict = {
+    "numbers_bought":    0,
+    "numbers_cancelled": 0,
+    "numbers_bad_action": 0,
+    "balance_start":     None,
+    "balance_end":       None,
+}
+
+def reset_run_stats() -> None:
+    _STATS["numbers_bought"]    = 0
+    _STATS["numbers_cancelled"] = 0
+    _STATS["numbers_bad_action"] = 0
+    _STATS["balance_start"]     = None
+    _STATS["balance_end"]       = None
+
+def get_run_stats() -> dict:
+    return dict(_STATS)
+
 # ── Standalone config reading (без import menu) ─────────────────────────────
 
 def _read_secrets_standalone() -> dict:
@@ -156,6 +175,7 @@ def register_rental(activation_id, phone_10, rented_at, profile_path=None, login
         "next_attempt_at": rented_at + 150.0,
         "cancelling": False,
     }
+    _STATS["numbers_bought"] += 1
     _start_monitor_if_needed()
 
 def update_rental_browser(activation_id, profile_path=None, **_ignored):
@@ -280,10 +300,12 @@ async def _cancel_rental_task(aid):
             await client.cancel(aid)
             print(f"\n  {_G}✅ Номер +91 {r['phone_10']} (id={aid}) успешно отменён на GrizzlySMS.{_RST}")
             r["status"] = "cancelled"
+            _STATS["numbers_cancelled"] += 1
             _RENTALS.pop(aid, None)
         except Exception as ce:
             if "BAD_ACTION" in str(ce):
                 print(f"\n  {_Y}⚠ Номер +91 {r['phone_10']} (id={aid}) уже не существует (BAD_ACTION) — удаляю из очереди.{_RST}")
+                _STATS["numbers_bad_action"] += 1
                 _RENTALS.pop(aid, None)
             else:
                 r["cancel_attempts"] += 1
@@ -568,6 +590,7 @@ def cleanup_all_rentals_on_exit():
                     await client.cancel(aid)
                     print(f"  {_G}[Выход✓] Номер +91 {r['phone_10']} успешно отменён.{_RST}")
                     r["status"] = "cancelled"
+                    _STATS["numbers_cancelled"] += 1
                     await _tg_cancel_notify(r["phone_10"], "Отменён при выходе из скрипта")
                     _RENTALS.pop(aid, None)
                 except (KeyboardInterrupt, asyncio.CancelledError):
@@ -592,6 +615,7 @@ def cleanup_all_rentals_on_exit():
                     err_str = str(e)
                     if "BAD_ACTION" in err_str:
                         print(f"  {_Y}[Выход] +91 {r['phone_10']}: BAD_ACTION — номер уже не существует, удаляю.{_RST}")
+                        _STATS["numbers_bad_action"] += 1
                         _RENTALS.pop(aid, None)
                     elif "EARLY_CANCEL_DENIED" in err_str:
                         now_mt = time.monotonic()

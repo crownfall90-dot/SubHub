@@ -8463,6 +8463,8 @@ if __name__ == "__main__":
 
             async def _run_cycle():
                 total = len(_tariff_list)
+                import grizzly as _gz_s
+                _gz_s.reset_run_stats()
 
                 # ── Проверка доступности Flipkart перед покупкой номеров ──────
                 print(f"  {DIM}Проверка доступности Flipkart...{RST}")
@@ -8523,9 +8525,92 @@ if __name__ == "__main__":
                             else:
                                 print(f"  [{idx+1}/{total}] ❌ Ошибка: {exc}")
 
+                # Баланс до покупки номеров
+                try:
+                    from grizzly_sms import GrizzlySMSClient as _GC
+                    _api_key_s = (_read_secrets().get("grizzlysms") or {}).get("api_key", "")
+                    if _api_key_s:
+                        _cl_s = _GC(_api_key_s, http_timeout=10)
+                        _gz_s._STATS["balance_start"] = await _cl_s.get_balance()
+                        await _cl_s.close()
+                except Exception:
+                    pass
+
                 await asyncio.gather(*[_one(i, m) for i, m in enumerate(_tariff_list)])
+
+                # Баланс после завершения задач
+                try:
+                    _api_key_s2 = (_read_secrets().get("grizzlysms") or {}).get("api_key", "")
+                    if _api_key_s2:
+                        from grizzly_sms import GrizzlySMSClient as _GC2
+                        _cl_s2 = _GC2(_api_key_s2, http_timeout=10)
+                        _gz_s._STATS["balance_end"] = await _cl_s2.get_balance()
+                        await _cl_s2.close()
+                except Exception:
+                    pass
+
                 ok_count = sum(1 for r in results if r and r[0])
-                print(f"\n  Итого: {ok_count}/{total} аккаунтов {'создано' if _skip else 'обработано'}.")
+                fail_count = total - ok_count
+
+                st = _gz_s.get_run_stats()
+                b_start = st["balance_start"]
+                b_end   = st["balance_end"]
+                spent   = round(b_start - b_end, 4) if (b_start is not None and b_end is not None) else None
+
+                # ── Консольная статистика ──────────────────────────────────────
+                print(f"\n  {'─'*48}")
+                print(f"  📊 {BLD}Итоги запуска{RST}")
+                print(f"  {'─'*48}")
+                print(f"  ✅  Успешных аккаунтов : {G}{BLD}{ok_count}/{total}{RST}")
+                print(f"  ❌  Неудачных          : {R}{fail_count}{RST}")
+                print(f"  📞  Номеров куплено    : {st['numbers_bought']}")
+                print(f"  ✔   Отменено           : {G}{st['numbers_cancelled']}{RST}")
+                if st["numbers_bad_action"]:
+                    print(f"  ⚠   Не найдено (BAD)  : {Y}{st['numbers_bad_action']}{RST}")
+                if b_start is not None:
+                    print(f"  💰  Баланс до          : ${b_start:.4f}")
+                if b_end is not None:
+                    print(f"  💰  Баланс после       : ${b_end:.4f}")
+                if spent is not None:
+                    print(f"  💸  Потрачено          : {R}${spent:.4f}{RST}")
+                print(f"  {'─'*48}\n")
+
+                # ── TG-уведомление ─────────────────────────────────────────────
+                try:
+                    import json as _jst, urllib.request as _urst
+                    _tg_tok_st = _get_telegram_token()
+                    _subs_st = TG_SUBSCRIBERS_FILE
+                    if _tg_tok_st and _subs_st.exists():
+                        _sd_st = _jst.loads(_subs_st.read_text(encoding="utf-8"))
+                        _cids_st = [int(c) for c in _sd_st.get("chats", [])]
+                        _tg_lines = [
+                            "📊 <b>Итоги запуска</b>",
+                            "━━━━━━━━━━━━━━━━━━━",
+                            f"✅ Успешных аккаунтов: <b>{ok_count}/{total}</b>",
+                            f"❌ Неудачных: <b>{fail_count}</b>",
+                            f"📞 Номеров куплено: <b>{st['numbers_bought']}</b>",
+                            f"✔️ Отменено: <b>{st['numbers_cancelled']}</b>",
+                        ]
+                        if st["numbers_bad_action"]:
+                            _tg_lines.append(f"⚠️ Уже не существовали: <b>{st['numbers_bad_action']}</b>")
+                        if b_start is not None and b_end is not None:
+                            _tg_lines.append(f"💰 Баланс: <b>${b_start:.4f}</b> → <b>${b_end:.4f}</b>")
+                        if spent is not None:
+                            _tg_lines.append(f"💸 Потрачено: <b>${spent:.4f}</b>")
+                        _msg_st = "\n".join(_tg_lines)
+                        for _cid_st in _cids_st:
+                            try:
+                                _req_st = _urst.Request(
+                                    f"https://api.telegram.org/bot{_tg_tok_st}/sendMessage",
+                                    data=_jst.dumps({"chat_id": _cid_st, "text": _msg_st,
+                                                     "parse_mode": "HTML"}).encode(),
+                                    headers={"Content-Type": "application/json"},
+                                )
+                                _urst.urlopen(_req_st, timeout=8)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
             try:
                 asyncio.run(_run_cycle())
