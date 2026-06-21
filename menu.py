@@ -5501,6 +5501,16 @@ async def _viewcheckout_to_payments(page) -> bool:
         pass
     await page.wait_for_timeout(500)
 
+    # OOS-проверка сразу после загрузки (Continue никогда не появится)
+    if "viewcheckout" in page.url:
+        try:
+            _body_oos = (await page.evaluate(
+                "() => (document.body?.textContent || '').toLowerCase()"))
+            if any(p in _body_oos for p in _OOS_PHRASES):
+                return "OUT_OF_STOCK"
+        except Exception:
+            pass
+
     async def _mouse_click_continue(page) -> bool:
         """Находит Continue/Place Order и кликает Playwright mouse (React реагирует на реальный click)."""
         try:
@@ -5548,6 +5558,16 @@ async def _viewcheckout_to_payments(page) -> bool:
 
     for attempt in range(4):
         print(f"  {DIM}viewcheckout→payments попытка {attempt + 1}/4, URL: {page.url[:60]}{RST}")
+
+        # OOS — Continue никогда не появится, дальше нет смысла
+        if "viewcheckout" in page.url:
+            try:
+                _body_oos2 = (await page.evaluate(
+                    "() => (document.body?.textContent || '').toLowerCase()"))
+                if any(p in _body_oos2 for p in _OOS_PHRASES):
+                    return "OUT_OF_STOCK"
+            except Exception:
+                pass
 
         # 0. Set Location — проверяем и обрабатываем на каждой попытке
         if "viewcheckout" in page.url:
@@ -5929,12 +5949,26 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                     return False, f"OUT_OF_STOCK|{addr_msg}"
 
             reached = await _viewcheckout_to_payments(page)
+            if reached == "OUT_OF_STOCK":
+                return False, f"OUT_OF_STOCK|{addr_msg}"
 
             # После Continue мог появиться запрос адреса
             if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url):
                 if not await _fill_addr_bm():
                     return False, "Кнопка Save Address не найдена (после Continue)"
                 reached = await _viewcheckout_to_payments(page)
+                if reached == "OUT_OF_STOCK":
+                    return False, f"OUT_OF_STOCK|{addr_msg}"
+
+        # Номер телефона нужен для TG-ошибок ниже
+        _pp_phone = ""
+        try:
+            _pp_parts = profile_path.name.split("_")
+            _pp_num = next((p for p in reversed(_pp_parts) if len(p) >= 10 and p.isdigit()), "")
+            if _pp_num:
+                _pp_phone = _pp_num[-10:]
+        except Exception:
+            pass
 
         # ── Шаг C: проверяем что попали на payments ──────────────────────────
         if "payments" not in page.url:
@@ -5943,16 +5977,6 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             return True, (f"{'✅ ' + addr_msg if addr_msg else '✅ Адрес уже был сохранён'}"
                           f" → ⚠️ Оплата не загрузилась ({page.url.split('?')[0].split('/')[-1]})"
                           f", браузер {'оставлен открытым' if _keep_open else 'закрыт'}")
-
-        # Извлекаем номер телефона из имени профиля
-        _pp_phone = ""
-        try:
-            _parts = profile_path.name.split("_")
-            _num = next((p for p in reversed(_parts) if len(p) >= 10 and p.isdigit()), "")
-            if _num:
-                _pp_phone = _num[-10:]
-        except Exception:
-            pass
 
         # Отправляем куки в Telegram (до оплаты — чтобы можно было войти с телефона)
         try:
