@@ -8673,22 +8673,40 @@ if __name__ == "__main__":
 
     # Подавляем шум от Playwright-тасков при завершении asyncio.run()
     # (CancelledError → TargetClosedError в pending-тасках — не ошибка логики)
-    import asyncio as _aio
+    import asyncio as _aio, logging as _logging, warnings as _warnings
+
+    _SUPPRESS_EXC = ("CancelledError", "TargetClosedError", "ConnectionClosedError",
+                     "ConnectionResetError", "BrokenPipeError")
+    _SUPPRESS_MSG = ("TargetClosed", "Task was destroyed", "exception was never retrieved",
+                     "unclosed transport", "EPIPE", "broken pipe")
+
     def _quiet_exc_handler(loop, context):
         exc = context.get("exception")
-        if exc is None:
-            return
-        name = type(exc).__name__
-        if name in ("CancelledError", "TargetClosedError", "ConnectionClosedError"):
+        name = type(exc).__name__ if exc else ""
+        if name in _SUPPRESS_EXC:
             return
         msg = context.get("message", "")
-        if "TargetClosed" in msg or "Task was destroyed" in msg:
+        if any(s in msg for s in _SUPPRESS_MSG):
+            return
+        if exc and any(s in str(exc) for s in _SUPPRESS_MSG):
             return
         loop.default_exception_handler(context)
+
     try:
         _aio.get_event_loop().set_exception_handler(_quiet_exc_handler)
     except Exception:
         pass
+
+    # asyncio логгер тоже печатает "Future exception was never retrieved" — фильтруем
+    class _AsyncioQuietFilter(_logging.Filter):
+        def filter(self, record):
+            m = record.getMessage()
+            return not any(s in m for s in _SUPPRESS_MSG)
+    _logging.getLogger("asyncio").addFilter(_AsyncioQuietFilter())
+
+    # ResourceWarning "unclosed transport" при GC — уже отфильтровано в bot.py,
+    # но menu.py тоже использует asyncio напрямую
+    _warnings.filterwarnings("ignore", message="unclosed transport", category=ResourceWarning)
 
     _cli = sys.argv[1:]
     _exit_code = [0]
@@ -8731,6 +8749,10 @@ if __name__ == "__main__":
             _label = "Вход" if _skip else "Полный цикл"
 
             async def _run_cycle():
+                # Подавляем TargetClosedError / ConnectionClosedError из Playwright-тасков
+                # на ЭТОМ event loop (asyncio.run создаёт новый, поэтому ставим здесь)
+                asyncio.get_running_loop().set_exception_handler(_quiet_exc_handler)
+
                 total = len(_tariff_list)
                 import grizzly as _gz_s
                 _gz_s.reset_run_stats()
