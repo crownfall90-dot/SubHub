@@ -8754,6 +8754,18 @@ if __name__ == "__main__":
     # но menu.py тоже использует asyncio напрямую
     _warnings.filterwarnings("ignore", message="unclosed transport", category=ResourceWarning)
 
+    # Python 3.14: ValueError "I/O operation on closed pipe" внутри __del__ ProactorBasePipeTransport.
+    # Происходит при форматировании repr для warning-а — warnings.filterwarnings не перехватывает.
+    # sys.unraisablehook — единственный способ подавить.
+    _orig_unraisablehook = sys.unraisablehook
+    def _quiet_unraisablehook(u):
+        if (isinstance(u.exc_value, ValueError)
+                and "closed pipe" in str(u.exc_value)
+                and (u.object is None or "Transport" in type(u.object).__name__)):
+            return
+        _orig_unraisablehook(u)
+    sys.unraisablehook = _quiet_unraisablehook
+
     _cli = sys.argv[1:]
     _exit_code = [0]
 

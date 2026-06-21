@@ -12,6 +12,15 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", message="unclosed transport", category=ResourceWarning)
 
+_orig_unraisablehook = sys.unraisablehook
+def _quiet_unraisablehook(u):
+    if (isinstance(u.exc_value, ValueError)
+            and "closed pipe" in str(u.exc_value)
+            and (u.object is None or "Transport" in type(u.object).__name__)):
+        return
+    _orig_unraisablehook(u)
+sys.unraisablehook = _quiet_unraisablehook
+
 try:
     import httpx
 except ImportError:
