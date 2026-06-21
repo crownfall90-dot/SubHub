@@ -2045,8 +2045,6 @@ def screen_profiles():
                 _ln = (f"{DIM}{p['login_str']}{RST}"
                        f"  {DIM}|{RST}  {B}выдан: {p['issued_str']}{RST}"
                        + (f"  {DIM}|{RST}  {M}до: {_vt_disp}{RST}" if _vt_disp else ""))
-                if _slink_disp:
-                    _ln += f"\n{'':>10}{C}🔗 {_slink_disp}{RST}"
                 status_pre = f"  {B}🔵{RST}"
             elif no_meta:
                 _ln = f"{R}⚠ Нет данных{RST}"
