@@ -5581,7 +5581,8 @@ async def _viewcheckout_to_payments(page) -> bool:
     try:
         await page.wait_for_function("""() => {
             const body = (document.body?.textContent || '').toLowerCase();
-            if (body.includes('currently out of stock') || body.includes('out of stock for')) return true;
+            if (body.includes('currently out of stock') || body.includes('out of stock for') ||
+                body.includes('not deliverable') || body.includes('try another address')) return true;
             const kw = ['continue', 'place order'];
             for (const el of document.querySelectorAll('div, button, a, span, [role="button"]')) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
