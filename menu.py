@@ -5146,8 +5146,10 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     except Exception:
         pass
 
-    print("  Оплата подтверждена — ждём 15 сек для активации membership...")
-    await page.wait_for_timeout(15_000)
+    import random as _r_pp
+    _pp_wait = _r_pp.randint(45, 60)
+    print(f"  Оплата подтверждена — ждём {_pp_wait} сек для активации membership...")
+    await page.wait_for_timeout(_pp_wait * 1_000)
 
     # ── 1. Открываем flipkart-black-store ────────────────────────────────────
     _black_url = _black_banner_link or "https://www.flipkart.com/flipkart-black-store"
