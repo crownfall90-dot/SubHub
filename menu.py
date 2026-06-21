@@ -2040,10 +2040,13 @@ def screen_profiles():
         for i, p in enumerate(profiles, 1):
             no_meta = p.get("login_ts") is None
             _vt_disp = p.get("subscription_expires_str") or p.get("black_valid_till") or ""
+            _slink_disp = p.get("black_short_link") or ""
             if p.get("issued_ts"):
                 _ln = (f"{DIM}{p['login_str']}{RST}"
                        f"  {DIM}|{RST}  {B}выдан: {p['issued_str']}{RST}"
                        + (f"  {DIM}|{RST}  {M}до: {_vt_disp}{RST}" if _vt_disp else ""))
+                if _slink_disp:
+                    _ln += f"\n{'':>10}{C}🔗 {_slink_disp}{RST}"
                 status_pre = f"  {B}🔵{RST}"
             elif no_meta:
                 _ln = f"{R}⚠ Нет данных{RST}"
@@ -2119,6 +2122,7 @@ def screen_profiles():
             cls()
             header("ДЕЙСТВИЕ С ПРОФИЛЕМ", C)
             _sel_vt = selected.get("subscription_expires_str") or selected.get("black_valid_till") or ""
+            _sel_slink = selected.get("black_short_link") or ""
             print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
             _info_line = f"{G}{selected['login_str']}{RST}"
             if selected.get("issued_str"):
@@ -2126,6 +2130,8 @@ def screen_profiles():
             if _sel_vt:
                 _info_line += f"  {DIM}|{RST}  {M}до: {_sel_vt}{RST}"
             print(f"  Даты     : {_info_line}")
+            if _sel_slink:
+                print(f"  Ссылка   : {C}{_sel_slink}{RST}")
             print()
 
             opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)

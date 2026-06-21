@@ -407,9 +407,12 @@ def _menu_tg_bot_thread() -> None:
                 for ph, p, m in pairs[:20]:
                     vt = m.get("black_valid_till") or ""
                     st = m.get("status") or ""
-                    icon = "🌟" if (st in ("activated", "explore_now", "activate_now") or vt) else ("📍" if st == "email_completed" else "❌")
+                    is_iss = bool(m.get("issued_ts"))
+                    icon = "🔵" if is_iss else ("🌟" if (st in ("activated", "explore_now", "activate_now") or vt) else ("📍" if st == "email_completed" else "❌"))
                     label = f"{icon} {ph}"
-                    if vt:
+                    if is_iss and vt:
+                        label += f" · до {vt}"
+                    elif vt:
                         label += f" · {vt}"
                     rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:{list_type}"}])
                 rows.append([{"text": "◀️ Назад", "callback_data": "go:profiles"}])
@@ -1455,11 +1458,33 @@ def _menu_tg_bot_thread() -> None:
                 phone = parts[2]
                 list_type = parts[3] if len(parts) > 3 else "noaddr"
                 rec_file = parts[4] if len(parts) > 4 else ""
-                
+
                 await _ack(qid)
                 busy = _bg_ops.get(phone) == "running"
-                txt = (f"📱 <code>{phone}</code>\n\n"
-                       f"{'⏳ <i>Операция выполняется...</i>' if busy else 'Выберите действие:'}")
+                # Загружаем мета для отображения дат и ссылки
+                _pm = {}
+                try:
+                    _pp = _find_profile(phone)
+                    if _pp:
+                        _pm = _m("_read_profile_meta")(_pp)
+                except Exception:
+                    pass
+                _pm_login   = _pm.get("login_str") or ""
+                _pm_issued  = _pm.get("issued_str") or ""
+                _pm_vt      = (_pm.get("subscription_expires_str")
+                               or _pm.get("black_valid_till") or "")
+                _pm_slink   = _pm.get("black_short_link") or ""
+                _info = f"📱 <code>+91 {phone}</code>"
+                if _pm_login:
+                    _info += f"\n📆 Создан:  <code>{_pm_login}</code>"
+                if _pm_issued:
+                    _info += f"\n📋 Выдан:   <code>{_pm_issued}</code>"
+                if _pm_vt:
+                    _info += f"\n⏳ До:       <b>{_pm_vt}</b>"
+                if _pm_slink:
+                    _info += f"\n🔗 <a href=\"{_pm_slink}\">{_pm_slink}</a>"
+                txt = (_info + "\n\n" +
+                       ("⏳ <i>Операция выполняется...</i>" if busy else "Выберите действие:"))
                 await _edit(cid, mid, txt, _profile_menu_kb(phone, list_type, rec_file), parse_mode="HTML")
                 return
 
