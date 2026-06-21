@@ -2957,12 +2957,27 @@ async def _fill_address_form(page, addr: dict) -> bool:
         return False
 
     _RED_ERR_JS = """() => {
+        // Геонимы — не ошибки валидации, даже если красного цвета (автозаполнение)
+        const GEO = new Set([
+            'maharashtra','delhi','karnataka','tamilnadu','gujarat','rajasthan',
+            'westbengal','andhrapradesh','madhyapradesh','uttarpradesh','punjab',
+            'haryana','bihar','odisha','telangana','kerala','jharkhand','uttarakhand',
+            'himachalpradesh','assam','goa','chhattisgarh','chandigarh',
+            'jammuandkashmir','ladakh','tripura','manipur','meghalaya','mizoram',
+            'nagaland','sikkim','arunachalpradesh','pondicherry','puducherry'
+        ]);
         for (const el of document.querySelectorAll('div,span,p,label')) {
             const txt = (el.innerText || '').trim();
             if (!txt || txt.length > 120) continue;
             const m = window.getComputedStyle(el).color
                 .match(/rgb[a]?\\(\\s*(\\d+),\\s*(\\d+),\\s*(\\d+)/);
-            if (m && +m[1] > 150 && +m[2] < 80 && +m[3] < 80) return txt;
+            if (m && +m[1] > 150 && +m[2] < 80 && +m[3] < 80) {
+                const norm = txt.toLowerCase().replace(/[\\s&]+/g, '');
+                if (GEO.has(norm)) continue;
+                // Короткий текст только из букв — вероятно название города/района
+                if (/^[a-z\\s]+$/i.test(txt) && txt.split(/\\s+/).length <= 3 && txt.length <= 25) continue;
+                return txt;
+            }
         }
         return '';
     }"""
@@ -2972,19 +2987,33 @@ async def _fill_address_form(page, addr: dict) -> bool:
         await page.wait_for_timeout(2_000)
 
         # Диалог "Update with these details?" — нажимаем CONFIRM
+        _confirmed = False
         try:
             if "#dialogBoxOpen" in page.url or await page.locator("text=Update with these details?").count() > 0:
                 _confirm = page.get_by_text("CONFIRM", exact=True).first
                 if await _confirm.count() > 0 and await _confirm.is_visible():
                     await _human_click(page, _confirm, before=0.3)
-                    await page.wait_for_timeout(1_500)
                     print(f"  {G}✔ CONFIRM нажат (диалог Update with these details){RST}")
+                    _confirmed = True
+                    for _ in range(4):
+                        await page.wait_for_timeout(1_000)
+                        if await save_loc.count() == 0 or not await save_loc.is_visible():
+                            break
+                        if any(s in page.url for s in ("viewcheckout", "payments", "changeShipping")):
+                            break
         except Exception:
             pass
 
-        # Если кнопка исчезла — адрес принят
+        # Если кнопка исчезла или ушли со страницы формы — адрес принят
         if await save_loc.count() == 0 or not await save_loc.is_visible():
             break
+        if any(s in page.url for s in ("viewcheckout", "payments", "changeShipping")):
+            break
+
+        # После CONFIRM не проверяем ошибки — просто повторяем Save в след. итерации
+        if _confirmed:
+            await page.wait_for_timeout(500)
+            continue
 
         red_err = ""
         try:
