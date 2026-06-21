@@ -2850,6 +2850,23 @@ def purge_profiles_cli(profiles_dir: str = "./chrome_profiles") -> None:
 
 
 if __name__ == "__main__":
+    # На Windows: перехватываем Ctrl+C и Ctrl+Break через Win32 API.
+    # Стандартный Python-обработчик не всегда прерывает asyncio event loop
+    # когда он заблокирован на уровне C (IOCP). _thread.interrupt_main()
+    # явно прерывает bytecode-выполнение и корректно доходит до asyncio.
+    try:
+        import ctypes as _ctypes, _thread as _thr
+        _PHANDLER = _ctypes.WINFUNCTYPE(_ctypes.c_bool, _ctypes.c_ulong)
+        def _ctrl_handler(ctrl_type: int) -> bool:
+            if ctrl_type in (0, 1):  # 0=CTRL_C, 1=CTRL_BREAK
+                _thr.interrupt_main()
+                return True
+            return False
+        _ctrl_handler_ref = _PHANDLER(_ctrl_handler)
+        _ctypes.windll.kernel32.SetConsoleCtrlHandler(_ctrl_handler_ref, True)
+    except Exception:
+        pass  # не Windows или нет ctypes — работаем со стандартным поведением
+
     _args = sys.argv[1:]
 
     def _get_arg(flag: str) -> Optional[str]:
@@ -2881,7 +2898,10 @@ if __name__ == "__main__":
 
         _headless = "--headless" in _args  # фоновый режим — без окна браузера
 
-        asyncio.run(main(tg_mode=_tg, accounts_target=_cnt, force_headless=_headless))
+        try:
+            asyncio.run(main(tg_mode=_tg, accounts_target=_cnt, force_headless=_headless))
+        except KeyboardInterrupt:
+            pass
 
 
 # =============================================================================
