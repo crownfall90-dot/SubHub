@@ -2734,6 +2734,15 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             await _handle_post_payment(page, ctx, profile_path, phone_number=_pp_phone)
         except Exception as _pp_e:
             print(f"  Post-payment: {_pp_e}")
+        # Пост-пеймент завершён — закрываем браузер
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+        try:
+            await pw.stop()
+        except Exception:
+            pass
         return True, f"{addr['name']} | {addr.get('pincode','')} {addr.get('city','')} → ✅ оплата запущена"
     except Exception as exc:
         msg = str(exc)
@@ -4271,15 +4280,12 @@ async def _handle_paytm_currency_page(page) -> bool:
     # Проверяем что платёж завершился и вернулись на Flipkart
     if "flipkart.com" not in page.url:
         if _is_3ds_page(page.url) or "cardinal" in page.url.lower():
-            print(f"  {Y}⏳ Всё ещё на 3DS/OTP странице — ожидаю завершения (до 15 мин)...{RST}")
-            print(f"  {DIM}  URL: {page.url[:80]}{RST}")
+            print(f"  {Y}⏳ Всё ещё на 3DS странице — перехожу на flipkart-black-store...{RST}")
             try:
-                await page.wait_for_url(
-                    lambda u: "flipkart.com" in u, timeout=900_000
-                )
-                print(f"  {G}✅ Вернулись на Flipkart после 3DS/OTP{RST}")
+                await page.goto("https://www.flipkart.com/flipkart-black-store",
+                                wait_until="domcontentloaded", timeout=20_000)
+                print(f"  {G}✅ Перешли на flipkart-black-store{RST}")
             except Exception:
-                print(f"  {Y}⚠ Timeout ожидания 3DS/OTP — отклонён{RST}")
                 return "declined"
         else:
             print(f"  {Y}⚠ После оплаты не вернулись на Flipkart ({page.url[:60]}) — отклонён{RST}")
@@ -4506,12 +4512,19 @@ async def _handle_3ds_verification(page) -> bool:
     else:
         print(f"  {Y}⚠ Поле ввода OTP не найдено — действуй вручную.{RST}")
 
-    # Ждём возврата на Flipkart (до 5 минут — время на ручной ввод)
+    # Ждём редиректа на Flipkart до 60 сек, иначе переходим сами
+    import random as _r3d
+    _t3d = _r3d.randint(45, 60)
     try:
-        await page.wait_for_url("**/flipkart.com/**", timeout=300_000)
-        print("  3DS пройден, возврат на Flipkart.")
+        await page.wait_for_url(lambda u: "flipkart.com" in u, timeout=_t3d * 1_000)
+        print(f"  3DS пройден, возврат на Flipkart.")
     except Exception:
-        print(f"  {DIM}Браузер оставлен открытым.{RST}")
+        print(f"  3DS: ждал {_t3d} сек, редиректа нет — перехожу на flipkart-black-store...")
+        try:
+            await page.goto("https://www.flipkart.com/flipkart-black-store",
+                            wait_until="domcontentloaded", timeout=20_000)
+        except Exception:
+            pass
 
     return True
 
@@ -5146,22 +5159,22 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     except Exception:
         pass
 
-    import random as _r_pp
-    _pp_wait = _r_pp.randint(45, 60)
-    print(f"  Оплата подтверждена — ждём {_pp_wait} сек для активации membership...")
-    await page.wait_for_timeout(_pp_wait * 1_000)
-
-    # ── 1. Открываем flipkart-black-store ────────────────────────────────────
+    # ── 1. Открываем flipkart-black-store (или используем текущую страницу) ──
     _black_url = _black_banner_link or "https://www.flipkart.com/flipkart-black-store"
-    black_page = await ctx.new_page()
-    try:
-        await black_page.goto(
-            _black_url,
-            wait_until="domcontentloaded", timeout=20_000
-        )
-    except Exception:
-        pass
-    await black_page.wait_for_timeout(3_000)
+    if "flipkart-black-store" in cur_url:
+        # Уже там (перешли из 3DS-хендлера) — повторно не ждём
+        black_page = page
+    else:
+        import random as _r_pp
+        _pp_wait = _r_pp.randint(45, 60)
+        print(f"  Оплата подтверждена — ждём {_pp_wait} сек для активации membership...")
+        await page.wait_for_timeout(_pp_wait * 1_000)
+        black_page = await ctx.new_page()
+        try:
+            await black_page.goto(_black_url, wait_until="domcontentloaded", timeout=20_000)
+        except Exception:
+            pass
+        await black_page.wait_for_timeout(3_000)
 
     # ── 2. Читаем дату подписки ───────────────────────────────────────────────
     _VALID_TILL_JS = """() => {
