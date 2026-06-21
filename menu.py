@@ -8092,33 +8092,15 @@ def _do_git_update() -> tuple[bool, str]:
 
 
 def screen_update() -> None:
-    """Экран обновления из GitHub. Git если есть, иначе GitHub API."""
+    """Экран обновления из GitHub."""
     cls()
     header("ОБНОВЛЕНИЕ", G)
-    print(f"  {DIM}Проверяю наличие обновлений...{RST}")
-    _cwd = Path(__file__).parent
-    commits: list[str] = []
-    _via_git = False
-    _git_ok = False
     try:
-        _fr = subprocess.run([_GIT, "fetch", "--quiet", "origin"],
-                             capture_output=True, timeout=20, cwd=_cwd)
-        if _fr.returncode == 0:
-            r = subprocess.run([_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
-                               capture_output=True, text=True, timeout=10, cwd=_cwd)
-            commits  = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
-            _via_git = True
-            _git_ok  = True
-    except Exception:
-        pass
-    if not _git_ok:
-        print(f"  {DIM}Git fetch не удался — использую GitHub API...{RST}")
-        try:
-            commits = _http_check_updates()
-        except Exception as _he:
-            print(f"  {R}❌ Ошибка: {_he}{RST}")
-            pause()
-            return
+        commits = _http_check_updates()
+    except Exception as _he:
+        print(f"  {R}❌ Ошибка: {_he}{RST}")
+        pause()
+        return
 
     print()
     if not commits:
