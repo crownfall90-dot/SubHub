@@ -41,6 +41,7 @@ _STATS: dict = {
     "numbers_bad_action": 0,
     "balance_start":     None,
     "balance_end":       None,
+    "profiles_saved":    0,
 }
 
 def reset_run_stats() -> None:
@@ -49,6 +50,7 @@ def reset_run_stats() -> None:
     _STATS["numbers_bad_action"] = 0
     _STATS["balance_start"]     = None
     _STATS["balance_end"]       = None
+    _STATS["profiles_saved"]    = 0
 
 def get_run_stats() -> dict:
     return dict(_STATS)
@@ -878,6 +880,7 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                             "source": "bg_loser",
                         }, ensure_ascii=False), encoding="utf-8"
                     )
+                    _STATS["profiles_saved"] += 1
                 except Exception:
                     pass
                 try:

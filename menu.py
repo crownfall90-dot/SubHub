@@ -7334,8 +7334,12 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                                         json.dumps({"username": o_ph, "login_ts": time.time(),
                                                                     "otp_code": _loser_otp, "source": "parallel_loser"},
                                                                    ensure_ascii=False), encoding="utf-8")
+                                                    _grizzly_module._STATS["profiles_saved"] += 1
                                                 except Exception: pass
                                                 print(f"  {G}[BG✓] Профиль +91 {o_ph} сохранён{RST}")
+                                                try:
+                                                    await _send_tg_login_ok(o_ph)
+                                                except Exception: pass
                                             else:
                                                 print(f"  {Y}[BG] +91 {o_ph} вход не прошёл — отменяю{RST}")
                                                 _grizzly_module.mark_failed(o_id)
@@ -7506,6 +7510,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         }, ensure_ascii=False),
                         encoding="utf-8",
                     )
+                    _grizzly_module._STATS["profiles_saved"] += 1
                 except Exception:
                     pass
                 print(f"  {G}✔ Вход выполнен: +91 {phone_10}{RST}")
@@ -7594,6 +7599,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             }, ensure_ascii=False),
                             encoding="utf-8",
                         )
+                        _grizzly_module._STATS["profiles_saved"] += 1
                     except Exception:
                         pass
                     print(f"  {G}✔ Вход выполнен, адрес и почта сохранены: +91 {phone_10}{RST}")
@@ -8856,7 +8862,8 @@ if __name__ == "__main__":
                 print(f"\n  {'─'*48}")
                 print(f"  📊 {BLD}Итоги запуска{RST}")
                 print(f"  {'─'*48}")
-                print(f"  ✅  Успешных аккаунтов : {G}{BLD}{ok_count}/{total}{RST}")
+                print(f"  💾  Профилей сохранено : {G}{BLD}{st['profiles_saved']}{RST}")
+                print(f"  ✅  Успешных аккаунтов : {G}{ok_count}/{total}{RST}")
                 print(f"  ❌  Неудачных          : {R}{fail_count}{RST}")
                 print(f"  📞  Номеров куплено    : {st['numbers_bought']}")
                 print(f"  ✔   Отменено           : {G}{st['numbers_cancelled']}{RST}")
@@ -8883,6 +8890,7 @@ if __name__ == "__main__":
                         _tg_lines = [
                             "📊 <b>Итоги запуска</b>" + (" ⚠️ прервано" if _interrupted else ""),
                             "━━━━━━━━━━━━━━━━━━━",
+                            f"💾 Профилей сохранено: <b>{st['profiles_saved']}</b>",
                             f"✅ Успешных аккаунтов: <b>{ok_count}/{total}</b>",
                             f"❌ Неудачных: <b>{fail_count}</b>",
                             f"📞 Номеров куплено: <b>{st['numbers_bought']}</b>",
