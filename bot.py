@@ -1188,11 +1188,13 @@ def _menu_tg_bot_thread() -> None:
                 _ctrl[0] = {}
 
         async def _do_run(cid, mode, count=None, mid=0):
-            args = [sys.executable, str(Path(__file__).parent / "menu.py"), "--login-only"]
+            args = [sys.executable, str(Path(__file__).parent / "main.py")]
             if mode == "headless" or mode == "tg":
                 args.append("--headless")
             if mode == "tg":
-                args.append("--intercept")
+                args.append("--tg-intercept")
+            else:
+                args.append("--tg-login")
             if count:
                 args += ["--accounts", str(count)]
             try:

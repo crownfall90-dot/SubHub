@@ -1184,9 +1184,11 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         if stop_at_email:
             args = [sys.executable, str(Path(__file__)), "--full-cycle", "--stop-at-email", "--tariffs", str(months)]
         else:
-            args = [sys.executable, str(Path(__file__)), "--login-only"]
-            if tg_mode == "intercept":
-                args.append("--intercept")
+            args = [sys.executable, str(Path(__file__).parent / "main.py")]
+            if tg_mode == "login":
+                args.append("--tg-login")
+            elif tg_mode == "intercept":
+                args.append("--tg-intercept")
         if target_count:
             args += ["--accounts", str(target_count)]
         if run_headless:
