@@ -2077,7 +2077,22 @@ def screen_profiles():
             if action in ("0", ""):
                 break
 
-            elif action in ("П", "7"):
+            # Проверка залогиненности перед любым действием
+            # (пропускаем только: 2/В — пометка, 3/И — архив, D — удаление, К — восстановление)
+            if action not in ("2", "В", "B", "3", "И", "I", "D", "К", "K"):
+                print(f"  {DIM}Проверяю сессию профиля +91 {selected['username']}...{RST}")
+                import shutil as _sh_lck
+                _logged_in = asyncio.run(_flipkart_is_logged_in(selected["path"]))
+                if not _logged_in:
+                    print(f"  {R}Профиль +91 {selected['username']} не залогинен — удаляю.{RST}")
+                    try:
+                        _sh_lck.rmtree(selected["path"], ignore_errors=True)
+                    except Exception:
+                        pass
+                    time.sleep(2)
+                    break
+
+            if action in ("П", "7"):
                 _uname  = selected["username"]
                 _ppath  = selected["path"]
 
@@ -2513,6 +2528,42 @@ def _gen_indian_address() -> dict:
     road    = f"{rnum}, {area}, {rtype}"
     return {"name": name, "pincode": pincode, "city": city, "state": state,
             "house": house, "road": road}
+
+
+async def _flipkart_is_logged_in(profile_path: Path) -> bool:
+    """Headless-проверка: сессия профиля ещё активна на Flipkart?"""
+    from playwright.async_api import async_playwright as _apw
+    try:
+        async with _apw() as _pw2:
+            _ctx2 = await _pw2.chromium.launch_persistent_context(
+                str(profile_path),
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                ignore_https_errors=True,
+            )
+            _pg2 = _ctx2.pages[0] if _ctx2.pages else await _ctx2.new_page()
+            try:
+                await _pg2.goto("https://www.flipkart.com",
+                                timeout=20_000, wait_until="domcontentloaded")
+                await _pg2.wait_for_timeout(3_000)
+                _has_login_btn = await _pg2.evaluate("""() => {
+                    for (const el of document.querySelectorAll(
+                            'button,a,div,span,[role="button"]')) {
+                        const t = (el.innerText || '').trim();
+                        if (t !== 'Login') continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 20 && r.height > 8) return true;
+                    }
+                    return false;
+                }""")
+                return not _has_login_btn
+            finally:
+                try:
+                    await _ctx2.close()
+                except Exception:
+                    pass
+    except Exception:
+        return True  # при ошибке не удаляем
 
 
 async def _do_fill_address(profile_path: Path, addr: dict,
