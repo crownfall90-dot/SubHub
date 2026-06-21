@@ -7458,23 +7458,34 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             t.cancel()
                     _buy_tasks.clear()
 
-                    # Clean up all active/pending rentals that are NOT the winner
-                    for entry in list(_active) + list(_pending):
-                        o_id = entry[0]
-                        o_ph = entry[1]
-                        o_pg = entry[2]
+                    # _active: закрываем ctx (_do_loser уже обработал их профили)
+                    for entry in list(_active):
+                        o_id = entry[0]; o_pg = entry[2]
                         o_ctx = entry[4] if len(entry) > 4 else None
-
                         if o_id != win_id:
-                            # mark_failed — noop для уже completed (bg-login) номеров
                             _grizzly_module.mark_failed(o_id)
                             try:
                                 if o_ctx: await o_ctx.close()
                                 elif o_pg: await o_pg.close()
                             except Exception:
                                 pass
-                            # Удаляем только _pending профили (нет OTP, нет bg-login)
-                            # _active лузеры уже обработаны _do_loser — не трогаем их
+
+                    # _pending: закрываем ctx И удаляем папку (OTP не пришёл — в аккаунты не попали)
+                    for entry in list(_pending):
+                        o_id = entry[0]; o_ph = entry[1]; o_pg = entry[2]
+                        o_ctx = entry[4] if len(entry) > 4 else None
+                        _grizzly_module.mark_failed(o_id)
+                        try:
+                            if o_ctx: await o_ctx.close()
+                            elif o_pg: await o_pg.close()
+                        except Exception:
+                            pass
+                        try:
+                            import shutil as _sh_pd
+                            _sh_pd.rmtree(DONE_PROFILES_DIR / f"profile_{o_ph}", ignore_errors=True)
+                        except Exception:
+                            pass
+                    _pending.clear()
 
                 # Победитель определён
                 is_first_winner = (win_id == _active[0][0])
