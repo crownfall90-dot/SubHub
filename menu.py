@@ -5490,63 +5490,57 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
         return null;
     }"""
 
-    async def _fix_lang_error(pg):
-        """При ошибке языка: Change → ввести пинкод → выбрать результат → Confirm."""
+    async def _search_location_by_pincode(pg):
+        """Вводит пинкод в поле 'Search by area, name, street.' и выбирает первый результат."""
         try:
-            # Вытащить 6-значный пинкод из текста страницы
             _pincode = await pg.evaluate("""() => {
                 const m = (document.body.innerText || '').match(/\\b(\\d{6})\\b/);
                 return m ? m[1] : "400001";
             }""")
-            # Найти кнопку Change в панели Deliver To
-            _chg = await pg.evaluate("""() => {
-                for (const el of document.querySelectorAll('button,div,a,span,[role="button"]')) {
-                    const t = (el.innerText || '').trim().toLowerCase();
-                    if (t !== 'change') continue;
-                    const r = el.getBoundingClientRect();
-                    if (r.width >= 15 && r.height >= 8)
-                        return {x: r.x + r.width/2, y: r.y + r.height/2};
-                }
-                return null;
-            }""")
-            if not _chg:
-                return
-            print(f"  карта: ошибка языка → нажимаю «Change»...")
-            await pg.mouse.click(_chg["x"], _chg["y"])
-            await pg.wait_for_timeout(1_500)
-            # Найти поле поиска
+            # Поле поиска на карте (видно сразу, без нажатия Change)
             _sf = await pg.evaluate("""() => {
                 for (const el of document.querySelectorAll('input')) {
                     const ph = (el.placeholder || '').toLowerCase();
-                    if (!ph.includes('area') && !ph.includes('street') && !ph.includes('search')) continue;
-                    const r = el.getBoundingClientRect();
-                    if (r.width >= 80 && r.height >= 15)
-                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                    if (ph.includes('area') || ph.includes('street') ||
+                        ph.includes('search') || ph.includes('name'))
+                    {
+                        const r = el.getBoundingClientRect();
+                        if (r.width >= 80 && r.height >= 10)
+                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                    }
                 }
                 return null;
             }""")
-            if _sf:
-                await pg.mouse.click(_sf["x"], _sf["y"])
-                await pg.wait_for_timeout(300)
-                await pg.keyboard.type(_pincode, delay=80)
-                await pg.wait_for_timeout(2_000)
-                # Выбрать первый результат автодополнения
-                _sugg = await pg.evaluate("""() => {
-                    const sels = ['li[role="option"]', '[class*="suggestion"]',
-                                  '[class*="pac-item"]', '[class*="autocomplete"] li'];
-                    for (const s of sels) {
-                        const el = document.querySelector(s);
-                        if (el) {
-                            const r = el.getBoundingClientRect();
-                            if (r.width > 30 && r.height > 5)
-                                return {x: r.x + r.width/2, y: r.y + r.height/2};
-                        }
+            if not _sf:
+                return False
+            print(f"  карта: пишу пинкод {_pincode} в поле поиска...")
+            await pg.mouse.click(_sf["x"], _sf["y"])
+            await pg.wait_for_timeout(300)
+            await pg.keyboard.press("Control+a")
+            await pg.keyboard.press("Delete")
+            await pg.keyboard.type(_pincode, delay=80)
+            await pg.wait_for_timeout(2_500)
+            # Выбрать первый результат автодополнения
+            _sugg = await pg.evaluate("""() => {
+                const sels = [
+                    'li[role="option"]', '[class*="suggestion"]',
+                    '[class*="pac-item"]', '[class*="autocomplete"] li', 'ul li'
+                ];
+                for (const s of sels) {
+                    const el = document.querySelector(s);
+                    if (el) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 30 && r.height > 5)
+                            return {x: r.x + r.width/2, y: r.y + r.height/2,
+                                    text: (el.innerText || '').slice(0, 40)};
                     }
-                    return null;
-                }""")
-                if _sugg:
-                    await pg.mouse.click(_sugg["x"], _sugg["y"])
-                    await pg.wait_for_timeout(1_500)
+                }
+                return null;
+            }""")
+            if _sugg:
+                print(f"  карта: выбираю «{_sugg.get('text','?')}»...")
+                await pg.mouse.click(_sugg["x"], _sugg["y"])
+                await pg.wait_for_timeout(1_500)
             # Нажать Confirm
             _conf = await pg.evaluate("""() => {
                 for (const el of document.querySelectorAll('button,div,a,[role="button"]')) {
@@ -5559,58 +5553,50 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
                 return null;
             }""")
             if _conf:
-                print("  карта: нажимаю «confirm» (после Change)...")
+                print("  карта: нажимаю «confirm»...")
                 await pg.mouse.click(_conf["x"], _conf["y"])
                 await pg.wait_for_timeout(2_000)
-        except Exception as _fle:
-            print(f"  карта: _fix_lang_error: {_fle}")
+            return True
+        except Exception as _sle:
+            print(f"  карта: поиск пинкода: {_sle}")
+            return False
 
     handled = False
-    for _outer in range(4):  # повторяем цикл пока Set Location не уйдёт
-        # Проверяем наличие Set Location
+    for _outer in range(3):  # повторяем цикл пока Set Location не уйдёт
         try:
             loc_bbox = await page.evaluate(_FIND_SET_LOC_JS)
         except Exception:
             loc_bbox = None
 
         if not loc_bbox:
-            break  # кнопка исчезла — готово
+            break
 
         handled = True
         print(f"  Set Location: нажимаю (попытка {_outer + 1})...")
         await page.mouse.click(loc_bbox["x"], loc_bbox["y"])
         await page.wait_for_timeout(_r.uniform(1_500, 2_500))
 
-        # Нажимаем кнопки на странице карты
-        _lang_fixed = False
-        for _btn_step in range(4):
+        # На address-map: сначала вводим пинкод в поле поиска
+        if "address-map" in page.url or "changeShipping" in page.url:
+            await _search_location_by_pincode(page)
+
+        # Затем нажимаем кнопки (Update address / Confirm)
+        for _btn_step in range(3):
             if "viewcheckout" in page.url:
                 break
-
-            # Проверяем ошибку языка
-            try:
-                _pt = await page.evaluate("() => (document.body?.innerText || '').toLowerCase()")
-                if "unable to save your address in this language" in _pt and not _lang_fixed:
-                    _lang_fixed = True
-                    await _fix_lang_error(page)
-                    continue
-            except Exception:
-                pass
-
             try:
                 btn = await page.evaluate(_MAP_BTNS_JS)
             except Exception:
                 btn = None
-
             if btn:
                 print(f"  карта: нажимаю «{btn.get('text', '?')}»...")
                 await page.mouse.click(btn["x"], btn["y"])
-                await page.wait_for_timeout(_r.uniform(1_500, 2_500))
+                await page.wait_for_timeout(_r.uniform(1_200, 2_000))
             else:
-                await page.wait_for_timeout(2_000)
+                await page.wait_for_timeout(1_500)
 
-        # Если после шагов всё ещё на address-map — жмём Back
-        if "address-map" in page.url:
+        # Если всё ещё на address-map — идём назад
+        if "address-map" in page.url or "changeShipping" in page.url:
             print("  Set Location: нажимаю Back...")
             try:
                 await page.go_back()
@@ -5618,7 +5604,6 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
             except Exception:
                 pass
 
-        # Ждём загрузки viewcheckout перед следующей итерацией
         if "viewcheckout" not in page.url:
             try:
                 await page.wait_for_url("**/viewcheckout**", timeout=8_000)
