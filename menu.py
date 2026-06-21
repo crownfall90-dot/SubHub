@@ -2173,8 +2173,15 @@ def screen_profiles():
                         addr_info = msg6.split("|", 1)[1] if "|" in msg6 else ""
                         if addr_info:
                             print(f"  {G}✔ {addr_info}{RST}")
-                        print(f"  {R}✘ Currently out of stock для этого пинкода.{RST}")
-                        print(f"  {Y}Попробуйте другой профиль или адрес доставки (пункт 5).{RST}")
+                        print(f"  {R}✘ Currently out of stock — профиль недоступен для покупки.{RST}")
+                        import shutil as _sh6
+                        try:
+                            _sh6.rmtree(selected["path"], ignore_errors=True)
+                            print(f"  {Y}Профиль +91 {selected['username']} удалён.{RST}")
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        break
                     else:
                         print(f"\n  {R}❌ {msg6}{RST}")
                     pause()
