@@ -7119,11 +7119,12 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 except Exception: pass
                                 if not has_otp:
                                     _grizzly_module.mark_failed(o_id)
-                                try:
-                                    if o_ctx: await o_ctx.close()
-                                except Exception:
-                                    try: await o_pg.close()
-                                    except Exception: pass
+                                if not _loser_login_ok:
+                                    try:
+                                        if o_ctx: await o_ctx.close()
+                                    except Exception:
+                                        try: await o_pg.close()
+                                        except Exception: pass
                                 if not has_otp or intercept_mode or not _loser_login_ok:
                                     try:
                                         import shutil as _sh

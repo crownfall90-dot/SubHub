@@ -909,12 +909,13 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 pass
             _bg_del_profile = True
         finally:
-            try:
-                if ctx2:
-                    await ctx2.close()
-                await pw.stop()
-            except Exception:
-                pass
+            if _bg_del_profile:
+                try:
+                    if ctx2:
+                        await ctx2.close()
+                    await pw.stop()
+                except Exception:
+                    pass
             if _bg_del_profile and profile_path and profile_path.exists():
                 try:
                     shutil.rmtree(profile_path, ignore_errors=True)
