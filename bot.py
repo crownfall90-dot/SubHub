@@ -7,7 +7,10 @@ import json
 import subprocess
 import sys
 import threading
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message="unclosed transport", category=ResourceWarning)
 
 try:
     import httpx
