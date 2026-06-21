@@ -236,13 +236,51 @@ def _start_monitor_if_needed():
     if _MONITOR_TASK is None or _MONITOR_TASK.done():
         _MONITOR_TASK = asyncio.run_coroutine_threadsafe(_rental_monitor_loop(), loop)
 
+def start_global_monitor():
+    """Запускает фоновый монитор при старте консоли — сканирует GrizzlySMS API
+    на наличие активных номеров даже если _RENTALS пуст."""
+    _start_monitor_if_needed()
+
 async def _rental_monitor_loop():
     _otp_last_check: dict[str, float] = {}
+    _api_scan_at: float = 0.0
     while True:
         try:
             now = time.monotonic()
-            # 1. Проверяем активные номера на OTP каждые 10 сек
             api_key = _get_grizzly_api_key()
+
+            # 0. Каждые 10 сек сканируем GrizzlySMS API на активные номера,
+            #    которых нет в _RENTALS — подхватываем «чужие» и забытые.
+            if api_key and now - _api_scan_at >= 10.0:
+                _api_scan_at = now
+                try:
+                    _scan_client = GrizzlySMSClient(api_key, http_timeout=10)
+                    _active_list = await _scan_client.get_active_activations()
+                    await _scan_client.close()
+                    for _item in (_active_list or []):
+                        _aid = str(_item.get("activationId") or _item.get("id") or "")
+                        _ph_raw = str(_item.get("phoneNumber") or _item.get("phone") or "")
+                        if not _aid or _aid in _RENTALS:
+                            continue
+                        _ph10 = _ph_raw[-10:] if len(_ph_raw) >= 10 else _ph_raw
+                        print(f"\n  {_Y}[Фон] Обнаружен активный номер +91 {_ph10} (id={_aid}) в GrizzlySMS{_RST}")
+                        _RENTALS[_aid] = {
+                            "phone_10":      _ph10,
+                            "rented_at":     time.monotonic() - 200.0,  # считаем уже старым → отменяем
+                            "status":        "active",
+                            "profile_path":  None,
+                            "login_url":     "https://www.flipkart.com/account/login?ret=/",
+                            "months":        3,
+                            "intercept_mode": False,
+                            "cancel_attempts": 0,
+                            "next_attempt_at": 0.0,
+                            "cancelling":    False,
+                            "external":      True,
+                        }
+                except Exception:
+                    pass
+
+            # 1. Проверяем активные номера на OTP каждые 10 сек
             if api_key:
                 for aid, r in list(_RENTALS.items()):
                     if r["status"] == "active" and not r.get("intercept_mode"):

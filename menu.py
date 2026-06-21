@@ -9069,6 +9069,8 @@ if __name__ == "__main__":
                 _migrate_config()
                 _startup_cleanup()
                 _start_log_tee()     # дублируем вывод в automation.log
+                # Фоновый монитор GrizzlySMS — сканирует активные номера с первой секунды
+                _grizzly_module.start_global_monitor()
                 # TG-бот стартует после инициализации секретов (токен уже в config.yaml)
                 threading.Thread(target=_menu_tg_bot_thread, daemon=True, name="tg-menu").start()
                 # Фоновая проверка обновлений (один раз при старте)
