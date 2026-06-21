@@ -236,10 +236,23 @@ def _start_monitor_if_needed():
     if _MONITOR_TASK is None or _MONITOR_TASK.done():
         _MONITOR_TASK = asyncio.run_coroutine_threadsafe(_rental_monitor_loop(), loop)
 
+def _monitor_watchdog():
+    """Поток-сторож: перезапускает монитор если он упал, раз в 15 сек."""
+    import time as _time
+    while True:
+        _time.sleep(15)
+        try:
+            _start_monitor_if_needed()
+        except Exception:
+            pass
+
 def start_global_monitor():
     """Запускает фоновый монитор при старте консоли — сканирует GrizzlySMS API
     на наличие активных номеров даже если _RENTALS пуст."""
     _start_monitor_if_needed()
+    import threading
+    _wd = threading.Thread(target=_monitor_watchdog, daemon=True, name="grizzly-watchdog")
+    _wd.start()
 
 async def _rental_monitor_loop():
     _otp_last_check: dict[str, float] = {}
@@ -327,7 +340,10 @@ async def _rental_monitor_loop():
                         asyncio.create_task(_cancel_rental_task(aid))
         except Exception:
             pass
-        await asyncio.sleep(5)
+        try:
+            await asyncio.sleep(5)
+        except BaseException:
+            pass  # CancelledError и пр. — не останавливаем цикл
 
 async def _cancel_rental_task(aid):
     r = _RENTALS.get(aid)
