@@ -1701,8 +1701,12 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                 _html_check = await page.evaluate(
                     "() => document.documentElement.innerHTML")
                 if "black-youtube-premium-benefit-faq-store" in _html_check:
-                    status = "explore_now"
-                    print(f"  {C}💳 Benefit-секция найдена → explore_now{RST}")
+                    if result.get("valid_till") or "membership valid till" in _html_check.lower():
+                        status = "activated"
+                        print(f"  {C}💳 Benefit-секция + Valid Till → activated{RST}")
+                    else:
+                        status = "explore_now"
+                        print(f"  {C}💳 Benefit-секция найдена → explore_now{RST}")
             except Exception:
                 pass
 
@@ -1737,7 +1741,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                 return null;
             }"""
             try:
-                _new_pg = ctx.wait_for_event("page", timeout=10_000)
+                _new_pg = asyncio.ensure_future(ctx.wait_for_event("page", timeout=10_000))
                 _method = await page.evaluate(_CLICK_JS)
                 if _method:
                     print(f"  {G}✅ Кнопка «Activate now» нажата{RST}")
@@ -1746,6 +1750,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                         await _tab.wait_for_load_state("domcontentloaded", timeout=12_000)
                         result["activation_url"] = _tab.url
                     except Exception:
+                        _new_pg.cancel()
                         await page.wait_for_timeout(3_000)
                         if "flipkart-black-store" not in page.url:
                             result["activation_url"] = page.url
@@ -1754,6 +1759,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                     else:
                         print(f"  {Y}⚠ Ссылка не получена после клика{RST}")
                 else:
+                    _new_pg.cancel()
                     print(f"  {Y}⚠ Кнопка «Activate now» не найдена на странице{RST}")
             except Exception as _je:
                 print(f"  {Y}⚠ Ошибка клика: {_je}{RST}")
@@ -2964,6 +2970,17 @@ async def _fill_address_form(page, addr: dict) -> bool:
     for _save_try in range(4):
         await _human_click(page, save_loc, before=_r.uniform(0.1, 0.25))
         await page.wait_for_timeout(2_000)
+
+        # Диалог "Update with these details?" — нажимаем CONFIRM
+        try:
+            if "#dialogBoxOpen" in page.url or await page.locator("text=Update with these details?").count() > 0:
+                _confirm = page.get_by_text("CONFIRM", exact=True).first
+                if await _confirm.count() > 0 and await _confirm.is_visible():
+                    await _human_click(page, _confirm, before=0.3)
+                    await page.wait_for_timeout(1_500)
+                    print(f"  {G}✔ CONFIRM нажат (диалог Update with these details){RST}")
+        except Exception:
+            pass
 
         # Если кнопка исчезла — адрес принят
         if await save_loc.count() == 0 or not await save_loc.is_visible():
@@ -5165,10 +5182,8 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         # Уже там (перешли из 3DS-хендлера) — повторно не ждём
         black_page = page
     else:
-        import random as _r_pp
-        _pp_wait = _r_pp.randint(45, 60)
-        print(f"  Оплата подтверждена — ждём {_pp_wait} сек для активации membership...")
-        await page.wait_for_timeout(_pp_wait * 1_000)
+        print(f"  Оплата подтверждена — ждём 90 сек для активации membership...")
+        await page.wait_for_timeout(90_000)
         black_page = await ctx.new_page()
         try:
             await black_page.goto(_black_url, wait_until="domcontentloaded", timeout=20_000)
@@ -5232,9 +5247,10 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     async def _click_activate_now_js() -> str | None:
         """JS-клик по Activate Now (PNG img 1200x213). Возвращает activation_url или None."""
         try:
-            _new_page_ev = ctx.wait_for_event("page", timeout=10_000)
+            _new_page_ev = asyncio.ensure_future(ctx.wait_for_event("page", timeout=10_000))
             _method = await black_page.evaluate(_ACTIVATE_JS)
             if not _method:
+                _new_page_ev.cancel()
                 return None
             print(f"  {G}✅ Activate Now нажата ({_method}){RST}")
             try:
@@ -5242,6 +5258,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                 await _tab.wait_for_load_state("domcontentloaded", timeout=12_000)
                 return _tab.url
             except Exception:
+                _new_page_ev.cancel()
                 await black_page.wait_for_timeout(3_000)
                 if "flipkart-black-store" not in black_page.url:
                     return black_page.url
@@ -5286,6 +5303,10 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
             pass
 
         print(f"  Ожидание кнопки Activate Now... ({attempt+1}/15)")
+        try:
+            await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
+        except Exception:
+            pass
         await black_page.wait_for_timeout(2_000)
 
     # ── 4. Сокращаем через clck.ru ────────────────────────────────────────────

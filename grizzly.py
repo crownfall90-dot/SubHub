@@ -237,10 +237,43 @@ def _start_monitor_if_needed():
         _MONITOR_TASK = asyncio.run_coroutine_threadsafe(_rental_monitor_loop(), loop)
 
 async def _rental_monitor_loop():
+    _otp_last_check: dict[str, float] = {}
     while True:
         try:
             now = time.monotonic()
-            # 1. Проверяем активные номера, не получившие OTP за 150 сек (2м 30с)
+            # 1. Проверяем активные номера на OTP каждые 10 сек
+            api_key = _get_grizzly_api_key()
+            if api_key:
+                for aid, r in list(_RENTALS.items()):
+                    if r["status"] == "active" and not r.get("intercept_mode"):
+                        last_check = _otp_last_check.get(aid, 0.0)
+                        if now - last_check >= 10.0:
+                            _otp_last_check[aid] = now
+                            try:
+                                client = GrizzlySMSClient(api_key, http_timeout=10)
+                                st = await client.get_status(aid)
+                                await client.close()
+                                if st.get("type") == "OK" and st.get("code"):
+                                    otp = st["code"]
+                                    if aid not in _RENTALS:
+                                        continue
+                                    print(f"\n  {_G}📲 OTP для +91 {r['phone_10']}: {otp} — вход в фоне...{_RST}")
+                                    login_url = ""
+                                    months = 3
+                                    try:
+                                        with open(_HERE / "config.yaml", encoding="utf-8") as fh:
+                                            cfg = yaml.safe_load(fh)
+                                        login_url = cfg.get("site", {}).get("url", "https://www.flipkart.com/account/login?ret=/")
+                                    except Exception:
+                                        pass
+                                    _submit_bg_login(api_key, aid, otp, login_url, months, phone_10=r["phone_10"])
+                                    r["status"] = "completed"
+                                    _RENTALS.pop(aid, None)
+                                    _otp_last_check.pop(aid, None)
+                            except Exception:
+                                pass
+
+            # 2. Переводим активные номера без OTP в failed после 150 сек
             for aid, r in list(_RENTALS.items()):
                 if r["status"] == "active":
                     if now - r["rented_at"] >= 150.0:
@@ -248,8 +281,8 @@ async def _rental_monitor_loop():
                         r["status"] = "failed"
                         r["next_attempt_at"] = r["rented_at"] + 150.0
                         _cleanup_profile(r)
-            
-            # 2. Проверяем неудачные номера, готовые к отмене
+
+            # 3. Проверяем неудачные номера, готовые к отмене
             for aid, r in list(_RENTALS.items()):
                 if r["status"] == "failed":
                     if now >= r["next_attempt_at"] and not r.get("cancelling"):
