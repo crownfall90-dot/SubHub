@@ -5539,37 +5539,48 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
             await pg.keyboard.type(_pincode, delay=80)
             await pg.wait_for_timeout(2_500)
 
-            # Выбрать первый результат автодополнения
+            # Выбрать первый результат автодополнения.
+            # Ищем элементы НИЖЕ поля поиска — это и есть дропдаун.
             _sugg = await pg.evaluate("""() => {
-                // Стандартные селекторы
-                const sels = [
-                    'li[role="option"]', '[class*="suggestion"]',
-                    '[class*="pac-item"]', '[class*="autocomplete"] li'
-                ];
-                for (const s of sels) {
-                    const el = document.querySelector(s);
-                    if (el) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 30 && r.height > 5)
-                            return {x: r.x + r.width/2, y: r.y + r.height/2,
-                                    text: (el.innerText || '').slice(0, 40)};
-                    }
-                }
-                // Fallback: любой видимый <li> с адресным текстом (Flipkart map dropdown)
-                for (const el of document.querySelectorAll('li')) {
+                const inp = document.querySelector(
+                    'input[placeholder*="area" i], input[placeholder*="street" i]');
+                const inpBottom = inp ? inp.getBoundingClientRect().bottom : 80;
+                const inpLeft   = inp ? inp.getBoundingClientRect().left   : 0;
+                // li или div ниже поля, похожие на строки списка
+                for (const el of document.querySelectorAll('li, div, span')) {
                     const t = (el.innerText || '').trim();
-                    if (!t || t.length < 3) continue;
+                    if (!t || t.length < 4 || t.length > 300) continue;
+                    if (el.querySelectorAll('li,div').length > 4) continue;
                     const r = el.getBoundingClientRect();
-                    if (r.width > 50 && r.height > 10 && r.y > 50)
-                        return {x: r.x + r.width/2, y: r.y + r.height/2,
-                                text: t.slice(0, 40)};
+                    if (r.y <= inpBottom + 5) continue;   // должен быть ниже поля
+                    if (r.width < 80 || r.height < 12 || r.height > 120) continue;
+                    if (r.x > inpLeft + 400) continue;    // не вылезать вправо
+                    return {x: r.x + r.width/2, y: r.y + r.height/2,
+                            text: t.slice(0, 50)};
                 }
                 return null;
             }""")
             if _sugg:
                 print(f"  карта: выбираю «{_sugg.get('text','?')}»...")
                 await pg.mouse.click(_sugg["x"], _sugg["y"])
-                await pg.wait_for_timeout(1_500)
+                await pg.wait_for_timeout(2_000)
+                # После выбора может появиться диалог "Your address has been updated"
+                # с кнопкой "Update" — нажимаем её
+                _upd = await pg.evaluate("""() => {
+                    for (const el of document.querySelectorAll(
+                            'button,div,a,[role="button"]')) {
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t !== 'update') continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width >= 40 && r.height >= 15)
+                            return {x: r.x + r.width/2, y: r.y + r.height/2};
+                    }
+                    return null;
+                }""")
+                if _upd:
+                    print("  карта: нажимаю «Update» (диалог)...")
+                    await pg.mouse.click(_upd["x"], _upd["y"])
+                    await pg.wait_for_timeout(1_500)
 
             # Нажать Confirm (в оверлее)
             _conf = await pg.evaluate("""() => {
