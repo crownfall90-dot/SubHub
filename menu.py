@@ -1450,17 +1450,21 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             result["error"] = "Не выполнен вход"
             return result
 
-        # Проверяем залогинен ли: если в навбаре есть "Login" — сессия истекла
+        # Проверяем залогинен ли.
+        # Flipkart при логине показывает "Account" в навбаре (не "Hello").
+        # НЕ ищем "login" по всем кнопкам — footer и другие секции могут его содержать.
         try:
             _not_logged = await page.evaluate("""() => {
-                const lines = (document.body?.innerText || '')
-                    .substring(0, 500).split('\\n')
+                const fullText = (document.body?.innerText || '').toLowerCase();
+                // Позитивный сигнал залогиненности (достаточно одного)
+                if (/\\baccount\\b|hello,|logout|my profile/.test(fullText)) return false;
+                // Если страница Black-store загрузилась и есть бенефит — тоже залогинен
+                if (document.querySelector('a[href*="black-youtube-premium-benefit"]')) return false;
+                // Негативный: "login" в первых 10 строках тела
+                const lines = fullText.substring(0, 600).split('\\n')
                     .map(s => s.trim()).filter(Boolean);
                 for (const l of lines.slice(0, 10)) {
-                    if (l.toLowerCase() === 'login') return true;
-                }
-                for (const el of document.querySelectorAll('a, button')) {
-                    if ((el.textContent || '').trim().toLowerCase() === 'login') return true;
+                    if (l === 'login') return true;
                 }
                 return false;
             }""")
@@ -1947,7 +1951,17 @@ def screen_check_all_activated():
             unknown_list.append(username)
 
         elif status == "activated":
-            print(f"  {M}✨ Activated{' до ' + valid_till if valid_till else ''} — аккаунт уже активирован{RST}\n")
+            print(f"  {M}✨ Activated{' до ' + valid_till if valid_till else ''} — аккаунт активирован, переношу в архив...{RST}")
+            _arch_ok = _archive_profile(
+                p["path"],
+                used_ts=time.time(),
+                activation_status="activated",
+                valid_till=valid_till,
+            )
+            if _arch_ok:
+                print(f"  {G}✔ Архивирован{RST}\n")
+            else:
+                print(f"  {Y}⚠ Не удалось архивировать{RST}\n")
             not_activated.append(username)
 
         elif status == "activate_now":
@@ -2102,20 +2116,25 @@ def screen_profiles():
             if action in ("0", ""):
                 break
 
-            # Проверка залогиненности перед любым действием
-            # (пропускаем только: 2/В — пометка, 3/И — архив, D — удаление, К — восстановление)
-            if action not in ("2", "В", "B", "3", "И", "I", "D", "К", "K"):
+            # Проверка залогиненности перед действиями (кроме пометок, удаления, восстановления).
+            # Для ВЫДАННЫХ профилей — НЕ удаляем при истёкшей сессии:
+            # клиент мог уже активировать, а куки истечь. Пусть пользователь сам решит.
+            if action not in ("2", "В", "B", "3", "И", "I", "D", "К", "K", "П", "7"):
                 print(f"  {DIM}Проверяю сессию профиля +91 {selected['username']}...{RST}")
                 import shutil as _sh_lck
                 _logged_in = asyncio.run(_flipkart_is_logged_in(selected["path"]))
                 if not _logged_in:
-                    print(f"  {R}Профиль +91 {selected['username']} не залогинен — удаляю.{RST}")
-                    try:
-                        _sh_lck.rmtree(selected["path"], ignore_errors=True)
-                    except Exception:
-                        pass
-                    time.sleep(2)
-                    break
+                    if selected.get("issued_ts"):
+                        print(f"  {Y}⚠ Сессия истекла (профиль выдан — возможно уже активирован).{RST}")
+                        print(f"  {DIM}Используй «П» для проверки активации или «3/И» для архива.{RST}")
+                    else:
+                        print(f"  {R}Профиль +91 {selected['username']} не залогинен — удаляю.{RST}")
+                        try:
+                            _sh_lck.rmtree(selected["path"], ignore_errors=True)
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        break
 
             if action in ("П", "7"):
                 _uname  = selected["username"]
@@ -2134,7 +2153,14 @@ def screen_profiles():
                             print(f"  ║  {R}Ошибка: {err}{RST}")
                             time.sleep(3)
                         elif st == "activated":
-                            print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — аккаунт уже активирован{RST}")
+                            print(f"  ║  {M}✨ Activated{' до ' + vt if vt else ''} — переношу в архив...{RST}")
+                            _ok = _archive_profile(
+                                _path,
+                                used_ts=time.time(),
+                                activation_status="activated",
+                                valid_till=vt or "",
+                            )
+                            print(f"  ║  {G}✔ Архивирован{RST}" if _ok else f"  ║  {Y}⚠ Не удалось архивировать{RST}")
                         elif st == "activate_now":
                             print(f"  ║  {G}⭐ Activate Now — доступен к выдаче{RST}")
                             _act_url = chk.get("activation_url", "")
