@@ -769,24 +769,37 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 print(f"  [BG] Обновлённый OTP для +91 {phone_10}: {_fresh_otp}")
             otp_code = _fresh_otp
 
-            # Вводим OTP
-            print(f"  [BG] Поиск поля ввода OTP для +91 {phone_10}...")
+            # Вводим OTP (посимвольно — триггерит React onChange)
+            print(f"  [BG] +91 {phone_10}: OTP {otp_code} — ввожу")
             otp_el = page2.locator(_OTP_SEL).first
+            _auto_submitted = False
             try:
                 await otp_el.wait_for(state="visible", timeout=15_000)
-                await otp_el.click()
+                _bb_e = await otp_el.bounding_box()
+                if _bb_e:
+                    await page2.mouse.click(_bb_e["x"] + _bb_e["width"] / 2,
+                                            _bb_e["y"] + _bb_e["height"] / 2)
+                else:
+                    await otp_el.click()
+                await page2.wait_for_timeout(150)
+                await page2.keyboard.press("Control+a")
+                await page2.keyboard.press("Delete")
                 for ch in otp_code:
                     await page2.keyboard.type(ch)
-                    await asyncio.sleep(_rbg.uniform(0.06, 0.12))
+                    await asyncio.sleep(_rbg.uniform(0.05, 0.10))
+                    if "login" not in page2.url.lower():
+                        _auto_submitted = True
+                        break
                 await page2.wait_for_timeout(400)
             except Exception as e:
-                print(f"  [BG] Ошибка клика/ввода OTP: {e}. Пробую прямой ввод клавиатурой...")
+                print(f"  [BG] Ошибка ввода OTP: {e}. Fallback keyboard...")
                 try:
-                    await page2.keyboard.type(otp_code, delay=100)
-                except Exception: pass
+                    await page2.keyboard.type(otp_code, delay=80)
+                except Exception:
+                    pass
 
             # Цикл верификации OTP (до 120 секунд)
-            login_success = False
+            login_success = _auto_submitted and "login" not in page2.url.lower()
             deadline = time.time() + 120.0
             _btn_clicked = False
 

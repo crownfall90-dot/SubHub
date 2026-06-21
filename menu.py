@@ -6396,6 +6396,110 @@ async def _flipkart_phase1(page, login_url: str, phone_10: str) -> str:
     return "ok"
 
 
+async def _enter_otp_on_page(page, otp_code: str, *, timeout_redirect: float = 22.0) -> bool:
+    """
+    Единый хелпер ввода OTP для всех сценариев входа.
+    Ищет поле OTP, вводит код посимвольно (триггерит React onChange),
+    кликает VERIFY, ждёт редиректа.
+    Возвращает True если страница ушла с login-URL.
+    """
+    import random as _rn_otp
+
+    _otp_el = None
+    _dl = asyncio.get_event_loop().time() + 12
+    while asyncio.get_event_loop().time() < _dl:
+        for _fr in [page] + list(page.frames):
+            try:
+                _c = _fr.locator(_OTP_SEL).first
+                if await _c.count() > 0 and await _c.is_visible():
+                    _otp_el = _c
+                    break
+            except Exception:
+                pass
+        if _otp_el:
+            break
+        await page.wait_for_timeout(250)
+
+    if _otp_el:
+        try:
+            _bb = await _otp_el.bounding_box()
+            if _bb:
+                await page.mouse.click(_bb["x"] + _bb["width"] / 2,
+                                       _bb["y"] + _bb["height"] / 2)
+            else:
+                await _otp_el.click()
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Delete")
+            for _ch in otp_code:
+                await page.keyboard.type(_ch)
+                await page.wait_for_timeout(int(_rn_otp.uniform(55, 105)))
+                if "login" not in page.url.lower():
+                    return True   # Flipkart auto-submitted after last digit
+        except Exception as _oe:
+            print(f"  {Y}OTP ввод: {_oe}{RST}")
+            try:
+                await page.keyboard.type(otp_code, delay=80)
+            except Exception:
+                pass
+    else:
+        print(f"  {Y}OTP поле не найдено — пробую keyboard{RST}")
+        try:
+            await page.keyboard.type(otp_code, delay=80)
+        except Exception:
+            pass
+
+    if "login" not in page.url.lower():
+        return True
+
+    # Ждём пока React обновит state, потом кликаем VERIFY
+    await page.wait_for_timeout(400)
+    _otp_verify_sel = (
+        "button:has-text('VERIFY'), button:has-text('Verify'), "
+        "button:has-text('LOGIN'),  button:has-text('CONTINUE'), "
+        "button:has-text('Continue'), button:has-text('Signup'), "
+        "button:has-text('Sign up'), button:has-text('SIGNUP')"
+    )
+    _clicked_v = False
+    for _fr in [page] + list(page.frames):
+        try:
+            _ob = _fr.locator(_otp_verify_sel).first
+            if await _ob.is_visible():
+                _obb = await _ob.bounding_box()
+                if _obb:
+                    await page.mouse.click(_obb["x"] + _obb["width"] / 2,
+                                           _obb["y"] + _obb["height"] / 2)
+                else:
+                    await _ob.click()
+                _clicked_v = True
+                break
+        except Exception:
+            pass
+    if not _clicked_v:
+        try:
+            if _otp_el:
+                await _otp_el.press("Enter")
+            else:
+                await page.keyboard.press("Enter")
+        except Exception:
+            pass
+
+    if "login" not in page.url.lower():
+        return True
+
+    # Ждём редирект
+    await page.wait_for_timeout(1_200)
+    if "login" in page.url.lower():
+        try:
+            await page.wait_for_url(
+                lambda u: "login" not in u.lower(),
+                timeout=int(timeout_redirect * 1_000))
+        except Exception:
+            pass
+
+    return "login" not in page.url.lower()
+
+
 async def _do_all_in_one(months: int, headless: bool = False, card: dict | None = None, skip_purchase: bool = False, max_par_override: int | None = None, intercept_mode: bool = False, stop_at_email: bool = False) -> tuple[bool, str]:
     """
     Полный цикл: GrizzlySMS номер → вход в Flipkart → адрес → Buy Now → Continue.
@@ -6991,38 +7095,10 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                             _grizzly_module.mark_completed(o_id)
                                         else:
                                             _loser_otp = _lst["code"]
-                                            print(f"  {G}[BG] +91 {o_ph} OTP={_loser_otp} → вхожу{RST}")
+                                            print(f"  {G}[BG] +91 {o_ph}: OTP {_loser_otp} — вхожу{RST}")
                                             try:
-                                                _lo_el = o_pg.locator(_OTP_SEL).first
-                                                try: await _lo_el.wait_for(state="visible", timeout=8_000)
-                                                except Exception: pass
-                                                if await _lo_el.count() > 0:
-                                                    await _lo_el.click()
-                                                    await _lo_el.fill(_loser_otp)
-                                                else:
-                                                    await o_pg.keyboard.type(_loser_otp, delay=80)
-                                                await o_pg.wait_for_timeout(300)
-                                                for _vs in [
-                                                    "button:has-text('VERIFY')", "button:has-text('Verify')",
-                                                    "button:has-text('LOGIN')", "button:has-text('CONTINUE')",
-                                                    "button:has-text('Continue')", "button:has-text('Signup')",
-                                                ]:
-                                                    try:
-                                                        _vb = o_pg.locator(_vs).first
-                                                        if await _vb.is_visible():
-                                                            _vbb = await _vb.bounding_box()
-                                                            if _vbb:
-                                                                await o_pg.mouse.click(_vbb["x"] + _vbb["width"]/2, _vbb["y"] + _vbb["height"]/2)
-                                                            else:
-                                                                await _vb.click()
-                                                            break
-                                                    except Exception: pass
-                                                _lo_dl = asyncio.get_event_loop().time() + 30
-                                                while asyncio.get_event_loop().time() < _lo_dl:
-                                                    if "login" not in o_pg.url.lower():
-                                                        _loser_login_ok = True
-                                                        break
-                                                    await asyncio.sleep(1)
+                                                _loser_login_ok = await _enter_otp_on_page(
+                                                    o_pg, _loser_otp, timeout_redirect=22.0)
                                             except Exception as _le:
                                                 print(f"  {Y}[BG] +91 {o_ph} ошибка входа: {_le}{RST}")
                                             if _loser_login_ok:
@@ -7177,101 +7253,12 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     ctx = win_ctx
 
                 # ── 3c. Вводим OTP и завершаем вход ──────────────────────────
-                import random as _r2
-                print(f"  {DIM}Поиск поля ввода OTP...{RST}")
+                print(f"  {DIM}Ввожу OTP {otp_code} для +91 {phone_10}...{RST}")
+                _login_ok = await _enter_otp_on_page(page, otp_code)
 
-                # Ищем OTP-поле во всех фреймах (может быть в cross-origin iframe)
-                _otp_el_found = None
-                _otp_page_ref = page
-                _otp_search_dl = asyncio.get_event_loop().time() + 15
-                while asyncio.get_event_loop().time() < _otp_search_dl:
-                    for _fr in [page] + list(page.frames):
-                        try:
-                            _c = _fr.locator(_OTP_SEL).first
-                            if await _c.count() > 0 and await _c.is_visible():
-                                _otp_el_found = _c
-                                _otp_page_ref = page  # mouse.click всегда на page
-                                break
-                        except Exception:
-                            pass
-                    if _otp_el_found:
-                        break
-                    await page.wait_for_timeout(300)
-
-                if _otp_el_found:
-                    print(f"  {DIM}Поле ввода OTP найдено. Ввожу код {otp_code}...{RST}")
-                    try:
-                        _bb_otp = await _otp_el_found.bounding_box()
-                        if _bb_otp:
-                            await page.mouse.click(
-                                _bb_otp["x"] + _bb_otp["width"] / 2,
-                                _bb_otp["y"] + _bb_otp["height"] / 2,
-                            )
-                        else:
-                            await _otp_el_found.click()
-                        await _otp_el_found.fill(otp_code)
-                        await asyncio.sleep(0.3)
-                    except Exception as otp_err:
-                        print(f"  {R}Ошибка при вводе OTP: {otp_err}{RST}")
-                else:
-                    print(f"  {R}Поле ввода OTP не найдено, пробую keyboard...{RST}")
-                    try:
-                        await page.keyboard.type(otp_code, delay=100)
-                    except Exception:
-                        pass
-
-                # Ищем кнопку VERIFY во всех фреймах
-                otp_submit_sel = (
-                    "button:has-text('VERIFY'), button:has-text('Verify'), "
-                    "button:has-text('LOGIN'), button:has-text('CONTINUE'), "
-                    "button:has-text('Continue'), "
-                    "button:has-text('Signup'), button:has-text('Sign up'), button:has-text('SIGNUP')"
-                )
-                _otp_btn_clicked = False
-                for _fr in [page] + list(page.frames):
-                    try:
-                        _ob = _fr.locator(otp_submit_sel).first
-                        if await _ob.is_visible():
-                            _obb = await _ob.bounding_box()
-                            if _obb:
-                                await page.mouse.click(
-                                    _obb["x"] + _obb["width"] / 2,
-                                    _obb["y"] + _obb["height"] / 2,
-                                )
-                            else:
-                                await _ob.click()
-                            print(f"  {DIM}Нажимаю кнопку подтверждения OTP (Signup/Verify)...{RST}")
-                            _otp_btn_clicked = True
-                            break
-                    except Exception:
-                        pass
-                if not _otp_btn_clicked:
-                    # Фоллбэк: Enter на найденном поле или глобальный Enter
-                    try:
-                        if _otp_el_found:
-                            await _otp_el_found.press("Enter")
-                        else:
-                            await page.keyboard.press("Enter")
-                    except Exception:
-                        pass
-                await page.wait_for_timeout(2_000)
-
-                # Ждём редирект — до 10 секунд
-                if "login" in page.url.lower():
-                    try:
-                        await page.wait_for_url(
-                            lambda u: "login" not in u.lower(),
-                            timeout=10_000)
-                    except Exception:
-                        pass
-
-                if "login" in page.url.lower():
-                    # Последняя попытка: может OTP ещё рендерится — ждём 3с и смотрим
-                    await page.wait_for_timeout(3_000)
-
-                if "login" in page.url.lower():
+                if not _login_ok:
                     _try_next = True
-                    print(f"  {R}Вход не выполнен после OTP — пробую новый номер...{RST}")
+                    print(f"  {R}Вход не выполнен после OTP (+91 {phone_10}) — пробую новый номер...{RST}")
                     _grizzly_module.mark_failed(phone_id)
                     continue
 
