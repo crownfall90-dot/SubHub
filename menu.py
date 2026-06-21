@@ -5541,9 +5541,10 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
 
             # Выбрать первый результат автодополнения
             _sugg = await pg.evaluate("""() => {
+                // Стандартные селекторы
                 const sels = [
                     'li[role="option"]', '[class*="suggestion"]',
-                    '[class*="pac-item"]', '[class*="autocomplete"] li', 'ul li'
+                    '[class*="pac-item"]', '[class*="autocomplete"] li'
                 ];
                 for (const s of sels) {
                     const el = document.querySelector(s);
@@ -5553,6 +5554,15 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
                             return {x: r.x + r.width/2, y: r.y + r.height/2,
                                     text: (el.innerText || '').slice(0, 40)};
                     }
+                }
+                // Fallback: любой видимый <li> с адресным текстом (Flipkart map dropdown)
+                for (const el of document.querySelectorAll('li')) {
+                    const t = (el.innerText || '').trim();
+                    if (!t || t.length < 3) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 50 && r.height > 10 && r.y > 50)
+                        return {x: r.x + r.width/2, y: r.y + r.height/2,
+                                text: t.slice(0, 40)};
                 }
                 return null;
             }""")
