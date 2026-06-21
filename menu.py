@@ -7298,8 +7298,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         await _send_cookies_to_tg(ctx, phone_10)
                     except Exception:
                         pass
-                    await ctx.close()
-                    await pw.stop()
+                    _keep_open = True
                     return True, f"Вход выполнен: +91 {phone_10}"
 
                 # ── 4. Buy Now на странице товара ────────────────────────────
@@ -7383,8 +7382,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         await _send_cookies_to_tg(ctx, phone_10)
                     except Exception:
                         pass
-                    await ctx.close()
-                    await pw.stop()
+                    _keep_open = True
                     return True, f"Вход выполнен, адрес и почта сохранены: +91 {phone_10}"
 
                 # ── 6. Viewcheckout → email → Continue → payments ─────────────
