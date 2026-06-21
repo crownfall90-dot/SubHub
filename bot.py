@@ -1471,8 +1471,8 @@ def _menu_tg_bot_thread() -> None:
                     pass
                 _pm_login   = _pm.get("login_str") or ""
                 _pm_issued  = _pm.get("issued_str") or ""
-                _pm_vt      = (_pm.get("subscription_expires_str")
-                               or _pm.get("black_valid_till") or "")
+                _pm_vt      = (_pm.get("black_valid_till")
+                               or _pm.get("subscription_expires_str") or "")
                 _pm_slink   = _pm.get("black_short_link") or ""
                 _info = f"📱 <code>+91 {phone}</code>"
                 if _pm_login:

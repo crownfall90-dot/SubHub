@@ -2039,7 +2039,7 @@ def screen_profiles():
         print()
         for i, p in enumerate(profiles, 1):
             no_meta = p.get("login_ts") is None
-            _vt_disp = p.get("subscription_expires_str") or p.get("black_valid_till") or ""
+            _vt_disp = p.get("black_valid_till") or p.get("subscription_expires_str") or ""
             _slink_disp = p.get("black_short_link") or ""
             if p.get("issued_ts"):
                 _ln = (f"{DIM}{p['login_str']}{RST}"
@@ -2121,7 +2121,7 @@ def screen_profiles():
         while True:
             cls()
             header("ДЕЙСТВИЕ С ПРОФИЛЕМ", C)
-            _sel_vt = selected.get("subscription_expires_str") or selected.get("black_valid_till") or ""
+            _sel_vt = selected.get("black_valid_till") or selected.get("subscription_expires_str") or ""
             _sel_slink = selected.get("black_short_link") or ""
             print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
             _info_line = f"{G}{selected['login_str']}{RST}"
