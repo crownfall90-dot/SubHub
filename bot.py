@@ -408,7 +408,15 @@ def _menu_tg_bot_thread() -> None:
                     vt = m.get("black_valid_till") or ""
                     st = m.get("status") or ""
                     is_iss = bool(m.get("issued_ts"))
-                    icon = "🔵" if is_iss else ("🌟" if (st in ("activated", "explore_now", "activate_now") or vt) else ("📍" if st == "email_completed" else "❌"))
+                    has_login = bool(m.get("login_ts"))
+                    if list_type in ("noaddr", "hasaddr"):
+                        # Показываем только профили с успешным входом (номер + OTP + вход)
+                        if not has_login:
+                            continue
+                        icon = "🔵" if is_iss else "🟢"
+                    else:
+                        # active: старая логика
+                        icon = "🔵" if is_iss else ("🌟" if (st in ("activated", "explore_now", "activate_now") or vt) else "🟢")
                     label = f"{icon} {ph}"
                     if is_iss and vt:
                         label += f" · до {vt}"
