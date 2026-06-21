@@ -450,7 +450,10 @@ def cls():
 
 
 def pause(msg: str = "  Нажмите Enter для продолжения..."):
-    input(f"\n{DIM}{msg}{RST}")
+    try:
+        input(f"\n{DIM}{msg}{RST}")
+    except KeyboardInterrupt:
+        pass
 
 
 def run(cmd: list[str]) -> int:
@@ -8317,46 +8320,47 @@ def screen_main():
         print()
         opt("Q", "Выход", R)
         print()
-        print(f"  {DIM}  Ctrl+C — остановка скрипта в любой момент{RST}")
+        print(f"  {DIM}  Ctrl+C — остановка и возврат в меню  |  Q — выход{RST}")
         print()
 
         try:
             choice = input(f"\n  {BLD}Выберите [0-9 / Q]: {RST}").strip().upper()
         except KeyboardInterrupt:
-            cls()
-            print(f"\n{C}{BLD}  До свидания!{RST}\n")
-            sys.exit(0)
+            continue
 
-        if choice == "1":
-            screen_run_auto(tg_mode="login")
-        elif choice == "2":
-            screen_run_auto(tg_mode="intercept")
-        elif choice == "8":
-            screen_run_auto(tg_mode="login", stop_at_email=True)
-        elif choice == "3":
-            screen_profiles()
-        elif choice == "4":
-            screen_logs()
-        elif choice == "5":
-            screen_install()
-        elif choice == "6":
-            screen_used()
-        elif choice == "9":
-            screen_all_in_one()
-        elif choice in ("П", "P"):
-            screen_check_all_activated()
-        elif choice in ("К", "K"):
-            screen_restore_from_cookies()
-        elif choice == "0":
-            screen_cards()
-        elif choice in ("Р", "R"):
-            screen_proxy()
-        elif choice in ("У", "U"):
-            screen_update()
-        elif choice == "Q":
-            cls()
-            print(f"\n{C}{BLD}  До свидания!{RST}\n")
-            sys.exit(0)
+        try:
+            if choice == "1":
+                screen_run_auto(tg_mode="login")
+            elif choice == "2":
+                screen_run_auto(tg_mode="intercept")
+            elif choice == "8":
+                screen_run_auto(tg_mode="login", stop_at_email=True)
+            elif choice == "3":
+                screen_profiles()
+            elif choice == "4":
+                screen_logs()
+            elif choice == "5":
+                screen_install()
+            elif choice == "6":
+                screen_used()
+            elif choice == "9":
+                screen_all_in_one()
+            elif choice in ("П", "P"):
+                screen_check_all_activated()
+            elif choice in ("К", "K"):
+                screen_restore_from_cookies()
+            elif choice == "0":
+                screen_cards()
+            elif choice in ("Р", "R"):
+                screen_proxy()
+            elif choice in ("У", "U"):
+                screen_update()
+            elif choice == "Q":
+                cls()
+                print(f"\n{C}{BLD}  До свидания!{RST}\n")
+                sys.exit(0)
+        except KeyboardInterrupt:
+            pass
 
 
 def _init_secrets() -> None:
