@@ -2195,9 +2195,36 @@ def _menu_tg_bot_thread() -> None:
         # Обработчик входящих сообщений
         # ══════════════════════════════════════════════════════════════════════
 
+        _OTP_3DS_FILE = Path(__file__).parent / "data" / "tg_otp_3ds.json"
+
+        def _push_otp_3ds(text: str) -> None:
+            """Сохранить потенциальный 3DS OTP в файл для menu.py."""
+            import re as _re_otp
+            m = _re_otp.search(r"\b(\d{4,8})\b", text)
+            if not m:
+                return
+            code = m.group(1)
+            try:
+                _OTP_3DS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    existing = json.loads(_OTP_3DS_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = []
+                existing.append(code)
+                _OTP_3DS_FILE.write_text(
+                    json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
         async def _handle_msg(client, msg):
             cid  = int(msg["chat"]["id"])
             text = (msg.get("text") or "").strip()
+
+            # 3DS OTP: числа 4-8 цифр сохраняем в файл для menu.py
+            # (menu.py использует тот же токен → конфликт getUpdates)
+            import re as _re_otp
+            if _re_otp.fullmatch(r"\d{4,8}", text):
+                _push_otp_3ds(text)
 
             # Режим ответа в GGSell чат — перехватываем ЛЮБОЕ сообщение
             _ggsel_inv = _ggsel_handler[0].check_reply_mode(cid, text) if _ggsel_handler[0] else None

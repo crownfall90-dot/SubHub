@@ -4627,89 +4627,74 @@ async def _handle_3ds_verification(page) -> bool:
             print(f"  {Y}══════════════════════════════════════════════════{RST}")
             print()
             _otp_tgt = asyncio.get_event_loop().time() + 900  # 15 мин
-            _otp_tok = _get_telegram_token()
-            _otp_uid = 0
             import re as _re3d
-            import httpx as _hx3d
-            if _otp_tok:
-                try:
-                    async with _hx3d.AsyncClient(timeout=8, trust_env=False) as _cl:
-                        _rv = await _cl.get(
-                            f"https://api.telegram.org/bot{_otp_tok}/getUpdates",
-                            params={"limit": 1, "offset": -1})
-                        _rvr = _rv.json().get("result", [])
-                        if _rvr:
-                            _otp_uid = _rvr[-1]["update_id"]
-                except Exception:
-                    pass
+            import json as _json3d
+            _OTP_FILE_3D = Path(__file__).parent / "data" / "tg_otp_3ds.json"
+            # Очищаем старые коды
+            try:
+                _OTP_FILE_3D.write_text("[]", encoding="utf-8")
+            except Exception:
+                pass
             _otp_submitted = False
             while asyncio.get_event_loop().time() < _otp_tgt:
                 if "flipkart.com" in page.url:
                     print(f"  {G}✅ 3DS подтверждён — Flipkart{RST}")
                     _otp_submitted = True
                     break
-                if _otp_tok:
-                    try:
-                        async with _hx3d.AsyncClient(timeout=8, trust_env=False) as _cl:
-                            _rv = await _cl.get(
-                                f"https://api.telegram.org/bot{_otp_tok}/getUpdates",
-                                params={"offset": _otp_uid + 1, "timeout": 5, "limit": 10})
-                            for _pu in _rv.json().get("result", []):
-                                _otp_uid = _pu["update_id"]
-                                _pm = _pu.get("message") or _pu.get("channel_post") or {}
-                                _pt = _pm.get("text", "") or _pm.get("caption", "")
-                                _pc = (_re3d.search(r"-\s*(\d{4,8})\s*$", _pt)
-                                       or _re3d.search(r"\b(\d{4,8})\b", _pt))
-                                if _pc:
-                                    _nc = _pc.group(1)
-                                    print(f"  {G}✅ OTP из Telegram: {_nc} — ввожу...{RST}")
-                                    for _frl in [page] + list(page.frames):
+                # Читаем OTP из файла (bot.py пишет туда входящие коды)
+                try:
+                    _codes = _json3d.loads(_OTP_FILE_3D.read_text(encoding="utf-8"))
+                    if _codes:
+                        _nc = _codes.pop(0)
+                        _OTP_FILE_3D.write_text(_json3d.dumps(_codes, ensure_ascii=False), encoding="utf-8")
+                        print(f"  {G}✅ OTP из Telegram: {_nc} — ввожу...{RST}")
+                        for _frl in [page] + list(page.frames):
+                            try:
+                                _il = _frl.locator(
+                                    "input[name*='otp' i], input[name*='code' i], "
+                                    "input[placeholder*='otp' i], "
+                                    "input[maxlength='6'], input[maxlength='4'], "
+                                    "input[type='tel'], input[type='number'][maxlength]"
+                                ).first
+                                if await _il.count() > 0:
+                                    await _il.click()
+                                    await _il.fill(_nc)
+                                    await page.wait_for_timeout(300)
+                                    try:
+                                        await _il.press("Enter")
+                                    except Exception:
+                                        pass
+                                    await page.wait_for_timeout(400)
+                                    for _sl in [
+                                        "a#btnSubmit", "a.gobtn",
+                                        "button:has-text('SUBMIT')",
+                                        "button:has-text('Submit')",
+                                        "button[type='submit']",
+                                        "input[type='submit']",
+                                    ]:
                                         try:
-                                            _il = _frl.locator(
-                                                "input[name*='otp' i], input[name*='code' i], "
-                                                "input[placeholder*='otp' i], "
-                                                "input[maxlength='6'], input[maxlength='4'], "
-                                                "input[type='tel'], input[type='number'][maxlength]"
-                                            ).first
-                                            if await _il.count() > 0:
-                                                await _il.click()
-                                                await _il.fill(_nc)
-                                                await page.wait_for_timeout(300)
-                                                try:
-                                                    await _il.press("Enter")
-                                                except Exception:
-                                                    pass
-                                                await page.wait_for_timeout(400)
-                                                for _sl in [
-                                                    "a#btnSubmit", "a.gobtn",
-                                                    "button:has-text('SUBMIT')",
-                                                    "button:has-text('Submit')",
-                                                    "button[type='submit']",
-                                                    "input[type='submit']",
-                                                ]:
-                                                    try:
-                                                        _bl = _frl.locator(_sl).first
-                                                        if await _bl.count() > 0:
-                                                            _bbl = await _bl.bounding_box()
-                                                            if _bbl:
-                                                                await page.mouse.click(
-                                                                    _bbl["x"] + _bbl["width"] / 2,
-                                                                    _bbl["y"] + _bbl["height"] / 2)
-                                                            else:
-                                                                await _bl.click()
-                                                            print(f"  3DS: SUBMIT нажат")
-                                                            break
-                                                    except Exception:
-                                                        pass
-                                                _otp_submitted = True
+                                            _bl = _frl.locator(_sl).first
+                                            if await _bl.count() > 0:
+                                                _bbl = await _bl.bounding_box()
+                                                if _bbl:
+                                                    await page.mouse.click(
+                                                        _bbl["x"] + _bbl["width"] / 2,
+                                                        _bbl["y"] + _bbl["height"] / 2)
+                                                else:
+                                                    await _bl.click()
+                                                print(f"  3DS: SUBMIT нажат")
                                                 break
                                         except Exception:
                                             pass
-                    except Exception:
-                        pass
+                                    _otp_submitted = True
+                                    break
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 if _otp_submitted:
                     break
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
             # Цикл завершился — проверяем причину
             if not _otp_submitted and "flipkart.com" not in page.url:
                 print(f"  {R}❌ Оплата не прошла — время ожидания OTP (15 мин) истекло{RST}")
@@ -4735,13 +4720,16 @@ async def _handle_3ds_verification(page) -> bool:
 
 async def _get_3ds_otp_from_telegram() -> str | None:
     """
-    Читает 3DS OTP из Telegram через Bot API (getUpdates).
-    Пользователь пересылает сообщение с кодом своему боту.
-    Токен бота берётся из config telegram.token.
+    Читает 3DS OTP из файла data/tg_otp_3ds.json, который пишет bot.py.
+    bot.py перехватывает входящие сообщения с 4-8 цифрами и сохраняет туда.
+    Fallback: прямой polling getUpdates (если bot.py не запущен).
     """
     import re as _re
     import httpx as _httpx
     import yaml as _yaml
+    import json as _json
+
+    _OTP_FILE = Path(__file__).parent / "data" / "tg_otp_3ds.json"
 
     try:
         with open("config.yaml", encoding="utf-8") as _f:
@@ -4749,54 +4737,30 @@ async def _get_3ds_otp_from_telegram() -> str | None:
     except Exception:
         _cfg = {}
 
-    token = _get_telegram_token()
     wait_sec = int(_cfg.get("telegram_otp", {}).get("wait_timeout", 1200))
-
-    if not token:
-        return None
-
-    url = f"https://api.telegram.org/bot{token}/getUpdates"
-
     print(f"  {Y}Жду OTP из Telegram (до {wait_sec // 60} мин)...{RST}")
 
-    # Узнаём текущий максимальный update_id чтобы брать только НОВЫЕ сообщения
-    last_update_id = 0
+    # Очищаем старые коды перед ожиданием
     try:
-        async with _httpx.AsyncClient(timeout=10, trust_env=False) as client:
-            r = await client.get(url, params={"limit": 1, "offset": -1})
-            updates = r.json().get("result", [])
-            if updates:
-                last_update_id = updates[-1]["update_id"]
+        _OTP_FILE.write_text("[]", encoding="utf-8")
     except Exception:
         pass
 
     deadline = asyncio.get_running_loop().time() + wait_sec
 
-    async with _httpx.AsyncClient(timeout=15, trust_env=False) as client:
-        while asyncio.get_running_loop().time() < deadline:
-            try:
-                r = await client.get(url, params={
-                    "offset": last_update_id + 1,
-                    "timeout": 5,
-                    "limit":   10,
-                })
-                for upd in r.json().get("result", []):
-                    last_update_id = upd["update_id"]
-                    # Берём текст из обычного или пересланного сообщения
-                    msg  = upd.get("message") or upd.get("channel_post") or {}
-                    text = msg.get("text", "") or msg.get("caption", "")
-                    # Формат: «Код подтверждения для XXXX - 482094»
-                    # Сначала пробуем взять цифры после дефиса в конце
-                    m = _re.search(r"-\s*(\d{4,8})\s*$", text)
-                    if not m:
-                        # Fallback — любые 4-8 цифр подряд
-                        m = _re.search(r"\b(\d{4,8})\b", text)
-                    if m:
-                        print(f"  3DS OTP получен: {m.group(1)}")
-                        return m.group(1)
-            except Exception:
-                pass
-            await asyncio.sleep(3)
+    # Основной путь: читаем из файла, который пишет bot.py
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            codes = _json.loads(_OTP_FILE.read_text(encoding="utf-8"))
+            if codes:
+                code = codes.pop(0)
+                # Обновляем файл (убираем использованный код)
+                _OTP_FILE.write_text(_json.dumps(codes, ensure_ascii=False), encoding="utf-8")
+                print(f"  3DS OTP получен: {code}")
+                return code
+        except Exception:
+            pass
+        await asyncio.sleep(2)
 
     return None
 
