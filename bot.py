@@ -146,6 +146,8 @@ def _menu_tg_bot_thread() -> None:
         _ggsel_cli      = [None]  # GGSell client (ленивая инициализация)
         _ggsel_orders: dict = {}  # {invoice_id: item из notify_queue}
         _ggsel_confirm: dict = {} # {invoice_id: link} — ждёт подтверждения от пользователя
+        _ggsel_done: dict    = {} # {invoice_id: datetime_str} — выполнено (ссылка отправлена)
+        _ggsel_done_loaded   = [False]
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -638,6 +640,42 @@ def _menu_tg_bot_thread() -> None:
             except Exception:
                 pass
 
+        def _ggsel_get_done() -> dict:
+            """Словарь {invoice_id: datetime_str} выполненных заказов (с персистентной загрузкой)."""
+            if not _ggsel_done_loaded[0]:
+                try:
+                    f = Path(__file__).parent / "data" / "ggsel_done.json"
+                    loaded = json.loads(f.read_text(encoding="utf-8")).get("done", {})
+                    _ggsel_done.update({int(k): v for k, v in loaded.items()})
+                except Exception:
+                    pass
+                _ggsel_done_loaded[0] = True
+            return _ggsel_done
+
+        def _ggsel_mark_done(invoice_id: int) -> None:
+            """Пометить заказ как выполненный и сохранить на диск."""
+            from datetime import datetime
+            dt_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            _ggsel_get_done()[invoice_id] = dt_str
+            try:
+                f = Path(__file__).parent / "data" / "ggsel_done.json"
+                try:
+                    raw = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    raw = {"done": {}}
+                raw.setdefault("done", {})[str(invoice_id)] = dt_str
+                f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+        def _ggsel_order_status(invoice_id: int) -> str:
+            done = _ggsel_get_done()
+            if invoice_id in done:
+                return f"✅ Выполнено · {done[invoice_id]}"
+            if invoice_id in _ggsel_confirm:
+                return "⏳ Ждёт подтверждения"
+            return "🆕 Новый"
+
         def _ggsel_pool_text() -> str:
             links = _ggsel_read_pool()
             if not links:
@@ -667,11 +705,16 @@ def _menu_tg_bot_thread() -> None:
                 f"📧 `{buyer_email}`",
             ]
             lines = [l for l in lines if l != ""]
+            lines += ["", f"📊 Статус: {_ggsel_order_status(invoice_id)}"]
             if confirm_lnk:
-                lines += ["", f"🔗 *Ссылка готова:*\n`{confirm_lnk}`", "", "_Ждёт подтверждения отправки_"]
+                lines += ["", f"🔗 *Ссылка готова:*\n`{confirm_lnk}`"]
             return "\n".join(lines)
 
         def _ggsel_order_kb(invoice_id: int) -> dict:
+            if invoice_id in _ggsel_get_done():
+                return {"inline_keyboard": [
+                    [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+                ]}
             confirm_lnk = _ggsel_confirm.get(invoice_id)
             if confirm_lnk:
                 return {"inline_keyboard": [
@@ -728,13 +771,20 @@ def _menu_tg_bot_thread() -> None:
                 lines.append(f"⏳ Ждут подтверждения: *{pending_cnt}*")
 
             if yt_orders:
+                done = _ggsel_get_done()
                 lines += ["", "🛒 *Последние заказы YouTube Premium:*"]
                 for o in yt_orders[:5]:
-                    inv  = o.get("invoice_id") or o.get("id") or "?"
-                    dt   = str(o.get("date") or "").replace("T", " ")[:16]
-                    pr   = (o.get("product") or {}).get("price_rub") or ""
-                    pr_s = f" · {pr}₽" if pr else ""
-                    tag  = " ⏳" if (str(inv).isdigit() and int(inv) in _ggsel_confirm) else ""
+                    inv   = o.get("invoice_id") or o.get("id") or "?"
+                    dt    = str(o.get("date") or "").replace("T", " ")[:16]
+                    pr    = (o.get("product") or {}).get("price_rub") or ""
+                    pr_s  = f" · {pr}₽" if pr else ""
+                    inv_i = int(inv) if str(inv).isdigit() else 0
+                    if inv_i in done:
+                        tag = " ✅"
+                    elif inv_i in _ggsel_confirm:
+                        tag = " ⏳"
+                    else:
+                        tag = ""
                     lines.append(f"▸ `#{inv}`{pr_s} · {dt}{tag}")
             else:
                 lines += ["", "_Нет последних заказов YouTube Premium_"]
@@ -876,9 +926,10 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, f"❌ Ошибка отправки в GGSell (заказ `#{invoice_id}`): {exc}")
                 return
             if ok:
+                _ggsel_mark_done(invoice_id)
                 await _send(cid,
                     f"✅ *Ссылка отправлена покупателю!*\n\n"
-                    f"Заказ: `#{invoice_id}`\n"
+                    f"Заказ: `#{invoice_id}` · ✅ Выполнено\n"
                     f"📧 {buyer_email}\n"
                     f"🔗 `{link}`")
             else:
