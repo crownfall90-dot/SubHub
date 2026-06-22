@@ -31,6 +31,13 @@ try:
 except ImportError:
     yaml = None
 
+try:
+    import aiohttp as _aiohttp
+    from aiohttp import web as _aio_web
+except ImportError:
+    _aiohttp = None
+    _aio_web = None
+
 from proxy import (
     _read_proxy_cfg, _write_proxy_cfg,
     _p6_cfg, _p6_buy_affordable, _p6_getlist, _p6_balance,
@@ -3295,6 +3302,102 @@ def _menu_tg_bot_thread() -> None:
         # Основной цикл
         # ══════════════════════════════════════════════════════════════════════
 
+        # ── GGSell webhook-сервер (aiohttp) ──────────────────────────────────
+        _webhook_queue: asyncio.Queue = asyncio.Queue()
+        _webhook_runner = [None]
+
+        async def _ggsel_webhook_handler(request):
+            """Принимает POST/GET уведомления о покупке от GGSell."""
+            try:
+                if request.method == "POST":
+                    try:
+                        body = await request.json()
+                    except Exception:
+                        return _aio_web.Response(text="Bad Request", status=400)
+                    params = {
+                        "id_i":        str(body.get("ID_I") or body.get("id_i") or ""),
+                        "id_d":        str(body.get("ID_D") or body.get("id_d") or ""),
+                        "amount":      str(body.get("Amount") or body.get("amount") or ""),
+                        "curr":        str(body.get("Currency") or body.get("curr") or ""),
+                        "email":       str(body.get("email") or ""),
+                        "date":        str(body.get("Date") or body.get("date") or ""),
+                        "sha256":      str(body.get("SHA256") or body.get("sha256") or ""),
+                        "ip":          str(body.get("IP") or body.get("ip") or ""),
+                        "isMyProduct": str(body.get("IsMyProduct") or body.get("isMyProduct") or ""),
+                    }
+                else:
+                    params = {k: str(v) for k, v in request.rel_url.query.items()}
+
+                invoice_id = int(params.get("id_i") or 0)
+                product_id = int(params.get("id_d") or 0)
+                amount     = params.get("amount", "")
+                currency   = params.get("curr", "")
+                email      = params.get("email", "")
+                date_s     = params.get("date", "")
+                sha256_recv = params.get("sha256", "")
+
+                if not invoice_id:
+                    return _aio_web.Response(text="OK")
+
+                # SHA256 верификация (если настроен webhook_secret)
+                try:
+                    import hashlib as _hs
+                    _ggs = (_m("_read_secrets")().get("ggsel") or {})
+                    _wh_secret = _ggs.get("webhook_secret", "").strip()
+                    if _wh_secret and sha256_recv:
+                        _exp = _hs.sha256(
+                            f"{_wh_secret};{invoice_id};{product_id}".encode()
+                        ).hexdigest()
+                        if _exp.lower() != sha256_recv.lower():
+                            return _aio_web.Response(text="Forbidden", status=403)
+                except Exception:
+                    pass
+
+                # Добавляем в processed чтобы монитор не продублировал
+                try:
+                    from ggsell.monitor import _load_processed, _save_processed
+                    _proc_set = _load_processed()
+                    if invoice_id not in _proc_set:
+                        _proc_set.add(invoice_id)
+                        _save_processed(_proc_set)
+                except Exception:
+                    pass
+
+                order = {
+                    "invoice_id": invoice_id,
+                    "id":         invoice_id,
+                    "product":    {"id": product_id, "name": "YouTube Premium"},
+                    "sum_t":      amount,
+                    "email":      email,
+                    "date":       date_s,
+                    "buyer":      {"email": email},
+                    "currency":   currency,
+                }
+                _webhook_queue.put_nowait({
+                    "type":         "new_order",
+                    "invoice_id":   invoice_id,
+                    "order":        order,
+                    "buyer_email":  email,
+                })
+                return _aio_web.Response(text="OK")
+            except Exception:
+                return _aio_web.Response(text="Error", status=500)
+
+        if _aio_web:
+            try:
+                _ggs_sec  = (_m("_read_secrets")().get("ggsel") or {})
+                _wh_port  = int(_ggs_sec.get("webhook_port") or 0)
+                if _wh_port:
+                    _wh_app = _aio_web.Application()
+                    _wh_app.router.add_get("/ggsel/notify",  _ggsel_webhook_handler)
+                    _wh_app.router.add_post("/ggsel/notify", _ggsel_webhook_handler)
+                    _webhook_runner[0] = _aio_web.AppRunner(_wh_app)
+                    await _webhook_runner[0].setup()
+                    await _aio_web.TCPSite(_webhook_runner[0], "0.0.0.0", _wh_port).start()
+            except Exception:
+                pass
+
+        # ─────────────────────────────────────────────────────────────────────
         _timeout_obj = httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=5.0)
         async with httpx.AsyncClient(timeout=_timeout_obj, trust_env=False) as client:
 
@@ -3353,7 +3456,7 @@ def _menu_tg_bot_thread() -> None:
                         if msg:
                             await _handle_msg(client, msg)
 
-                    # Drain GGSell notify queue → уведомляем о новых заказах
+                    # Drain GGSell monitor queue → уведомляем о новых заказах/сообщениях
                     try:
                         from ggsell.monitor import notify_queue as _gs_q
                         while True:
@@ -3367,6 +3470,15 @@ def _menu_tg_bot_thread() -> None:
                                 break
                     except Exception:
                         pass
+
+                    # Drain GGSell webhook queue → уведомляем о покупках через webhook
+                    while not _webhook_queue.empty():
+                        try:
+                            _wh_item = _webhook_queue.get_nowait()
+                            if _wh_item.get("type") == "new_order":
+                                asyncio.create_task(_ggsel_notify_order(_wh_item))
+                        except Exception:
+                            break
 
                 except asyncio.CancelledError:
                     break
