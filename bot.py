@@ -877,9 +877,15 @@ def _menu_tg_bot_thread() -> None:
                   "callback_data": f"ggsell:order:{inv_id}"}]
                 for inv_id in list(_ggsel_confirm)[:3]
             ]
+            ord_on  = _get(cid, "ggsel_notify_orders")
+            msg_on  = _get(cid, "ggsel_notify_messages")
             kb_rows = [
                 [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
                  {"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"}],
+                [{"text": ("🔔" if ord_on  else "🔕") + " Заказы: "     + ("Вкл" if ord_on  else "Выкл"),
+                  "callback_data": "ggsell:toggle:orders"},
+                 {"text": ("🔔" if msg_on  else "🔕") + " Сообщения: "  + ("Вкл" if msg_on  else "Выкл"),
+                  "callback_data": "ggsell:toggle:messages"}],
             ] + pending_rows + [
                 [{"text": "◀️ Назад",      "callback_data": "go:other"}],
             ]
@@ -908,6 +914,8 @@ def _menu_tg_bot_thread() -> None:
                   "callback_data": f"ggsell:run:{invoice_id}"}],
             ]}
             for _cid in list(subs):
+                if not _get(_cid, "ggsel_notify_orders"):
+                    continue
                 try:
                     await client.post(f"{api}/sendMessage",
                                       json={"chat_id": _cid, "text": text,
@@ -1016,6 +1024,8 @@ def _menu_tg_bot_thread() -> None:
                   "callback_data": f"ggsell:order:{invoice_id}"}],
             ]}
             for _cid in list(subs):
+                if not _get(_cid, "ggsel_notify_messages"):
+                    continue
                 try:
                     await client.post(f"{api}/sendMessage",
                                       json={"chat_id": _cid, "text": text,
@@ -2654,6 +2664,22 @@ def _menu_tg_bot_thread() -> None:
                             {"inline_keyboard": [
                                 [{"text": "◀️ GGSell", "callback_data": "go:ggsell"}],
                             ]})
+                return
+
+            if data.startswith("ggsell:toggle:"):
+                kind = data.split(":")[2]  # "orders" or "messages"
+                if kind in ("orders", "messages"):
+                    cfg_key = f"ggsel_notify_{kind}"
+                    new_val = not _get(cid, cfg_key)
+                    _set(cid, cfg_key, new_val)
+                    label = "🔔 Включено" if new_val else "🔕 Выключено"
+                    await _ack(qid, label)
+                    await _edit(cid, mid, "⏳ *GGSell* — загружаю данные...",
+                                {"inline_keyboard": [[{"text": "◀️ Назад",
+                                                        "callback_data": "go:other"}]]})
+                    asyncio.create_task(_bg_ggsel_info(cid, mid))
+                else:
+                    await _ack(qid)
                 return
 
             # Неизвестная команда
