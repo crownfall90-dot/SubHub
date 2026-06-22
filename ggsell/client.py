@@ -199,6 +199,10 @@ class GGSellClient:
             "/seller-last-sales",
             {"locale": "ru", "seller_id": self.seller_id},
         )
+        # Логируем первый заказ чтобы видеть реальные поля API
+        if isinstance(data, list) and data:
+            logger.debug(f"GGSell last-sales[0] keys: {list(data[0].keys())}")
+            logger.debug(f"GGSell last-sales[0] sample: {data[0]}")
         # ответ может быть списком или {items: [...], data: [...]}
         if isinstance(data, list):
             return data
@@ -210,7 +214,12 @@ class GGSellClient:
 
     async def get_order_info(self, invoice_id: int) -> Dict[str, Any]:
         """Подробная информация о заказе."""
-        return await self._get(f"/purchase/info/{invoice_id}", {"locale": "ru"})
+        data = await self._get(f"/purchase/info/{invoice_id}", {"locale": "ru"})
+        content = data.get("content") if isinstance(data, dict) else None
+        if isinstance(content, dict):
+            logger.debug(f"GGSell order_info #{invoice_id} content keys: {list(content.keys())}")
+            logger.debug(f"GGSell order_info #{invoice_id} content: {content}")
+        return data
 
     # ── Chats ────────────────────────────────────────────────────────────────
 
