@@ -353,6 +353,90 @@ class GGSellClient:
             logger.error(f"GGSell update_prices error: {exc}")
             return False
 
+    async def get_offer_detail(self, offer_id: int) -> Dict[str, Any]:
+        """Детали оффера (включая status) через v1 API."""
+        try:
+            resp = await self._client.get(
+                f"https://seller.ggsel.com/api/v1/offers/{offer_id}/",
+                headers={"Authorization": self.api_key, "Accept": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                item = data.get("data") or data
+                if isinstance(item, dict):
+                    return item
+        except Exception as exc:
+            logger.debug(f"GGSell get_offer_detail {offer_id}: {exc}")
+        return {}
+
+    async def get_orders_v1(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Заказы из v1 API (rich format: review_score, offer_id, buyer_email, usdt)."""
+        try:
+            resp = await self._client.get(
+                "https://seller.ggsel.com/api/v1/orders/",
+                headers={"Authorization": self.api_key, "Accept": "application/json"},
+                params={"limit": limit, "page": 1},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                v = data.get("data") or data.get("items")
+                if isinstance(v, list):
+                    return v
+                if isinstance(data, list):
+                    return data
+        except Exception as exc:
+            logger.debug(f"GGSell get_orders_v1: {exc}")
+        return []
+
+    async def get_offers(self) -> List[Dict[str, Any]]:
+        """Список офферов (товарных объявлений) продавца."""
+        try:
+            resp = await self._client.get(
+                "https://seller.ggsel.com/api/v1/offers/",
+                headers={"Authorization": self.api_key, "Accept": "application/json"},
+                params={"limit": 50},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                v = data.get("data") or data.get("items")
+                if isinstance(v, list):
+                    return v
+                if isinstance(data, list):
+                    return data
+        except Exception as exc:
+            logger.debug(f"GGSell get_offers v1: {exc}")
+        try:
+            data = await self._get("/offers", {"locale": "ru", "limit": 50})
+            if isinstance(data, list):
+                return data
+            for field in ("data", "items", "offers"):
+                v = data.get(field)
+                if isinstance(v, list):
+                    return v
+        except Exception as exc:
+            logger.debug(f"GGSell get_offers: {exc}")
+        return []
+
+    async def set_offer_status(self, offer_id: int, status: str) -> bool:
+        """Изменить статус оффера: 'active' или 'paused'."""
+        try:
+            resp = await self._client.patch(
+                f"https://seller.ggsel.com/api/v1/offers/{offer_id}/",
+                headers={"Authorization": self.api_key, "Content-Type": "application/json",
+                         "Accept": "application/json"},
+                json={"status": status},
+            )
+            if resp.status_code in (200, 204):
+                return True
+        except Exception as exc:
+            logger.debug(f"GGSell set_offer_status v1: {exc}")
+        try:
+            await self._post(f"/offers/{offer_id}/status", json_body={"status": status})
+            return True
+        except Exception as exc:
+            logger.debug(f"GGSell set_offer_status: {exc}")
+        return False
+
     async def get_promo_codes(self) -> List[Dict[str, Any]]:
         """Список промокодов продавца. Эндпоинт: GET /promo-codes"""
         try:

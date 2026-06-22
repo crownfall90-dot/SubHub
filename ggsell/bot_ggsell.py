@@ -795,11 +795,22 @@ class GGSellBotHandler:
             [{"text": "📋 Заказы",     "callback_data": "ggsell:orders"},
              {"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}],
             [{"text": "⭐ Отзывы",     "callback_data": "ggsell:reviews"},
-             {"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"}],
-            [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
-             {"text": "◀️ Назад",      "callback_data": "go:other"}],
+             {"text": "📦 Офферы",     "callback_data": "ggsell:offers"}],
+            [{"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"},
+             {"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"}],
+            [{"text": "◀️ Назад",      "callback_data": "go:other"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+    @staticmethod
+    def _fmt_hold_date(ts: str) -> str:
+        """Форматирует дату разморозки выплаты."""
+        if not ts:
+            return ""
+        try:
+            return ts[:10]  # YYYY-MM-DD
+        except Exception:
+            return str(ts)[:10]
 
     async def bg_orders_page(self, cid, mid):
         cli = self.get_client()
@@ -809,13 +820,21 @@ class GGSellBotHandler:
             return
 
         try:
-            orders = await cli.get_last_orders()
-            yt_orders = [o for o in orders
-                         if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            orders_v1 = await cli.get_orders_v1(limit=30)
+            yt_orders = [o for o in orders_v1
+                         if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception:
             yt_orders = []
 
-        # Сортировка: самые новые (наибольший invoice_id) — сверху
+        if not yt_orders:
+            try:
+                orders = await cli.get_last_orders()
+                yt_orders = [o for o in orders
+                             if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            except Exception:
+                yt_orders = []
+
+        # Сортировка: самые новые (наибольший id) — сверху
         yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0), reverse=True)
 
         done = self.get_done()
@@ -847,6 +866,20 @@ class GGSellBotHandler:
                     lines.append(f"   👤 `{email_s}`  ·  _{status_s}_")
                 else:
                     lines.append(f"   _{status_s}_")
+
+                # Строка 3: отзыв, выплата USDT, дата холда
+                extras = []
+                rv = o.get("review_score")
+                if rv is not None:
+                    extras.append(self._stars(int(rv)))
+                usdt = o.get("seller_reward_amount_usdt")
+                if usdt is not None:
+                    extras.append(f"💵 ${float(usdt):.2f}")
+                hold = self._fmt_hold_date(str(o.get("seller_reward_complete_at") or ""))
+                if hold:
+                    extras.append(f"🔒 {hold}")
+                if extras:
+                    lines.append(f"   {' · '.join(extras)}")
                 lines.append("")
 
                 btn_label = self._order_label(o, inv_i)
@@ -1047,9 +1080,13 @@ class GGSellBotHandler:
     async def bg_pool_pick(self, cid, mid, link: str) -> None:
         cli = self.get_client()
         try:
-            orders = await cli.get_last_orders() if cli else []
-            yt_orders = [o for o in orders
-                         if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            orders_v1 = await cli.get_orders_v1(limit=30) if cli else []
+            yt_orders = [o for o in orders_v1
+                         if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            if not yt_orders:
+                orders = await cli.get_last_orders() if cli else []
+                yt_orders = [o for o in orders
+                             if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception:
             yt_orders = []
 
@@ -1188,9 +1225,13 @@ class GGSellBotHandler:
             return
 
         try:
-            orders = await cli.get_last_orders()
-            yt_orders = [o for o in orders
-                         if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            orders_v1 = await cli.get_orders_v1(limit=30)
+            yt_orders = [o for o in orders_v1
+                         if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            if not yt_orders:
+                orders = await cli.get_last_orders()
+                yt_orders = [o for o in orders
+                             if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception as exc:
             await self._edit(cid, mid, f"❌ Ошибка загрузки заказов: {exc}",
                 {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
@@ -1198,7 +1239,7 @@ class GGSellBotHandler:
             return
 
         done = self.get_done()
-        # Сортировка от старых к новым (возрастающий invoice_id)
+        # Сортировка от старых к новым (возрастающий id)
         yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0))
         pending = [o for o in yt_orders
                    if int(o.get("invoice_id") or o.get("id") or 0) not in done]
@@ -1628,6 +1669,89 @@ class GGSellBotHandler:
                                             "parse_mode": "Markdown", "reply_markup": kb})
             except Exception:
                 pass
+
+    @staticmethod
+    def _offer_status_icon(status: str) -> str:
+        return {"active": "🟢", "paused": "🟡", "archived": "🔴"}.get(status, "⚪")
+
+    @staticmethod
+    def _offer_status_ru(status: str) -> str:
+        return {"active": "активен", "paused": "приостановлен", "archived": "архив"}.get(status, status or "—")
+
+    async def bg_offers_page(self, cid: int, mid: int) -> None:
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            return
+        try:
+            offers = await cli.get_offers()
+        except Exception as exc:
+            await self._edit(cid, mid, f"❌ Ошибка загрузки офферов: {exc}",
+                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            return
+
+        if not offers:
+            await self._edit(cid, mid, "📦 *GGSell — Офферы*\n\n_Нет офферов._",
+                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            return
+
+        # Дополняем каждый оффер статусом через индивидуальный endpoint (параллельно)
+        import asyncio as _asyncio
+
+        async def _fetch_status(off: dict) -> dict:
+            oid = int(off.get("id") or 0)
+            if not oid:
+                return {**off, "status": ""}
+            try:
+                detail = await cli.get_offer_detail(oid)
+                return {**off, "status": detail.get("status") or off.get("status") or ""}
+            except Exception:
+                return {**off, "status": off.get("status") or ""}
+
+        offers = list(await _asyncio.gather(*[_fetch_status(o) for o in offers]))
+
+        lines = ["📦 *GGSell — Офферы*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+        kb_rows = []
+        for off in offers:
+            oid    = int(off.get("id") or 0)
+            title  = str(off.get("title") or off.get("title_ru") or f"Оффер #{oid}")
+            status = off.get("status") or ""
+            icon   = self._offer_status_icon(status)
+            st_ru  = self._offer_status_ru(status)
+            short  = title[:55] + "…" if len(title) > 55 else title
+            lines.append(f"{icon} *{short}*")
+            lines.append(f"   _Статус: {st_ru}  │  ID: {oid}_")
+            lines.append("")
+
+            if status == "active":
+                kb_rows.append([{"text": f"⏸ Остановить · {short[:30]}",
+                                 "callback_data": f"ggsell:offer_toggle:{oid}:paused"}])
+            elif status in ("paused", "archived", ""):
+                kb_rows.append([{"text": f"▶️ Запустить · {short[:30]}",
+                                 "callback_data": f"ggsell:offer_toggle:{oid}:active"}])
+
+        kb_rows.append([{"text": "🔄 Обновить", "callback_data": "ggsell:offers"},
+                        {"text": "◀️ Назад",    "callback_data": "go:ggsell"}])
+        await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+    async def bg_offer_toggle(self, cid: int, mid: int, offer_id: int, new_status: str) -> None:
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "◀️ Офферы", "callback_data": "ggsell:offers"}]]})
+            return
+        ok = await cli.set_offer_status(offer_id, new_status)
+        if ok:
+            icon = self._offer_status_icon(new_status)
+            st_ru = self._offer_status_ru(new_status)
+            await self._edit(cid, mid,
+                f"✅ Оффер `#{offer_id}` → {icon} *{st_ru}*",
+                {"inline_keyboard": [[{"text": "📦 Офферы", "callback_data": "ggsell:offers"}]]})
+        else:
+            await self._edit(cid, mid,
+                f"❌ Не удалось изменить статус оффера `#{offer_id}`.",
+                {"inline_keyboard": [[{"text": "📦 Офферы", "callback_data": "ggsell:offers"}]]})
 
     async def bg_reviews_page(self, cid: int, mid: int) -> None:
         cli = self.get_client()
@@ -2226,6 +2350,25 @@ class GGSellBotHandler:
         if data == "ggsell:used":
             await self._ack(qid)
             await self._edit(cid, mid, self.used_text(), self.used_kb())
+            return
+
+        if data == "ggsell:offers":
+            await self._ack(qid)
+            await self._edit(cid, mid, "⏳ Загружаю офферы...",
+                             {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            asyncio.create_task(self.bg_offers_page(cid, mid))
+            return
+
+        if data.startswith("ggsell:offer_toggle:"):
+            parts      = data.split(":")
+            offer_id   = int(parts[2])
+            new_status = parts[3]
+            if new_status not in ("active", "paused"):
+                await self._ack(qid)
+                return
+            action = "Запускаю..." if new_status == "active" else "Останавливаю..."
+            await self._ack(qid, f"⏳ {action}")
+            asyncio.create_task(self.bg_offer_toggle(cid, mid, offer_id, new_status))
             return
 
         await self._ack(qid)

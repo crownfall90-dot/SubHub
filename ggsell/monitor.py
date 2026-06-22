@@ -383,38 +383,67 @@ class GGSellMonitor:
         if changed:
             _save_seen_msgs(seen)
 
+    # YOUTUBE_PREMIUM_PRODUCT_ID из константы бота (дублируем)
+    _YT_GGSEL_ID = 102276416
+
     async def _check_new_reviews(self, initialized: bool) -> None:
-        """Проверить новые отзывы покупателей."""
+        """Проверить новые отзывы покупателей: через orders v1 (надёжнее) + reviews API."""
+        changed = False
+
+        # ── orders v1: ищем заказы с новым review_score (только YouTube Premium) ──
+        try:
+            orders_v1 = await self.client.get_orders_v1(limit=30)
+            for o in orders_v1:
+                rv = o.get("review_score")
+                if rv is None:
+                    continue
+                if int(o.get("offer_ggsel_id") or 0) != self._YT_GGSEL_ID:
+                    continue
+                invoice_id = int(o.get("id") or o.get("invoice_id") or 0)
+                key = f"ord:{invoice_id}:{rv}"
+                if not invoice_id or key in self._seen_reviews:
+                    continue
+                self._seen_reviews.add(key)
+                if not initialized:
+                    continue  # первый запуск — только запоминаем
+                changed = True
+                logger.info(f"GGSell: отзыв {rv}★ на заказ #{invoice_id} (orders v1)")
+                notify_queue.put({
+                    "type":       "new_review",
+                    "invoice_id": invoice_id,
+                    "review":     {
+                        "rating":     int(rv),
+                        "invoice_id": invoice_id,
+                        "email":      o.get("buyer_email") or "",
+                        "text":       "",
+                    },
+                })
+        except Exception as exc:
+            logger.debug(f"GGSell reviews via orders v1: {exc}")
+
+        # ── reviews API: запасной источник ────────────────────────────────────────
         try:
             reviews = await self.client.get_reviews(limit=50)
         except Exception as exc:
             logger.debug(f"GGSell reviews poll: {exc}")
+            if changed:
+                _save_seen_reviews(self._seen_reviews)
             return
 
-        if not reviews:
-            return
+        if reviews and not initialized:
+            logger.trace(f"GGSell review[0] keys: {list(reviews[0].keys())}")
+            logger.trace(f"GGSell review[0] sample: {reviews[0]}")
 
-        if not initialized:
-            # Первый запуск — логируем структуру и запоминаем, не уведомляем
-            if reviews:
-                logger.trace(f"GGSell review[0] keys: {list(reviews[0].keys())}")
-                logger.trace(f"GGSell review[0] sample: {reviews[0]}")
-            for r in reviews:
-                key = self._review_key(r)
-                if key:
-                    self._seen_reviews.add(key)
-            _save_seen_reviews(self._seen_reviews)
-            return
-
-        changed = False
-        for r in reviews:
+        for r in (reviews or []):
             key = self._review_key(r)
             if not key or key in self._seen_reviews:
                 continue
             self._seen_reviews.add(key)
+            if not initialized:
+                continue
             changed = True
             invoice_id = int(r.get("invoice_id") or r.get("id_i") or r.get("order_id") or 0)
-            logger.info(f"GGSell: новый отзыв #{invoice_id if invoice_id else '?'}")
+            logger.info(f"GGSell: новый отзыв #{invoice_id if invoice_id else '?'} (reviews API)")
             notify_queue.put({
                 "type":       "new_review",
                 "invoice_id": invoice_id,
