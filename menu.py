@@ -4431,7 +4431,14 @@ async def _handle_3ds_verification(page) -> bool:
             except Exception:
                 return False
 
-    await page.wait_for_timeout(_r.uniform(600, 1_000))
+    # На CardinalCommerce StepUp ждём 5 сек перед Next — страница должна прогрузиться,
+    # чтобы клик корректно запросил OTP-код у банка
+    _cur_url_pre = page.url
+    if "cardinalcommerce.com" in _cur_url_pre or "StepUp" in _cur_url_pre or "stepup" in _cur_url_pre.lower():
+        print("  3DS: CardinalCommerce StepUp — жду 5 сек перед Next...")
+        await page.wait_for_timeout(5_000)
+    else:
+        await page.wait_for_timeout(_r.uniform(600, 1_000))
     print("  3DS: страница верификации открыта — нажимаю Next...")
 
     # Нажимаем «Next» на первой странице (выбор метода) — ищем во всех фреймах
