@@ -325,6 +325,7 @@ class GGSellMonitor:
                 msg_id = int(msg.get("id") or msg.get("message_id") or 0)
                 if msg_id <= last_id:
                     continue
+                logger.debug(f"GGSell msg #{msg_id} в заказе #{id_i}: {msg}")
                 # Сообщение от продавца (нашего бота) — не уведомляем
                 is_seller = bool(
                     msg.get("is_seller")
@@ -333,6 +334,11 @@ class GGSellMonitor:
                     or msg.get("type") == "seller"
                     or msg.get("from_seller")
                     or msg.get("role") == "seller"
+                    or msg.get("who") == "seller"
+                    or msg.get("author_type") == "seller"
+                    or msg.get("user_type") == "seller"
+                    or msg.get("is_mine")
+                    or int(msg.get("type_message") or msg.get("type_msg") or -1) == 1
                 )
                 if not is_seller:
                     notify_queue.put({
