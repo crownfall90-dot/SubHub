@@ -333,6 +333,12 @@ class GGSellMonitor:
                 msg_id = int(msg.get("id") or msg.get("message_id") or 0)
                 if msg_id <= last_id:
                     continue
+                # Системные сообщения (поддержка GGSell, order_id=null) — пропускаем
+                if msg.get("system") or msg.get("order_id") is None:
+                    continue
+                # Уже прочитанные продавцом — не уведомляем
+                if msg.get("read"):
+                    continue
                 logger.debug(f"GGSell msg #{msg_id} в заказе #{id_i}: {msg}")
                 # Сообщение от продавца (нашего бота) — не уведомляем
                 is_seller = bool(
@@ -350,13 +356,15 @@ class GGSellMonitor:
                     or int(msg.get("type_message") or msg.get("type_msg") or -1) == 1
                 )
                 if not is_seller:
+                    buyer_email = (msg.get("author") or {}).get("email") or ""
                     notify_queue.put({
                         "type": "new_message",
                         "invoice_id": id_i,
                         "message": msg,
                         "chat": chat,
+                        "buyer_email": buyer_email,
                     })
-                    logger.info(f"GGSell: новое сообщение от покупателя в заказе #{id_i}")
+                    logger.info(f"GGSell: новое сообщение от покупателя {buyer_email!r} в заказе #{id_i}")
 
             if max_id > last_id:
                 seen[seen_key] = max_id

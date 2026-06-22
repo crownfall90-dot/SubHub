@@ -1494,7 +1494,13 @@ class GGSellBotHandler:
         invoice_id = item.get("invoice_id")
         msg        = item.get("message", {})
         chat       = item.get("chat", {})
-        email      = chat.get("email") or "?"
+        # email покупателя: сначала из author.email сообщения, потом из chat
+        email = (
+            item.get("buyer_email")
+            or (msg.get("author") or {}).get("email")
+            or chat.get("email")
+            or "?"
+        )
         msg_text   = (msg.get("text") or msg.get("message") or msg.get("body") or "…")
         if len(msg_text) > 300:
             msg_text = msg_text[:300] + "…"
