@@ -963,20 +963,75 @@ def _menu_tg_bot_thread() -> None:
                     {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
                 return
 
+            # Парсим чаты, пропускаем системные (без id_i)
+            parsed = []
+            for ch in chats:
+                inv_id = 0
+                for f in ("id_i", "invoice_id", "id"):
+                    try:
+                        v = int(ch.get(f) or 0)
+                        if v:
+                            inv_id = v
+                            break
+                    except Exception:
+                        pass
+                if not inv_id:
+                    continue  # системные чаты (Поддержка, Уведомления) — пропускаем
+                email = (ch.get("email") or ch.get("buyer_email") or ch.get("name")
+                         or (ch.get("buyer") or {}).get("email") or "")
+                cnt_new  = int(ch.get("cnt_new") or 0)
+                last_msg = (ch.get("last_message") or ch.get("last_msg")
+                            or ch.get("message") or ch.get("text") or "")
+                last_time = (ch.get("last_time") or ch.get("time") or ch.get("date")
+                             or ch.get("updated_at") or ch.get("date_update") or "")
+                # Форматируем время: убираем T, оставляем до минут
+                if last_time:
+                    last_time = str(last_time)[:16].replace("T", " ")
+                parsed.append({
+                    "id": inv_id, "email": email, "cnt_new": cnt_new,
+                    "last_msg": str(last_msg)[:80], "last_time": last_time,
+                })
+
+            # Сортируем: непрочитанные вверх, потом по убыванию ID (новее)
+            parsed.sort(key=lambda x: (-x["cnt_new"], -x["id"]))
+
+            total  = len(parsed)
+            unread = sum(1 for c in parsed if c["cnt_new"])
+
             lines = ["💬 *GGSell — Чаты с покупателями*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+            if total:
+                stat = f"_Всего чатов: {total}"
+                stat += f" · {unread} непрочитанных_" if unread else "_"
+                lines.append(stat)
+                lines.append("")
+
             chat_rows = []
-            if chats:
-                for ch in chats[:15]:
-                    inv_id  = ch.get("id_i") or ch.get("invoice_id") or ch.get("id") or "?"
-                    email   = ch.get("email") or ch.get("buyer_email") or "?"
-                    cnt_new = int(ch.get("cnt_new") or 0)
-                    new_tag = f" · 🔴 {cnt_new} новых" if cnt_new else ""
-                    email_s = str(email)[:30]
-                    lines.append(f"▸ `#{inv_id}` {email_s}{new_tag}")
-                    btn_label = f"{'🔴 ' + str(cnt_new) + ' · ' if cnt_new else ''}#{inv_id} {email_s[:20]}"
-                    chat_rows.append([{"text": btn_label,
-                                       "callback_data": f"ggsell:order:{inv_id}"}])
-            else:
+            for ch in parsed[:12]:
+                inv_id   = ch["id"]
+                email    = ch["email"] or f"заказ #{inv_id}"
+                cnt_new  = ch["cnt_new"]
+                last_msg = ch["last_msg"]
+                last_time = ch["last_time"]
+
+                # Строка в тексте
+                if cnt_new:
+                    head = f"🔴 *#{inv_id}* · {email} · *{cnt_new} новых*"
+                else:
+                    head = f"▸ `#{inv_id}` · {email}"
+                if last_time:
+                    head += f" · _{last_time}_"
+                lines.append(head)
+                if last_msg:
+                    preview = last_msg[:60] + "…" if len(last_msg) > 60 else last_msg
+                    lines.append(f"    _{preview}_")
+
+                # Кнопка
+                email_s = email[:30] + "…" if len(email) > 30 else email
+                time_s  = f" · {last_time[5:]}" if last_time else ""  # MM-DD HH:MM
+                btn = f"{'🔴 ' if cnt_new else '💬 '}#{inv_id} · {email_s}{time_s}"
+                chat_rows.append([{"text": btn[:64], "callback_data": f"ggsell:order:{inv_id}"}])
+
+            if not parsed:
                 lines.append("_Нет активных чатов_")
 
             kb_rows = chat_rows[:8] + [
