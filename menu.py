@@ -459,7 +459,7 @@ def cls():
 def pause(msg: str = "  Нажмите Enter для продолжения..."):
     try:
         input(f"\n{DIM}{msg}{RST}")
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, EOFError):
         pass
 
 
@@ -6104,116 +6104,10 @@ _BLACK_SEARCH_URL = (
 
 
 async def _navigate_search_buy(page, months: int) -> str | None:
-    """Открывает страницу поиска Black Membership, кликает нужный продукт, потом Buy Now.
+    """Переходит напрямую на страницу продукта Black Membership и нажимает Buy Now.
     Возвращает строку ошибки или None при успехе (URL сменился на checkout).
     """
-    await page.goto(_BLACK_SEARCH_URL, wait_until="domcontentloaded", timeout=25_000)
-    try:
-        await page.wait_for_load_state("networkidle", timeout=8_000)
-    except Exception:
-        pass
-
-    if "login" in page.url.lower():
-        return "Не выполнен вход в аккаунт — войдите через пункт 1"
-
-    _SUCCESS_PARTS = ("viewcheckout", "changeShippingAddress", "add/form", "payments")
-    if any(s in page.url for s in _SUCCESS_PARTS):
-        return None
-
-    # Ключевые слова для поиска нужного продукта на странице результатов
-    kw = "3 month" if months == 3 else "12 month"
-    print(f"  Ищу продукт «{months} месяцев» на странице поиска...")
-
-    # Ждём появления карточек продуктов
-    try:
-        await page.wait_for_function(
-            f"() => document.body.innerText.toLowerCase().includes('{kw}')",
-            timeout=10_000,
-        )
-    except Exception:
-        pass
-
-    # Находим координаты продукта: сначала ищем Buy Now прямо на карточке,
-    # если нет — кликаем по заголовку/ссылке карточки
-    coords = await page.evaluate(f"""() => {{
-        const kw = '{kw.lower()}';
-        // Попытка 1: «Buy Now» кнопка внутри карточки с нужным продуктом
-        for (const card of document.querySelectorAll('div,li,article')) {{
-            const t = (card.innerText || '').toLowerCase();
-            if (!t.includes(kw) || !t.includes('black')) continue;
-            const r0 = card.getBoundingClientRect();
-            if (r0.width < 100) continue;
-            for (const btn of card.querySelectorAll('button,a,[role="button"]')) {{
-                const bt = (btn.innerText || btn.textContent || '').toLowerCase().trim();
-                if (bt !== 'buy now') continue;
-                const r = btn.getBoundingClientRect();
-                if (r.width > 20 && r.height > 10) return {{x: r.x + r.width/2, y: r.y + r.height/2, via: 'buynow'}};
-            }}
-        }}
-        // Попытка 2: ссылка/заголовок карточки с нужным продуктом
-        for (const el of document.querySelectorAll('a[href*="black"]')) {{
-            const t = (el.innerText || el.textContent || '').toLowerCase();
-            if (!t.includes(kw)) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width > 30 && r.height > 10) return {{x: r.x + r.width/2, y: r.y + r.height/2, via: 'link'}};
-        }}
-        // Попытка 3: любой элемент с нужным текстом
-        for (const el of document.querySelectorAll('*')) {{
-            const t = (el.innerText || '').trim().toLowerCase();
-            if (!t.includes(kw) || !t.includes('black') || t.length > 120) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width > 50 && r.height > 15) return {{x: r.x + r.width/2, y: r.y + r.height/2, via: 'text'}};
-        }}
-        return null;
-    }}""")
-
-    # Получаем href ссылки на продукт и переходим напрямую (mouse.click ненадёжен)
-    product_href = await page.evaluate(f"""() => {{
-        const kw = '{kw.lower()}';
-        // Ищем <a href="...black..."> с текстом "3 month" или "12 month"
-        for (const el of document.querySelectorAll('a[href]')) {{
-            const t = (el.innerText || el.textContent || '').toLowerCase();
-            if (!t.includes(kw)) continue;
-            const h = el.href || '';
-            if (!h.includes('black') && !h.includes('flipkart')) continue;
-            if (h.length > 20) return h;
-        }}
-        // Fallback: ищем по тексту карточки любой ссылкой
-        for (const card of document.querySelectorAll('div[class],li,article')) {{
-            const t = (card.innerText || '').toLowerCase();
-            if (!t.includes(kw) || !t.includes('black')) continue;
-            const a = card.querySelector('a[href]');
-            if (a && a.href && a.href.length > 20) return a.href;
-        }}
-        return null;
-    }}""")
-
-    if not product_href:
-        print(f"  Ссылка на продукт не найдена — перехожу напрямую...")
-        return await _click_buy_now(page, _BLACK_URLS[months])
-
-    print(f"  Перехожу на страницу продукта...")
-    await page.goto(product_href, wait_until="domcontentloaded", timeout=20_000)
-    try:
-        await page.wait_for_load_state("networkidle", timeout=8_000)
-    except Exception:
-        pass
-    await page.wait_for_timeout(500)
-
-    if "login" in page.url.lower():
-        return "Не выполнен вход в аккаунт"
-
-    if any(s in page.url for s in _SUCCESS_PARTS):
-        return None
-
-    # На странице продукта — клик Buy Now
-    short = page.url.split("?")[0].split("/")[-1][:40]
-    print(f"  Страница продукта: {short} — нажимаю Buy Now...")
-    await page.screenshot(path="debug_product_page.png")
-    result = await _click_buy_now(page, page.url, skip_goto=True)
-    if result:
-        print(f"  {result} — см. debug_product_page.png")
-    return result
+    return await _click_buy_now(page, _BLACK_URLS[months])
 
 
 async def _do_buy_membership(profile_path: Path, months: int, card: dict | None = None,
@@ -8539,6 +8433,16 @@ def screen_main():
             choice = input(f"\n  {BLD}Выберите [0-9 / Q]: {RST}").strip().upper()
         except KeyboardInterrupt:
             continue
+        except EOFError:
+            # На Windows Ctrl+C иногда переводит stdin в EOF — пробуем сбросить
+            try:
+                if os.name == "nt":
+                    sys.stdin = open("CON:", "r",
+                                     encoding=getattr(sys.stdin, "encoding", None) or "utf-8",
+                                     errors="replace")
+            except Exception:
+                sys.exit(0)
+            continue
 
         try:
             if choice == "1":
@@ -8571,7 +8475,7 @@ def screen_main():
                 cls()
                 print(f"\n{C}{BLD}  До свидания!{RST}\n")
                 sys.exit(0)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             pass
 
 
@@ -9177,9 +9081,15 @@ if __name__ == "__main__":
                 cls()
                 print(f"\n{C}  Выход.{RST}\n")
     finally:
+        import signal as _sig
+        try:
+            _sig.signal(_sig.SIGINT, _sig.SIG_IGN)
+        except Exception:
+            pass
         try:
             import grizzly as _gz
             _gz.cleanup_all_rentals_on_exit()
-        except Exception as _e:
-            print(f"Ошибка при очистке номеров при выходе: {_e}")
+        except (KeyboardInterrupt, Exception) as _e:
+            if not isinstance(_e, KeyboardInterrupt):
+                print(f"Ошибка при очистке номеров при выходе: {_e}")
         sys.exit(_exit_code[0])
