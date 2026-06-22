@@ -647,7 +647,7 @@ class LoginAutomation:
                     allowed = int(balance // max_price)
                     if allowed < max_parallel:
                         logger.warning(
-                            f"[{index}] Баланс ({balance:.4f} руб.) позволяет запустить только {allowed} параллельных номеров (макс. цена: {max_price}). "
+                            f"[{index}] Баланс (${balance:.4f}) позволяет запустить только {allowed} параллельных номеров (макс. цена: {max_price}). "
                             f"Снижаю лимит параллельности с {max_parallel} до {max(1, allowed)}."
                         )
                         max_parallel = max(1, allowed)
