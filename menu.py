@@ -3563,6 +3563,8 @@ async def _fill_billing_address_popup(page, card: dict) -> bool:
         return "declined"
     if gw_result == "otp_required":
         return "otp_required"  # карта принята, нужен OTP
+    if gw_result == "otp_timeout":
+        return "otp_timeout"  # время ожидания OTP истекло — оплата не прошла
     if gw_result is False:
         return "declined"  # Pay INR button not found → treat as decline, retry
     return True
@@ -4381,7 +4383,9 @@ async def _handle_paytm_currency_page(page) -> bool:
             break  # успешно нажали Pay или 3DS
 
     # После оплаты может открыться 3DS верификация
-    await _handle_3ds_verification(page)
+    _3ds_res = await _handle_3ds_verification(page)
+    if _3ds_res == "otp_timeout":
+        return "otp_timeout"
 
     # Проверяем что платёж завершился и вернулись на Flipkart
     if "flipkart.com" not in page.url:
@@ -4706,6 +4710,10 @@ async def _handle_3ds_verification(page) -> bool:
                 if _otp_submitted:
                     break
                 await asyncio.sleep(5)
+            # Цикл завершился — проверяем причину
+            if not _otp_submitted and "flipkart.com" not in page.url:
+                print(f"  {R}❌ Оплата не прошла — время ожидания OTP (15 мин) истекло{RST}")
+                return "otp_timeout"
     else:
         print(f"  {Y}⚠ Поле ввода OTP не найдено — действуй вручную.{RST}")
 
@@ -5033,6 +5041,8 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
         gw_result = "declined"
     elif popup_result == "otp_required":
         gw_result = "otp_required"
+    elif popup_result == "otp_timeout":
+        gw_result = "otp_timeout"
 
     # ── 10. Карта отклонена — возвращаемся на payments и повторяем ввод ──────
     if gw_result == "declined":
@@ -5064,6 +5074,10 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
     if gw_result == "otp_required":
         print(f"  {G}✅ Карта принята, браузер открыт для ввода OTP{RST}")
         return "otp_required"
+
+    # Время ожидания OTP истекло — оплата не прошла
+    if gw_result == "otp_timeout":
+        return "otp_timeout"
 
     # Если шлюз вернул False (Pay INR не найдена) — сообщаем как отклонение
     if gw_result is False:
@@ -6458,6 +6472,11 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             if _pay_done == "otp_required":
                 print(f"  {G}✅ Карта принята — браузер открыт для ввода OTP{RST}")
                 break  # Браузер оставляем открытым, не пробуем следующую карту
+
+            if _pay_done == "otp_timeout":
+                print(f"  {R}❌ Оплата не прошла — время ожидания 3DS OTP истекло{RST}")
+                _send_tg_error(_pp_phone, "Оплата не прошла — время ожидания 3DS OTP (15 мин) истекло")
+                return False, "Оплата не прошла — время ожидания 3DS OTP истекло"
 
             if _pay_done:
                 # Оплата запущена — идём на black-store только если Flipkart подтвердил
