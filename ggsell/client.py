@@ -148,7 +148,21 @@ class GGSellClient:
     # ── Account ──────────────────────────────────────────────────────────────
 
     async def get_balance_info(self) -> Dict[str, float]:
-        """Вернуть полную информацию о балансе: free, lock, plus."""
+        """Вернуть полную информацию о балансе: free, hold, lock, plus."""
+        hold = 0.0
+        # v1 API: amount + amount_in_hold (USDT)
+        try:
+            resp = await self._client.get(
+                "https://seller.ggsel.com/api/v1/balance/",
+                headers={"Authorization": self.api_key, "Accept": "application/json"},
+            )
+            if resp.status_code == 200:
+                d = resp.json().get("data") or {}
+                if isinstance(d, dict):
+                    hold = float(d.get("amount_in_hold") or 0.0)
+        except Exception as exc:
+            logger.debug(f"GGSell v1 balance: {exc}")
+
         data = await self._get("/sellers/account/balance/info", {"locale": "ru"})
         content = data.get("content") if isinstance(data, dict) else {}
         if not isinstance(content, dict):
@@ -157,6 +171,7 @@ class GGSellClient:
             "free": float(content.get("amount_t_free") or 0.0),
             "lock": float(content.get("amount_t_lock") or 0.0),
             "plus": float(content.get("amount_t_plus") or 0.0),
+            "hold": hold,
         }
 
     async def get_balance(self) -> float:

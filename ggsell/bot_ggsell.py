@@ -705,12 +705,13 @@ class GGSellBotHandler:
     # ── Баланс ───────────────────────────────────────────────────────────────
 
     async def _fetch_balance(self, cli):
-        bal_s = lock_s = plus_s = payment_date_s = ""
+        bal_s = lock_s = hold_s = plus_s = payment_date_s = ""
         try:
             bi = await cli.get_balance_info()
             bal_s  = f"${bi['free']:.2f}"
-            lock_s = f"${bi['lock']:.2f}" if bi["lock"] else ""
-            plus_s = f"${bi['plus']:.2f}" if bi["plus"] else ""
+            lock_s = f"${bi['lock']:.2f}" if bi.get("lock") else ""
+            hold_s = f"${bi['hold']:.2f}" if bi.get("hold") else ""
+            plus_s = f"${bi['plus']:.2f}" if bi.get("plus") else ""
         except Exception as exc:
             bal_s = f"❌ {exc}"
         try:
@@ -743,7 +744,7 @@ class GGSellBotHandler:
                         payment_date_s = str(dt)[:16].replace("T", " ")
         except Exception:
             pass
-        return bal_s, lock_s, plus_s, payment_date_s
+        return bal_s, lock_s, hold_s, plus_s, payment_date_s
 
     # ── Фоновые задачи (страницы) ─────────────────────────────────────────────
 
@@ -762,7 +763,7 @@ class GGSellBotHandler:
         except Exception:
             processed_cnt = 0
 
-        bal_s, lock_s, plus_s, payment_date_s = await self._fetch_balance(cli)
+        bal_s, lock_s, hold_s, plus_s, payment_date_s = await self._fetch_balance(cli)
 
         total_sales = total_revenue = ""
         try:
@@ -777,7 +778,12 @@ class GGSellBotHandler:
         pending_cnt = len(self.confirm)
 
         lines = ["💰 *GGSell — Панель продавца*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-        lines.append(f"💵 Баланс: *{bal_s}*" + (f"  │  🔒 {lock_s}" if lock_s else ""))
+        bal_line = f"💵 Баланс: *{bal_s}*"
+        if hold_s:
+            bal_line += f"  │  🔒 Холд: *{hold_s}*"
+        elif lock_s:
+            bal_line += f"  │  🔒 {lock_s}"
+        lines.append(bal_line)
         if plus_s:
             dp = f"  _(поступит {payment_date_s})_" if payment_date_s else ""
             lines.append(f"⏳ К поступлению: *{plus_s}*{dp}")
