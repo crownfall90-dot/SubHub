@@ -163,6 +163,22 @@ class GGSellClient:
         """Статистика продаж с дашборда."""
         return await self._get("/seller-last-sales/stat", {"locale": "ru"})
 
+    async def get_payment_schedule(self) -> Dict[str, Any]:
+        """Расписание ближайших поступлений на баланс. Возвращает сырые данные или {}."""
+        for path in (
+            "/sellers/account/transactions",
+            "/sellers/account/balance/transactions",
+            "/sellers/finance",
+            "/sellers/account/finance",
+        ):
+            try:
+                data = await self._get(path, {"locale": "ru"})
+                if isinstance(data, dict) and data.get("retval", -1) == 0:
+                    return data
+            except GGSellError:
+                pass
+        return {}
+
     async def get_buyer_email(self, invoice_id: int) -> Optional[str]:
         """Извлечь email покупателя для YouTube из деталей заказа."""
         info = await self.get_order_info(invoice_id)

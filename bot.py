@@ -746,17 +746,55 @@ def _menu_tg_bot_thread() -> None:
             except Exception:
                 processed_cnt = 0
 
-            # Баланс (доступный + замороженный)
-            bal_s = lock_s = "?"
+            # Баланс (доступный + замороженный + ожидаемые поступления)
+            bal_s = lock_s = plus_s = payment_date_s = "?"
+            bal_info = {}
             try:
                 bal_info = await cli.get_balance_info()
                 bal_s  = f"${bal_info['free']:.2f}"
-                if bal_info["lock"]:
-                    lock_s = f"${bal_info['lock']:.2f}"
-                else:
-                    lock_s = ""
+                lock_s = f"${bal_info['lock']:.2f}" if bal_info["lock"] else ""
+                plus_s = f"${bal_info['plus']:.2f}" if bal_info["plus"] else ""
+                payment_date_s = ""
             except Exception as exc:
                 bal_s = f"❌ {exc}"
+                lock_s = plus_s = payment_date_s = ""
+
+            # Расписание выплат (даты и суммы к поступлению)
+            try:
+                sched = await cli.get_payment_schedule()
+                if isinstance(sched, dict) and sched:
+                    content = sched.get("content") or sched
+                    items = (
+                        content if isinstance(content, list)
+                        else (content.get("items") or content.get("data") or content.get("transactions") or [])
+                    )
+                    if isinstance(items, list) and items:
+                        first = items[0]
+                        amt = (first.get("amount") or first.get("sum")
+                               or first.get("total") or first.get("amount_t_plus") or "")
+                        dt  = (first.get("date") or first.get("payment_date")
+                               or first.get("release_date") or first.get("date_plus") or "")
+                        if amt and not plus_s:
+                            try:
+                                plus_s = f"${float(amt):.2f}"
+                            except Exception:
+                                plus_s = str(amt)
+                        if dt:
+                            payment_date_s = str(dt)[:16].replace("T", " ")
+                    elif isinstance(content, dict):
+                        amt = (content.get("pending") or content.get("pending_amount")
+                               or content.get("amount_pending") or "")
+                        dt  = (content.get("next_payment") or content.get("next_payment_date")
+                               or content.get("date_plus") or "")
+                        if amt and not plus_s:
+                            try:
+                                plus_s = f"${float(amt):.2f}"
+                            except Exception:
+                                plus_s = str(amt)
+                        if dt:
+                            payment_date_s = str(dt)[:16].replace("T", " ")
+            except Exception:
+                pass
 
             # Статистика продаж с дашборда
             stat_lines: list = []
@@ -792,10 +830,20 @@ def _menu_tg_bot_thread() -> None:
                 yt_orders = []
 
             pending_cnt = len(_ggsel_confirm)
+            bal_line = f"💵 Баланс: *{bal_s}*" + (f"  ·  🔒 {lock_s}" if lock_s else "")
+            plus_line = ""
+            if plus_s:
+                date_part = f" (поступит {payment_date_s})" if payment_date_s else ""
+                plus_line = f"⏳ К поступлению: *{plus_s}*{date_part}"
+
             lines = [
                 "💰 *GGSell — Панель продавца*",
                 "━━━━━━━━━━━━━━━━━━━━━━", "",
-                f"💵 Баланс: *{bal_s}*" + (f"  ·  🔒 {lock_s}" if lock_s else ""),
+                bal_line,
+            ]
+            if plus_line:
+                lines.append(plus_line)
+            lines += [
                 f"📦 Ссылок в пуле: *{pool}*",
                 f"✅ Обработано заказов: *{processed_cnt}*",
             ]
@@ -951,10 +999,14 @@ def _menu_tg_bot_thread() -> None:
             if len(msg_text) > 300:
                 msg_text = msg_text[:300] + "…"
 
+            raw_date = (msg.get("date") or msg.get("created_at") or msg.get("timestamp")
+                        or msg.get("date_add") or "")
+            msg_time = str(raw_date)[:16].replace("T", " ") if raw_date else ""
+
             text = (
                 f"💬 *Новое сообщение · заказ* `#{invoice_id}`\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📧 {email}\n\n"
+                f"📧 {email}" + (f" · 📅 {msg_time}" if msg_time else "") + "\n\n"
                 f"{msg_text}"
             )
             kb = {"inline_keyboard": [
