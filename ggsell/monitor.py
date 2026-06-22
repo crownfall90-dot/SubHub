@@ -24,7 +24,8 @@ _DATA = Path(__file__).resolve().parent.parent / "data"
 _ORDERS_FILE   = _DATA / "ggsel_orders.json"
 _SEEN_MSGS_FILE = _DATA / "ggsel_seen_msgs.json"
 
-POLL_INTERVAL = 60.0  # секунды между опросами
+POLL_INTERVAL     = 60.0  # секунды между проверкой заказов
+MSG_POLL_INTERVAL = 15.0  # секунды между проверкой сообщений
 
 # Обрабатываем только заказы YouTube Premium
 YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
@@ -159,15 +160,24 @@ class GGSellMonitor:
         self._running = True
         processed = _load_processed()
         self._seen_msgs = _load_seen_msgs()
-        _msgs_initialized = False  # первый прогон — только запоминаем текущее состояние
+        _msgs_initialized = False
+        _last_order_check = 0.0  # время последней проверки заказов
+
         logger.info(
             f"GGSell монитор запущен "
-            f"(интервал={self.poll_interval:.0f}с, обработано={len(processed)} заказов)"
+            f"(заказы={self.poll_interval:.0f}с, сообщения={MSG_POLL_INTERVAL:.0f}с, "
+            f"обработано={len(processed)} заказов)"
         )
 
         while self._running:
+            now = time.monotonic()
             try:
-                await self._tick(processed)
+                # Заказы — раз в poll_interval
+                if now - _last_order_check >= self.poll_interval:
+                    await self._tick(processed)
+                    _last_order_check = time.monotonic()
+
+                # Сообщения — каждый тик (MSG_POLL_INTERVAL)
                 await self._check_new_messages(_msgs_initialized)
                 _msgs_initialized = True
             except GGSellError as exc:
@@ -178,7 +188,7 @@ class GGSellMonitor:
                 logger.error(f"GGSell монитор: {exc}")
 
             try:
-                await asyncio.sleep(self.poll_interval)
+                await asyncio.sleep(MSG_POLL_INTERVAL)
             except asyncio.CancelledError:
                 break
 
