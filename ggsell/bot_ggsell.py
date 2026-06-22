@@ -1055,6 +1055,92 @@ class GGSellBotHandler:
             from ggsell.monitor import add_link_to_pool
             add_link_to_pool(link)
 
+    async def bg_link_to_buyer_page(self, cid: int, mid: int, phone: str, link: str, offset: int = 0) -> None:
+        """Показать список заказов для отправки ссылки покупателю (пагинация по 5)."""
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
+                                       "callback_data": f"profile:topool:{phone}"}]]})
+            return
+
+        try:
+            orders = await cli.get_last_orders()
+            yt_orders = [o for o in orders
+                         if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+        except Exception as exc:
+            await self._edit(cid, mid, f"❌ Ошибка загрузки заказов: {exc}",
+                {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
+                                       "callback_data": f"profile:topool:{phone}"}]]})
+            return
+
+        done = self.get_done()
+        # Сортировка от старых к новым (возрастающий invoice_id)
+        yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0))
+        pending = [o for o in yt_orders
+                   if int(o.get("invoice_id") or o.get("id") or 0) not in done]
+
+        lp = link[8:44] + "…" if len(link) > 52 else link
+        lines = [
+            "📤 *Отправить ссылку покупателю*",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+            f"🔗 `{lp}`", "",
+            "Выбери заказ:",
+        ]
+
+        page = pending[offset:offset + 5]
+        order_rows = []
+        for o in page:
+            inv_i = int(o.get("invoice_id") or o.get("id") or 0)
+            label = self._order_label(o, inv_i)
+            order_rows.append([{"text": label[:64],
+                                 "callback_data": f"profile:send_to_order:{phone}:{inv_i}"}])
+
+        if not page and offset == 0:
+            lines.append("_Нет незавершённых заказов_")
+
+        nav_row = []
+        if offset > 0:
+            nav_row.append({"text": "◀️ Пред. 5",
+                            "callback_data": f"profile:send_to_buyer:{phone}:{offset - 5}"})
+        if offset + 5 < len(pending):
+            nav_row.append({"text": "Следующие 5 ▶️",
+                            "callback_data": f"profile:send_to_buyer:{phone}:{offset + 5}"})
+
+        kb_rows = order_rows
+        if nav_row:
+            kb_rows.append(nav_row)
+        kb_rows.append([{"text": "🔗 Добавить в ссылки",
+                         "callback_data": f"profile:topool:{phone}"}])
+        await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+    async def bg_link_to_order(self, cid: int, mid: int, phone: str, link: str, invoice_id: int) -> None:
+        """Отправить ссылку конкретному покупателю через GGSell и обновить сообщение."""
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
+                                       "callback_data": f"profile:topool:{phone}"}]]})
+            return
+        from ggsell.monitor import get_template
+        ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
+        if ok:
+            self.mark_done(invoice_id, link)
+            await self._edit(cid, mid,
+                f"✅ *Ссылка отправлена покупателю!*\n\n"
+                f"Заказ: `#{invoice_id}`\n🔗 `{link}`",
+                {"inline_keyboard": [
+                    [{"text": "🔗 Добавить в ссылки", "callback_data": f"profile:topool:{phone}"},
+                     {"text": "◀️ GGSell",            "callback_data": "go:ggsell"}],
+                ]})
+        else:
+            await self._edit(cid, mid,
+                f"❌ Не удалось отправить ссылку заказу `#{invoice_id}`.",
+                {"inline_keyboard": [
+                    [{"text": "🔗 Добавить в ссылки",    "callback_data": f"profile:topool:{phone}"}],
+                    [{"text": "📤 Другой заказ",          "callback_data": f"profile:send_to_buyer:{phone}:0"}],
+                ]})
+
     async def bg_run(self, cid, mid, invoice_id: int) -> None:
         item        = self.orders.get(invoice_id, {})
         buyer_email = item.get("buyer_email") or "?"

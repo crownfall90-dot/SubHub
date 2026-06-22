@@ -893,8 +893,10 @@ def _menu_tg_bot_thread() -> None:
                         msg += f"\n🔗 {short}"
                     await _send(cid, msg, parse_mode="HTML", disable_web_page_preview=True,
                                 reply_markup={"inline_keyboard": [
-                                    [{"text": "📦 В пул ссылок",
+                                    [{"text": "🔗 Добавить в ссылки",
                                       "callback_data": f"profile:topool:{phone}"}],
+                                    [{"text": "📤 Отправить покупателю",
+                                      "callback_data": f"profile:send_to_buyer:{phone}:0"}],
                                 ]})
                 else:
                     msgs = {
@@ -2213,7 +2215,54 @@ def _menu_tg_bot_thread() -> None:
                     return
                 from ggsell.monitor import add_link_to_pool
                 add_link_to_pool(link, profile_path=str(pp))
-                await _ack(qid, f"📦 Ссылка добавлена в пул!")
+                await _ack(qid, f"🔗 Ссылка добавлена!")
+                return
+
+            if data.startswith("profile:send_to_buyer:"):
+                parts = data.split(":")
+                phone = parts[2]
+                offset = int(parts[3]) if len(parts) > 3 else 0
+                if not _ggsel_handler[0]:
+                    await _ack(qid, "❌ GGSell не настроен", alert=True)
+                    return
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                    return
+                try:
+                    m = _m("_read_profile_meta")(pp)
+                    link = m.get("black_activation_link") or m.get("black_short_link") or ""
+                except Exception:
+                    link = ""
+                if not link:
+                    await _ack(qid, "⚠️ Ссылка не найдена в профиле", alert=True)
+                    return
+                await _ack(qid)
+                await _edit(cid, mid, "⏳ Загружаю заказы...", {"inline_keyboard": []})
+                asyncio.create_task(_ggsel_handler[0].bg_link_to_buyer_page(cid, mid, phone, link, offset))
+                return
+
+            if data.startswith("profile:send_to_order:"):
+                parts = data.split(":")
+                phone = parts[2]
+                invoice_id = int(parts[3]) if len(parts) > 3 else 0
+                if not _ggsel_handler[0]:
+                    await _ack(qid, "❌ GGSell не настроен", alert=True)
+                    return
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                    return
+                try:
+                    m = _m("_read_profile_meta")(pp)
+                    link = m.get("black_activation_link") or m.get("black_short_link") or ""
+                except Exception:
+                    link = ""
+                if not link:
+                    await _ack(qid, "⚠️ Ссылка не найдена в профиле", alert=True)
+                    return
+                await _ack(qid, "⏳ Отправляю...")
+                asyncio.create_task(_ggsel_handler[0].bg_link_to_order(cid, mid, phone, link, invoice_id))
                 return
 
             # Неизвестная команда

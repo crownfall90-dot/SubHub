@@ -5618,10 +5618,12 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                     chat_ids = [int(c) for c in d.get("chats", [])]
                 elif isinstance(d, list):
                     chat_ids = [int(c) for c in d]
-            _reply_markup_black = _json.dumps({"inline_keyboard": [[
-                {"text": "📦 В пул ссылок",
-                 "callback_data": f"profile:topool:{phone_number}"},
-            ]]}) if _full_url else None
+            _reply_markup_black = _json.dumps({"inline_keyboard": [
+                [{"text": "🔗 Добавить в ссылки",
+                  "callback_data": f"profile:topool:{phone_number}"}],
+                [{"text": "📤 Отправить покупателю",
+                  "callback_data": f"profile:send_to_buyer:{phone_number}:0"}],
+            ]}) if _full_url else None
             async with _httpx.AsyncClient(timeout=10, trust_env=False) as _sess:
                 for cid in chat_ids:
                     try:
