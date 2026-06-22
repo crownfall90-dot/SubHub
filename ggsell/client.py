@@ -96,7 +96,7 @@ class GGSellClient:
         except Exception:
             pass
 
-        logger.debug(f"GGSell: токен получен (seller_id={data.get('seller_id')})")
+        logger.trace(f"GGSell: токен получен (seller_id={data.get('seller_id')})")
         return self._token
 
     # ── HTTP helpers ─────────────────────────────────────────────────────────

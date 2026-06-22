@@ -48,6 +48,7 @@ def _m(name):
 
 # ── Глобальные ────────────────────────────────────────────────────────────────
 _tg_status: str  = "not_configured"
+_ggsel_status: str = ""   # "" — не настроен / "ok" — активен / "error:..." — ошибка
 _update_available: bool = False
 _update_commits: list   = []
 _update_checked: bool   = False
@@ -56,17 +57,27 @@ _notified_update_hashes: set = set()
 
 def _tg_status_line() -> str:
     if _tg_status == "not_configured":
-        return f"{DIM}○ Telegram: не настроен{RST}"
-    if _tg_status == "starting":
-        return f"{Y}◎ Telegram: подключение...{RST}"
-    if _tg_status.startswith("error:"):
-        return f"{R}✗ Telegram: {_tg_status[6:]}{RST}"
-    n = _tg_status.split(":", 1)[1] if ":" in _tg_status else "?"
-    return f"{G}● Telegram бот активен  {DIM}({n} подписчик(ов)){RST}"
+        tg_part = f"{DIM}○ Telegram: не настроен{RST}"
+    elif _tg_status == "starting":
+        tg_part = f"{Y}◎ Telegram: подключение...{RST}"
+    elif _tg_status.startswith("error:"):
+        tg_part = f"{R}✗ Telegram: {_tg_status[6:]}{RST}"
+    else:
+        n = _tg_status.split(":", 1)[1] if ":" in _tg_status else "?"
+        tg_part = f"{G}● Telegram бот активен  {DIM}({n} подписчик(ов)){RST}"
+
+    if _ggsel_status == "ok":
+        ggsel_part = f"   {G}💰 GGSell активен{RST}"
+    elif _ggsel_status.startswith("error:"):
+        ggsel_part = f"   {R}💰 GGSell: {_ggsel_status[6:]}{RST}"
+    else:
+        ggsel_part = ""
+
+    return tg_part + ggsel_part
 
 
 def _menu_tg_bot_thread() -> None:
-    global _tg_status
+    global _tg_status, _ggsel_status
     _HERE = Path(__file__).parent
 
     # Токен только из secrets.yaml
@@ -96,6 +107,14 @@ def _menu_tg_bot_thread() -> None:
     except ImportError:
         _tg_status = "error:pip install httpx"
         return
+
+    # Проверяем наличие GGSell-ключей
+    try:
+        _gs = (_m("_read_secrets")().get("ggsel") or {})
+        if _gs.get("api_key", "").strip() and str(_gs.get("seller_id") or "").strip():
+            _ggsel_status = "ok"
+    except Exception:
+        pass
 
     TG_SUBSCRIBERS_FILE = _m("TG_SUBSCRIBERS_FILE")
     TG_STATS_FILE       = _m("TG_STATS_FILE")
@@ -149,6 +168,7 @@ def _menu_tg_bot_thread() -> None:
         _ggsel_done: dict        = {} # {invoice_id: datetime_str} — выполнено (ссылка отправлена)
         _ggsel_done_loaded       = [False]
         _ggsel_reply_mode: dict  = {} # {cid: invoice_id} — ждём текст ответа от пользователя
+        _pool_pick_pending: dict = {} # {cid: link}      — ссылка из пула ждёт выбора покупателя
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -463,14 +483,20 @@ def _menu_tg_bot_thread() -> None:
                     if is_issued else
                     {"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}
                 )
-                return {"inline_keyboard": [
+                has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
+                rows = [
                     [{"text": f"📱 {phone}", "callback_data": "noop"}],
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
                     [_issued_btn],
+                ]
+                if has_link and not is_issued:
+                    rows.append([{"text": "📦 В пул ссылок", "callback_data": f"profile:topool:{phone}"}])
+                rows += [
                     [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:active"}],
-                ]}
+                ]
+                return {"inline_keyboard": rows}
             else:
                 back_callback = f"profiles:list:{list_type}" if list_type in ("noaddr", "hasaddr") else "profiles:list:noaddr"
                 return {"inline_keyboard": [
@@ -979,6 +1005,69 @@ def _menu_tg_bot_thread() -> None:
             ]}
             return "\n".join(lines), kb
 
+        async def _bg_ggsel_pool_pick(cid, mid, link: str) -> None:
+            """Показать список заказов для выбора получателя ссылки из пула."""
+            cli = _get_ggsel_client()
+            try:
+                orders = await cli.get_last_orders() if cli else []
+                yt_orders = [o for o in orders
+                             if int((o.get("product") or {}).get("id") or 0) == 102276416]
+            except Exception:
+                yt_orders = []
+
+            done = _ggsel_get_done()
+            link_preview = link[:60] + "…" if len(link) > 60 else link
+            lines = [
+                "📦 *Отправить ссылку из пула*",
+                "━━━━━━━━━━━━━━━━━━━━━━", "",
+                f"🔗 `{link_preview}`", "",
+                "Выберите покупателя:",
+            ]
+            order_rows = []
+            for o in yt_orders[:8]:
+                inv_i = int(o.get("invoice_id") or o.get("id") or 0)
+                if inv_i in done:
+                    continue
+                p = _ggsel_parse_order(o)
+                label = f"#{inv_i}"
+                if p["email"]:
+                    label += f" · {p['email'][:28]}"
+                order_rows.append([{"text": label,
+                                     "callback_data": f"ggsell:pool_order:{inv_i}"}])
+            if not order_rows:
+                lines.append("\n_Нет незавершённых заказов для отправки_")
+            kb_rows = order_rows[:7] + [
+                [{"text": "❌ Отмена", "callback_data": "ggsell:pool"}],
+            ]
+            await _edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+        async def _bg_ggsel_pool_send(cid, mid, invoice_id: int, link: str) -> None:
+            """Отправить ссылку из пула покупателю и снять её из пула."""
+            cli = _get_ggsel_client()
+            if not cli:
+                await _edit(cid, mid, "❌ GGSell не настроен.",
+                    {"inline_keyboard": [[{"text": "◀️ GGSell", "callback_data": "go:ggsell"}]]})
+                return
+            from ggsell.monitor import MSG_TEMPLATE
+            ok = await cli.send_message(invoice_id, MSG_TEMPLATE.format(link=link))
+            _ggsel_remove_link(link)
+            if ok:
+                _ggsel_mark_done(invoice_id)
+                await _edit(cid, mid,
+                    f"✅ *Ссылка отправлена покупателю!*\n\n"
+                    f"Заказ: `#{invoice_id}`\n🔗 `{link}`",
+                    {"inline_keyboard": [
+                        [{"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"},
+                         {"text": "◀️ GGSell",     "callback_data": "go:ggsell"}],
+                    ]})
+            else:
+                await _edit(cid, mid,
+                    f"❌ Не удалось отправить ссылку заказу `#{invoice_id}`.\n\nСсылка возвращена в пул.",
+                    {"inline_keyboard": [[{"text": "📦 Пул", "callback_data": "ggsell:pool"}]]})
+                # Возвращаем ссылку в пул
+                from ggsell.monitor import add_link_to_pool
+                add_link_to_pool(link)
+
         async def _ggsel_notify_order(item: dict) -> None:
             """Отправить уведомление о новом заказе всем подписчикам."""
             invoice_id  = item.get("invoice_id")
@@ -1082,8 +1171,10 @@ def _menu_tg_bot_thread() -> None:
                     f"📧 Покупатель: `{buyer_email}`\n\n"
                     "Отправить ссылку покупателю в чат GGSell?",
                     reply_markup={"inline_keyboard": [
-                        [{"text": "📤 Да, отправить покупателю",
-                          "callback_data": f"ggsell:send:{invoice_id}"},
+                        [{"text": "📤 Отправить покупателю",
+                          "callback_data": f"ggsell:send:{invoice_id}"}],
+                        [{"text": "📦 В пул ссылок",
+                          "callback_data": f"ggsell:topool:{invoice_id}"},
                          {"text": "❌ Не отправлять",
                           "callback_data": f"ggsell:nosend:{invoice_id}"}],
                     ]})
@@ -1399,7 +1490,11 @@ def _menu_tg_bot_thread() -> None:
                         msg += f"\n\n🔗 <a href=\"{act_url}\">{act_url}</a>"
                     if short and short != act_url:
                         msg += f"\n🔗 {short}"
-                    await _send(cid, msg, parse_mode="HTML", disable_web_page_preview=True)
+                    await _send(cid, msg, parse_mode="HTML", disable_web_page_preview=True,
+                                reply_markup={"inline_keyboard": [
+                                    [{"text": "📦 В пул ссылок",
+                                      "callback_data": f"profile:topool:{phone}"}],
+                                ]})
                 else:
                     msgs = {
                         "activated":    f"✨ <b>{phone}</b> — АКТИВИРОВАН\nДо: {vt}",
@@ -2722,11 +2817,17 @@ def _menu_tg_bot_thread() -> None:
 
             if data == "ggsell:pool":
                 await _ack(qid)
-                await _edit(cid, mid, _ggsel_pool_text(),
-                            {"inline_keyboard": [
-                                [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
-                                 {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
-                            ]})
+                links = _ggsel_read_pool()
+                link_btns = []
+                for idx, lnk in enumerate(links[:10]):
+                    preview = lnk[8:48] + "…" if len(lnk) > 48 else lnk  # убираем https://
+                    link_btns.append([{"text": f"📤 {preview}",
+                                       "callback_data": f"ggsell:pool_pick:{idx}"}])
+                kb_rows = link_btns + [
+                    [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
+                     {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
+                ]
+                await _edit(cid, mid, _ggsel_pool_text(), {"inline_keyboard": kb_rows})
                 return
 
             if data.startswith("ggsell:order:"):
@@ -2791,11 +2892,71 @@ def _menu_tg_bot_thread() -> None:
                     _set(cid, cfg_key, new_val)
                     label = "🔔 Включено" if new_val else "🔕 Выключено"
                     await _ack(qid, label)
-                    # Обновляем страницу настроек на месте
                     txt, kb = _ggsel_settings_page(cid, mid)
                     await _edit(cid, mid, txt, kb)
                 else:
                     await _ack(qid)
+                return
+
+            if data.startswith("ggsell:topool:"):
+                # Переместить ссылку из очереди подтверждения в пул
+                invoice_id = int(data.split(":")[2])
+                link = _ggsel_confirm.pop(invoice_id, None)
+                if not link:
+                    await _ack(qid, "❌ Ссылка не найдена", alert=True)
+                    return
+                from ggsell.monitor import add_link_to_pool
+                add_link_to_pool(link)
+                await _ack(qid, "📦 Добавлено в пул!")
+                await _edit(cid, mid,
+                    f"📦 Ссылка для заказа `#{invoice_id}` добавлена в пул.\n\n🔗 `{link}`",
+                    {"inline_keyboard": [
+                        [{"text": "📦 Открыть пул", "callback_data": "ggsell:pool"},
+                         {"text": "◀️ GGSell",      "callback_data": "go:ggsell"}],
+                    ]})
+                return
+
+            if data.startswith("ggsell:pool_pick:"):
+                idx = int(data.split(":")[2])
+                links = _ggsel_read_pool()
+                if idx >= len(links):
+                    await _ack(qid, "❌ Пул изменился, обновите список", alert=True)
+                    return
+                link = links[idx]
+                _pool_pick_pending[cid] = link
+                await _ack(qid)
+                await _edit(cid, mid, "⏳ Загружаю заказы...",
+                            {"inline_keyboard": [[{"text": "❌ Отмена", "callback_data": "ggsell:pool"}]]})
+                asyncio.create_task(_bg_ggsel_pool_pick(cid, mid, link))
+                return
+
+            if data.startswith("ggsell:pool_order:"):
+                invoice_id = int(data.split(":")[2])
+                link = _pool_pick_pending.pop(cid, None)
+                if not link:
+                    await _ack(qid, "❌ Сессия истекла, выберите ссылку снова", alert=True)
+                    return
+                await _ack(qid, "⏳ Отправляю...")
+                asyncio.create_task(_bg_ggsel_pool_send(cid, mid, invoice_id, link))
+                return
+
+            if data.startswith("profile:topool:"):
+                phone = data.split(":", 2)[2]
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                    return
+                try:
+                    m = _m("_read_profile_meta")(pp)
+                    link = m.get("black_activation_link") or m.get("black_short_link") or ""
+                except Exception:
+                    link = ""
+                if not link:
+                    await _ack(qid, "⚠️ Ссылка не найдена в профиле", alert=True)
+                    return
+                from ggsell.monitor import add_link_to_pool
+                add_link_to_pool(link)
+                await _ack(qid, f"📦 Ссылка добавлена в пул!")
                 return
 
             # Неизвестная команда
