@@ -353,6 +353,20 @@ class GGSellClient:
             logger.error(f"GGSell update_prices error: {exc}")
             return False
 
+    async def get_promo_codes(self) -> List[Dict[str, Any]]:
+        """Список промокодов продавца. Эндпоинт: GET /promo-codes"""
+        try:
+            data = await self._get("/promo-codes", {"locale": "ru", "limit": 50})
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                v = data.get("data") or data.get("items") or data.get("promo_codes")
+                if isinstance(v, list):
+                    return v
+        except Exception as exc:
+            logger.debug(f"GGSell get_promo_codes: {exc}")
+        return []
+
     async def get_order_review(self, invoice_id: int) -> Optional[Dict[str, Any]]:
         """Отзыв на конкретный заказ; None если отзыва нет.
         Ищет в общем списке отзывов, фильтруя по invoice_id."""

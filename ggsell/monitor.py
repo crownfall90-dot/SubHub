@@ -57,6 +57,15 @@ MSG_TEMPLATE = (
     "Спасибо за доверие и сотрудничество! Буду на связи."
 )
 
+# Сообщение с промокодом после 5-звёздочного отзыва
+MSG_REVIEW_PROMO = (
+    "🎉 Огромное спасибо за ваш отзыв!\n\n"
+    "Как и обещал — дарю вам промокод на скидку 5% на следующую покупку:\n\n"
+    "🎁 *{promo_code}*\n\n"
+    "Введите его при оформлении заказа в поле «Промокод».\n\n"
+    "Буду рад видеть вас снова! 🙌"
+)
+
 # Сообщение если ссылка ещё готовится
 MSG_WAIT = (
     "Ваш заказ принят! Ссылка на активацию будет отправлена в течение нескольких минут. "
@@ -68,7 +77,8 @@ MSG_WAIT = (
 
 def get_template(name: str) -> str:
     """Загрузить шаблон из файла; если нет — вернуть встроенный по умолчанию."""
-    defaults = {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT}
+    defaults = {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT,
+                "msg_review_promo": MSG_REVIEW_PROMO}
     try:
         raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
         val = raw.get(name, "").strip()

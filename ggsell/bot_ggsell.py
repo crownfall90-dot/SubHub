@@ -624,8 +624,9 @@ class GGSellBotHandler:
     # ── Шаблоны сообщений ────────────────────────────────────────────────────
 
     _TEMPLATE_NAMES = {
-        "msg_template": ("Ссылка готова", "Отправляется покупателю вместе со ссылкой на активацию. Используй `{link}` для вставки ссылки."),
-        "msg_wait":     ("Ожидание", "Отправляется покупателю пока ссылка ещё готовится."),
+        "msg_template":    ("Ссылка готова",   "Отправляется покупателю вместе со ссылкой на активацию. Используй `{link}` для вставки ссылки."),
+        "msg_wait":        ("Ожидание",         "Отправляется покупателю пока ссылка ещё готовится."),
+        "msg_review_promo":("Промокод за отзыв","Отправляется покупателю автоматически при получении отзыва 5 звёзд. Используй `{promo_code}` для вставки кода."),
     }
 
     def load_templates(self) -> dict:
@@ -636,7 +637,9 @@ class GGSellBotHandler:
 
     def _tpl_default(self, name: str) -> str:
         from ggsell.monitor import MSG_TEMPLATE, MSG_WAIT
-        return {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT}.get(name, "")
+        from ggsell.monitor import MSG_REVIEW_PROMO
+        return {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT,
+                "msg_review_promo": MSG_REVIEW_PROMO}.get(name, "")
 
     def bg_templates_page_sync(self, cid: int) -> tuple:
         saved = self.load_templates()
@@ -1553,6 +1556,21 @@ class GGSellBotHandler:
             return ""
         return "⭐" * max(1, min(5, rating)) + f" {rating}/5"
 
+    async def _get_review_promo_code(self, cli) -> str:
+        """Вернуть активный промокод для отзыва (applies_to_all_offers=False)."""
+        try:
+            codes = await cli.get_promo_codes()
+            for code in codes:
+                if (code.get("status", {}).get("slug") == "active"
+                        and not code.get("applies_to_all_offers")):
+                    limit = code.get("activation_limit")
+                    count = code.get("activation_count", 0)
+                    if limit is None or count < limit:
+                        return code.get("code", "")
+        except Exception as exc:
+            logger.debug(f"GGSell get_review_promo_code: {exc}")
+        return ""
+
     async def notify_review(self, item: dict) -> None:
         invoice_id = item.get("invoice_id")
         r          = self.parse_review(item.get("review", {}))
@@ -1571,6 +1589,29 @@ class GGSellBotHandler:
             lines.append(f"\n{stars}")
         if r["text"]:
             lines.append(f"\n_{r['text'][:400]}_")
+
+        promo_sent = False
+        # Если 5 звёзд — автоматически отправить промокод покупателю
+        if r["rating"] == 5 and invoice_id:
+            cli = self.get_client()
+            if cli:
+                try:
+                    promo_code = await self._get_review_promo_code(cli)
+                    if promo_code:
+                        from ggsell.monitor import get_template
+                        msg = get_template("msg_review_promo").format(promo_code=promo_code)
+                        ok = await cli.send_message(invoice_id, msg)
+                        if ok:
+                            promo_sent = True
+                            lines.append(f"\n🎁 _Промокод `{promo_code}` отправлен покупателю_")
+                        else:
+                            lines.append("\n⚠️ _Не удалось отправить промокод покупателю_")
+                    else:
+                        lines.append("\n⚠️ _Нет активного промокода для отправки_")
+                except Exception as exc:
+                    logger.error(f"GGSell notify_review promo: {exc}")
+                    lines.append(f"\n⚠️ _Ошибка при отправке промокода: {exc}_")
+
         text = "\n".join(lines)
         kb_rows = []
         if invoice_id:
