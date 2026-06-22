@@ -188,13 +188,20 @@ class GGSellClient:
         """Извлечь email покупателя для YouTube из деталей заказа."""
         info = await self.get_order_info(invoice_id)
         content = info.get("content", {}) if isinstance(info, dict) else {}
+        # Структурированные options (Seller API v1)
         for opt in content.get("options", []):
             name = (opt.get("name") or "").lower()
             if "youtube" in name or "почт" in name or "email" in name.lower():
                 return (opt.get("user_data") or "").strip() or None
-        # fallback: buyer_info.email
+        # selected_options как строки (API v1/v2)
+        for s in content.get("selected_options", []):
+            sl = str(s).lower()
+            if "youtube" in sl or "почт" in sl or "email" in sl:
+                if ": " in str(s):
+                    return str(s).split(": ", 1)[1].strip() or None
+        # buyer_info.email или buyer_email в корне
         buyer = content.get("buyer_info", {}) or {}
-        return buyer.get("email") or None
+        return buyer.get("email") or info.get("buyer_email") or None
 
     # ── Orders ───────────────────────────────────────────────────────────────
 
@@ -218,13 +225,33 @@ class GGSellClient:
         return []
 
     async def get_order_info(self, invoice_id: int) -> Dict[str, Any]:
-        """Подробная информация о заказе."""
+        """Подробная информация о заказе (Seller API v1)."""
         data = await self._get(f"/purchase/info/{invoice_id}", {"locale": "ru"})
         content = data.get("content") if isinstance(data, dict) else None
         if isinstance(content, dict):
             logger.debug(f"GGSell order_info #{invoice_id} content keys: {list(content.keys())}")
             logger.debug(f"GGSell order_info #{invoice_id} content: {content}")
         return data
+
+    async def get_order_info_v2(self, invoice_id: int) -> Dict[str, Any]:
+        """Детали заказа через публичный API V1 (/api/v1/orders/{id}).
+
+        Возвращает dict с полями: selected_options, buyer_email,
+        seller_reward_amount, amount, unique_code, status, ...
+        """
+        try:
+            resp = await self._client.get(
+                f"https://seller.ggsel.com/api/v1/orders/{invoice_id}",
+                headers={"Authorization": self.api_key, "Accept": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                result = data.get("data") or {}
+                logger.debug(f"GGSell order_v2 #{invoice_id} keys: {list(result.keys())}")
+                return result
+        except Exception as exc:
+            logger.debug(f"GGSell order_v2 #{invoice_id} failed: {exc}")
+        return {}
 
     # ── Chats ────────────────────────────────────────────────────────────────
 

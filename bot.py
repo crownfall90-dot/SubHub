@@ -739,7 +739,8 @@ def _menu_tg_bot_thread() -> None:
             """Извлечь поля заказа с множеством fallback-имён."""
             product  = order.get("product") or {}
             name     = (product.get("name") or product.get("product_name")
-                        or order.get("product_name") or order.get("name") or "YouTube Premium")
+                        or order.get("product_name") or order.get("name")
+                        or order.get("offer_title") or "YouTube Premium")
             buyer    = order.get("buyer") or order.get("buyer_info") or {}
             email    = (buyer.get("email") or order.get("email")
                         or order.get("buyer_email") or "")
@@ -751,7 +752,7 @@ def _menu_tg_bot_thread() -> None:
                         or order.get("profit") or order.get("payout")
                         or order.get("amount_seller") or "")
             status   = order.get("status") or order.get("state") or ""
-            date     = str(order.get("date") or "").replace("T", " ")[:16]
+            date     = str(order.get("date") or order.get("created_at") or "").replace("T", " ")[:16]
             # Обрезаем длинное название — оставляем первые два сегмента через |
             name_short = name
             parts = [p.strip() for p in str(name).split("|")]
@@ -760,19 +761,36 @@ def _menu_tg_bot_thread() -> None:
             if len(name_short) > 60:
                 name_short = name_short[:57] + "…"
             # Параметры заказа (email, период подписки и т.д.)
-            raw_opts = order.get("options") or []
+            import re as _re_opts
             parsed_options = []
-            for opt in raw_opts:
-                opt_name  = (opt.get("name") or opt.get("title") or opt.get("label") or "").strip()
-                opt_val   = (opt.get("user_data") or opt.get("value") or opt.get("selected") or "").strip()
-                opt_price = (opt.get("price_add") or opt.get("amount_add")
-                             or opt.get("price_increase") or 0)
-                if opt_name and opt_val:
-                    parsed_options.append({
-                        "name":      opt_name,
-                        "value":     opt_val,
-                        "price_add": opt_price,
-                    })
+
+            # Приоритет 1: selected_options — строки вида "Название: значение (+X.X RUB)"
+            for s in (order.get("selected_options") or []):
+                s = str(s).strip()
+                if ": " not in s:
+                    continue
+                opt_name, rest = s.split(": ", 1)
+                opt_name = opt_name.strip()
+                # Извлекаем price_add из "(+1900.0 RUB)"
+                price_add = 0.0
+                m = _re_opts.search(r'\(\+(\d+(?:\.\d+)?)\s*RUB\)', rest)
+                if m:
+                    try:
+                        price_add = float(m.group(1))
+                    except Exception:
+                        pass
+                    rest = _re_opts.sub(r'\s*\(\+[\d.]+\s*RUB\)', '', rest).strip()
+                if opt_name and rest:
+                    parsed_options.append({"name": opt_name, "value": rest, "price_add": price_add})
+
+            # Приоритет 2: структурированные options[] (Seller API v1)
+            if not parsed_options:
+                for opt in (order.get("options") or []):
+                    opt_name  = (opt.get("name") or opt.get("title") or opt.get("label") or "").strip()
+                    opt_val   = (opt.get("user_data") or opt.get("value") or opt.get("selected") or "").strip()
+                    opt_price = float(opt.get("price_add") or opt.get("amount_add") or 0)
+                    if opt_name and opt_val:
+                        parsed_options.append({"name": opt_name, "value": opt_val, "price_add": opt_price})
             return {
                 "name": str(name),
                 "name_short": name_short,
@@ -1198,6 +1216,36 @@ def _menu_tg_bot_thread() -> None:
                 from ggsell.monitor import add_link_to_pool
                 add_link_to_pool(link)
 
+        async def _bg_ggsel_order_view(cid, mid, invoice_id: int) -> None:
+            """Показать карточку заказа, при необходимости обогащая данными из v2 API."""
+            cli = _get_ggsel_client()
+            item  = _ggsel_orders.get(invoice_id, {})
+            order = dict(item.get("order", {}))
+            if cli and not order.get("selected_options") and not order.get("options"):
+                try:
+                    v2 = await cli.get_order_info_v2(invoice_id)
+                    if v2:
+                        if v2.get("selected_options"):
+                            order["selected_options"] = v2["selected_options"]
+                        if v2.get("buyer_email") and not order.get("buyer_email"):
+                            order["buyer_email"] = v2["buyer_email"]
+                        if v2.get("seller_reward_amount") and not order.get("sum_seller"):
+                            order["sum_seller"] = v2["seller_reward_amount"]
+                        if v2.get("amount") and not order.get("sum_t"):
+                            order["sum_t"] = v2["amount"]
+                        if v2.get("created_at") and not order.get("date"):
+                            order["date"] = v2["created_at"]
+                        if v2.get("offer_title") and not order.get("name"):
+                            order["name"] = v2["offer_title"]
+                        item = dict(item)
+                        item["order"] = order
+                        _ggsel_orders[invoice_id] = item
+                except Exception:
+                    pass
+            await _edit(cid, mid,
+                        _ggsel_order_text(invoice_id),
+                        _ggsel_order_kb(invoice_id))
+
         async def _bg_ggsel_pool_for(cid, mid, invoice_id: int) -> None:
             """Показать пул ссылок для выбора и отправки конкретному покупателю."""
             links = _ggsel_read_pool()
@@ -1291,9 +1339,34 @@ def _menu_tg_bot_thread() -> None:
                     # параметры заказа (options: email, период подписки и т.д.)
                     if content.get("options") and not order.get("options"):
                         order["options"] = content["options"]
+                    if content.get("selected_options") and not order.get("selected_options"):
+                        order["selected_options"] = content["selected_options"]
                     # Сохраняем обогащённый order обратно
                     item["order"] = order
                     _ggsel_orders[invoice_id] = item
+
+                    # Пробуем V2 API для selected_options, seller_reward, unique_code
+                    try:
+                        v2 = await cli.get_order_info_v2(invoice_id)
+                        if v2:
+                            if v2.get("selected_options") and not order.get("selected_options"):
+                                order["selected_options"] = v2["selected_options"]
+                            if v2.get("buyer_email") and not order.get("buyer_email"):
+                                order["buyer_email"] = v2["buyer_email"]
+                            if v2.get("seller_reward_amount") and not order.get("sum_seller"):
+                                order["sum_seller"] = v2["seller_reward_amount"]
+                            if v2.get("amount") and not order.get("sum_t"):
+                                order["sum_t"] = v2["amount"]
+                            if v2.get("unique_code"):
+                                order["unique_code"] = v2["unique_code"]
+                            if v2.get("created_at") and not order.get("date"):
+                                order["date"] = v2["created_at"]
+                            if v2.get("offer_title") and not order.get("name"):
+                                order["name"] = v2["offer_title"]
+                            item["order"] = order
+                            _ggsel_orders[invoice_id] = item
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -3087,9 +3160,10 @@ def _menu_tg_bot_thread() -> None:
             if data.startswith("ggsell:order:"):
                 invoice_id = int(data.split(":")[2])
                 await _ack(qid)
-                await _edit(cid, mid,
-                            _ggsel_order_text(invoice_id),
-                            _ggsel_order_kb(invoice_id))
+                await _edit(cid, mid, f"⏳ Загружаю заказ `#{invoice_id}`…",
+                            {"inline_keyboard": [[{"text": "◀️ Заказы",
+                                                    "callback_data": "ggsell:orders"}]]})
+                asyncio.create_task(_bg_ggsel_order_view(cid, mid, invoice_id))
                 return
 
             if data.startswith("ggsell:run:"):
@@ -3374,19 +3448,25 @@ def _menu_tg_bot_thread() -> None:
                 if not invoice_id:
                     return _aio_web.Response(text="OK")
 
-                # SHA256 верификация (если настроен webhook_secret)
-                try:
-                    import hashlib as _hs
-                    _ggs = (_m("_read_secrets")().get("ggsel") or {})
-                    _wh_secret = _ggs.get("webhook_secret", "").strip()
-                    if _wh_secret and sha256_recv:
-                        _exp = _hs.sha256(
-                            f"{_wh_secret};{invoice_id};{product_id}".encode()
-                        ).hexdigest()
-                        if _exp.lower() != sha256_recv.lower():
-                            return _aio_web.Response(text="Forbidden", status=403)
-                except Exception:
-                    pass
+                # SHA256 верификация через unique_code заказа (per-order)
+                if sha256_recv:
+                    try:
+                        import hashlib as _hs
+                        from ggsell.client import GGSellClient as _GSC
+                        _ggs2 = (_m("_read_secrets")().get("ggsel") or {})
+                        _gsc = _GSC(api_key=_ggs2.get("api_key",""), seller_id=int(_ggs2.get("seller_id") or 0))
+                        _v2ord = await _gsc.get_order_info_v2(invoice_id)
+                        _u_code = (_v2ord.get("unique_code") or "").strip()
+                        if _u_code:
+                            _exp = _hs.sha256(
+                                f"{_u_code};{invoice_id};{product_id}".encode()
+                            ).hexdigest()
+                            if _exp.lower() != sha256_recv.lower():
+                                await _gsc.close()
+                                return _aio_web.Response(text="Forbidden", status=403)
+                        await _gsc.close()
+                    except Exception:
+                        pass
 
                 # Добавляем в processed чтобы монитор не продублировал
                 try:
