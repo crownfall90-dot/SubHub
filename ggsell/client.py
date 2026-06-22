@@ -158,6 +158,19 @@ class GGSellClient:
             content.get("amount_in_hold") or content.get("amount_t_hold")
             or content.get("hold") or data.get("amount_in_hold") or 0.0
         )
+
+        if not hold:
+            try:
+                rec = await self._get("/sellers/account/receipts", {"locale": "ru"})
+                logger.debug(f"GGSell receipts raw: {rec}")
+                rc = rec.get("content") or rec if isinstance(rec, dict) else {}
+                hold = float(
+                    rc.get("amount_in_hold") or rc.get("hold") or
+                    rc.get("amount_hold") or rc.get("total_hold") or 0.0
+                )
+            except Exception as exc:
+                logger.debug(f"GGSell receipts: {exc}")
+
         return {
             "free": float(content.get("amount_t_free") or 0.0),
             "lock": float(content.get("amount_t_lock") or 0.0),
