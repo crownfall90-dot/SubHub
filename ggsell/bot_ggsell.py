@@ -1669,6 +1669,14 @@ class GGSellBotHandler:
 
     # ── Обработка текстовых сообщений (режим ответа) ─────────────────────────
 
+    async def _delete_after(self, cid: int, mid: int, delay: float = 3.0) -> None:
+        await asyncio.sleep(delay)
+        try:
+            await self._http.post(f"{self._api}/deleteMessage",
+                                  json={"chat_id": cid, "message_id": mid})
+        except Exception:
+            pass
+
     def check_reply_mode(self, cid: int, text: str) -> Optional[int]:
         """Если cid в режиме ответа GGSell, извлечь invoice_id и выйти из режима.
         Возвращает invoice_id или None."""
@@ -1801,9 +1809,9 @@ class GGSellBotHandler:
             self.reply_mode.pop(cid, None)
             await self._ack(qid, "❌ Отменено")
             await self._edit(cid, mid,
-                f"❌ Ответ на заказ `#{invoice_id}` отменён.",
-                {"inline_keyboard": [[{"text": "◀️ GGSell",
-                                        "callback_data": "go:ggsell"}]]})
+                f"❌ Ответ покупателю · заказ `#{invoice_id}` — отменён.",
+                {"inline_keyboard": []})
+            asyncio.create_task(self._delete_after(cid, mid, 3.0))
             return
 
         if data.startswith("ggsell:nosend:"):
