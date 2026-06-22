@@ -143,6 +143,9 @@ def _menu_tg_bot_thread() -> None:
         _notify  = [set()]  # chat_ids для уведомления о завершении
         _ctrl    = [{}]     # {"chat_id": int, "msg_id": int} — живое сообщение
         _bg_ops: dict = {}  # phone → "running"
+        _ggsel_cli      = [None]  # GGSell client (ленивая инициализация)
+        _ggsel_orders: dict = {}  # {invoice_id: item из notify_queue}
+        _ggsel_confirm: dict = {} # {invoice_id: link} — ждёт подтверждения от пользователя
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -222,6 +225,7 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🚀 Запуск",    "callback_data": "go:launch"},
                  {"text": "📁 Профили",   "callback_data": "go:profiles"},
                  {"text": "⚙️ Другое",    "callback_data": "go:other"}],
+                [{"text": "💰 GGSell",    "callback_data": "go:ggsell"}],
             ]
             return {"inline_keyboard": rows}
 
@@ -601,6 +605,285 @@ def _menu_tg_bot_thread() -> None:
                 ]
             rows.append([{"text": "◀️ Назад", "callback_data": "go:other"}])
             return {"inline_keyboard": rows}
+
+        # ── GGSell ────────────────────────────────────────────────────────────
+
+        def _get_ggsel_client():
+            if _ggsel_cli[0] is not None:
+                return _ggsel_cli[0]
+            try:
+                from ggsell.client import GGSellClient
+                sec = _m("_read_secrets")().get("ggsel") or {}
+                key = sec.get("api_key", "").strip()
+                sid = int(sec.get("seller_id") or 0)
+                if key and sid:
+                    _ggsel_cli[0] = GGSellClient(api_key=key, seller_id=sid)
+            except Exception:
+                pass
+            return _ggsel_cli[0]
+
+        def _ggsel_read_pool() -> list:
+            try:
+                f = Path(__file__).parent / "data" / "ggsel_links.json"
+                return json.loads(f.read_text(encoding="utf-8")).get("links", [])
+            except Exception:
+                return []
+
+        def _ggsel_remove_link(link: str) -> None:
+            try:
+                f = Path(__file__).parent / "data" / "ggsel_links.json"
+                raw = json.loads(f.read_text(encoding="utf-8"))
+                raw["links"] = [l for l in raw.get("links", []) if l != link]
+                f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
+        def _ggsel_pool_text() -> str:
+            links = _ggsel_read_pool()
+            if not links:
+                return "📦 *Пул ссылок GGSell*\n\n_Пул пуст_"
+            lines = [f"📦 *Пул ссылок GGSell* ({len(links)} шт.)", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+            for lnk in links[:10]:
+                short = lnk[:60] + "…" if len(lnk) > 60 else lnk
+                lines.append(f"▸ `{short}`")
+            if len(links) > 10:
+                lines.append(f"\n_...и ещё {len(links) - 10}_")
+            return "\n".join(lines)
+
+        def _ggsel_order_text(invoice_id: int) -> str:
+            item        = _ggsel_orders.get(invoice_id, {})
+            order       = item.get("order", {})
+            buyer_email = item.get("buyer_email") or "?"
+            product     = order.get("product") or {}
+            price_rub   = product.get("price_rub", "?")
+            date        = str(order.get("date") or "")[:10]
+            confirm_lnk = _ggsel_confirm.get(invoice_id)
+            lines = [
+                f"📋 *Заказ GGSell #{invoice_id}*",
+                "━━━━━━━━━━━━━━━━━━━━━━", "",
+                "🎵 YouTube Premium",
+                f"💵 {price_rub} ₽" if price_rub != "?" else "",
+                f"📅 {date}" if date else "",
+                f"📧 `{buyer_email}`",
+            ]
+            lines = [l for l in lines if l != ""]
+            if confirm_lnk:
+                lines += ["", f"🔗 *Ссылка готова:*\n`{confirm_lnk}`", "", "_Ждёт подтверждения отправки_"]
+            return "\n".join(lines)
+
+        def _ggsel_order_kb(invoice_id: int) -> dict:
+            confirm_lnk = _ggsel_confirm.get(invoice_id)
+            if confirm_lnk:
+                return {"inline_keyboard": [
+                    [{"text": "📤 Отправить покупателю",
+                      "callback_data": f"ggsell:send:{invoice_id}"},
+                     {"text": "❌ Не отправлять",
+                      "callback_data": f"ggsell:nosend:{invoice_id}"}],
+                    [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+                ]}
+            return {"inline_keyboard": [
+                [{"text": "▶️ Выполнить заказ",
+                  "callback_data": f"ggsell:run:{invoice_id}"}],
+                [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+            ]}
+
+        async def _bg_ggsel_info(cid, mid):
+            cli = _get_ggsel_client()
+            if cli is None:
+                await _edit(cid, mid,
+                    "💰 *GGSell*\n\n❌ _Не настроен. Заполните_ `ggsel` _в_ `secrets.yaml`_._",
+                    {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]})
+                return
+
+            pool = len(_ggsel_read_pool())
+            try:
+                f = Path(__file__).parent / "data" / "ggsel_orders.json"
+                processed_cnt = len(json.loads(f.read_text(encoding="utf-8")).get("processed", []))
+            except Exception:
+                processed_cnt = 0
+
+            try:
+                balance = await cli.get_balance()
+                bal_s = f"{balance:.2f} ₽"
+            except Exception as exc:
+                bal_s = f"❌ {exc}"
+
+            try:
+                orders = await cli.get_last_orders()
+                yt_orders = [o for o in orders
+                             if int((o.get("product") or {}).get("id") or 0) == 102276416]
+            except Exception:
+                orders = []
+                yt_orders = []
+
+            pending_cnt = len(_ggsel_confirm)
+            lines = [
+                "💰 *GGSell — Панель продавца*",
+                "━━━━━━━━━━━━━━━━━━━━━━", "",
+                f"💵 Баланс: *{bal_s}*",
+                f"📦 Ссылок в пуле: *{pool}*",
+                f"✅ Обработано заказов: *{processed_cnt}*",
+            ]
+            if pending_cnt:
+                lines.append(f"⏳ Ждут подтверждения: *{pending_cnt}*")
+
+            if yt_orders:
+                lines += ["", "🛒 *Последние заказы YouTube Premium:*"]
+                for o in yt_orders[:5]:
+                    inv  = o.get("invoice_id") or o.get("id") or "?"
+                    dt   = str(o.get("date") or "")[:10]
+                    pr   = (o.get("product") or {}).get("price_rub") or ""
+                    pr_s = f" · {pr}₽" if pr else ""
+                    tag  = " ⏳" if (str(inv).isdigit() and int(inv) in _ggsel_confirm) else ""
+                    lines.append(f"▸ `#{inv}`{pr_s} · {dt}{tag}")
+            else:
+                lines += ["", "_Нет последних заказов YouTube Premium_"]
+
+            # Строки ожидающих подтверждения
+            pending_rows = [
+                [{"text": f"⏳ #{inv_id} — ждёт отправки",
+                  "callback_data": f"ggsell:order:{inv_id}"}]
+                for inv_id in list(_ggsel_confirm)[:3]
+            ]
+            kb_rows = [
+                [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
+                 {"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"}],
+            ] + pending_rows + [
+                [{"text": "◀️ Назад",      "callback_data": "go:other"}],
+            ]
+            await _edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+        async def _ggsel_notify_order(item: dict) -> None:
+            """Отправить уведомление о новом заказе всем подписчикам."""
+            invoice_id  = item.get("invoice_id")
+            order       = item.get("order", {})
+            product     = order.get("product") or {}
+            price_rub   = product.get("price_rub", "?")
+            date        = str(order.get("date") or "")[:10]
+            _ggsel_orders[invoice_id] = item
+
+            text = (
+                f"🛒 *Новый заказ GGSell* `#{invoice_id}`\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🎵 YouTube Premium · {price_rub} ₽\n"
+                f"📅 {date}\n\n"
+                "_Нажмите «Выполнить» чтобы запустить автоматизацию._"
+            )
+            kb = {"inline_keyboard": [
+                [{"text": f"📋 Детали #{invoice_id}",
+                  "callback_data": f"ggsell:order:{invoice_id}"}],
+                [{"text": "▶️ Выполнить заказ",
+                  "callback_data": f"ggsell:run:{invoice_id}"}],
+            ]}
+            for _cid in list(subs):
+                try:
+                    await client.post(f"{api}/sendMessage",
+                                      json={"chat_id": _cid, "text": text,
+                                            "parse_mode": "Markdown", "reply_markup": kb})
+                except Exception:
+                    pass
+
+        async def _bg_ggsel_run(cid, mid, invoice_id: int) -> None:
+            """Запустить автоматизацию для заказа и дождаться ссылки."""
+            item        = _ggsel_orders.get(invoice_id, {})
+            buyer_email = item.get("buyer_email") or "?"
+
+            # Пробуем получить email покупателя если ещё не знаем
+            if buyer_email == "?":
+                try:
+                    cli = _get_ggsel_client()
+                    if cli:
+                        fetched = await cli.get_buyer_email(invoice_id)
+                        if fetched:
+                            buyer_email = fetched
+                            _ggsel_orders.setdefault(invoice_id, {})["buyer_email"] = fetched
+                except Exception:
+                    pass
+
+            await _edit(cid, mid,
+                f"⏳ *Выполняю заказ* `#{invoice_id}`\n\n"
+                f"📧 Покупатель: `{buyer_email}`\n\n"
+                "_Запускаю автоматизацию — создаю профиль..._\n"
+                "_Это займёт несколько минут._",
+                {"inline_keyboard": []})
+
+            # Снимок пула ДО запуска
+            before_links = set(_ggsel_read_pool())
+
+            args = [
+                sys.executable,
+                str(Path(__file__).parent / "main.py"),
+                "--tg-login", "--accounts", "1",
+            ]
+            try:
+                import os
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                loop = asyncio.get_running_loop()
+                proc = await loop.run_in_executor(
+                    None, lambda: subprocess.Popen(args, creationflags=creationflags))
+                await loop.run_in_executor(None, proc.wait)
+                code = proc.returncode
+            except Exception as exc:
+                await _send(cid, f"❌ Ошибка запуска автоматизации (заказ `#{invoice_id}`): {exc}")
+                return
+
+            if code != 0:
+                await _send(cid,
+                    f"⚠️ Автоматизация завершилась с кодом {code} (заказ `#{invoice_id}`).\n"
+                    "Проверьте /logs")
+                return
+
+            # Ищем новые ссылки в пуле
+            after_links = _ggsel_read_pool()
+            new_links   = [l for l in after_links if l not in before_links]
+
+            if new_links:
+                link = new_links[0]
+                _ggsel_remove_link(link)
+                _ggsel_confirm[invoice_id] = link
+                await _send(cid,
+                    f"✅ *Ссылка для заказа* `#{invoice_id}` *готова!*\n\n"
+                    f"🔗 `{link}`\n\n"
+                    f"📧 Покупатель: `{buyer_email}`\n\n"
+                    "Отправить ссылку покупателю в чат GGSell?",
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "📤 Да, отправить покупателю",
+                          "callback_data": f"ggsell:send:{invoice_id}"},
+                         {"text": "❌ Не отправлять",
+                          "callback_data": f"ggsell:nosend:{invoice_id}"}],
+                    ]})
+            else:
+                await _send(cid,
+                    f"⚠️ Заказ `#{invoice_id}`: автоматизация завершена, но новая ссылка не найдена.\n\n"
+                    "_Добавьте ссылку вручную или повторите запуск._")
+
+        async def _bg_ggsel_send(cid, invoice_id: int) -> None:
+            """Отправить ссылку покупателю через GGSell API."""
+            link = _ggsel_confirm.pop(invoice_id, None)
+            if not link:
+                await _send(cid, f"❌ Ссылка для заказа `#{invoice_id}` не найдена.")
+                return
+            cli = _get_ggsel_client()
+            if not cli:
+                await _send(cid, "❌ GGSell клиент не настроен.")
+                return
+            item        = _ggsel_orders.get(invoice_id, {})
+            buyer_email = item.get("buyer_email") or "?"
+            try:
+                from ggsell.monitor import MSG_TEMPLATE
+                ok = await cli.send_message(invoice_id, MSG_TEMPLATE.format(link=link))
+            except Exception as exc:
+                await _send(cid, f"❌ Ошибка отправки в GGSell (заказ `#{invoice_id}`): {exc}")
+                return
+            if ok:
+                await _send(cid,
+                    f"✅ *Ссылка отправлена покупателю!*\n\n"
+                    f"Заказ: `#{invoice_id}`\n"
+                    f"📧 {buyer_email}\n"
+                    f"🔗 `{link}`")
+            else:
+                await _send(cid,
+                    f"⚠️ Не удалось отправить сообщение в GGSell (заказ `#{invoice_id}`).")
 
         # ── Карты ─────────────────────────────────────────────────────────────
         def _cards_text():
@@ -2115,6 +2398,55 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid, txt, alert=True)
                 return
 
+            # ── GGSell ────────────────────────────────────────────────────────
+            if data in ("go:ggsell", "ggsell:refresh"):
+                await _ack(qid)
+                await _edit(cid, mid, "⏳ *GGSell* — загружаю данные...",
+                            {"inline_keyboard": [[{"text": "◀️ Назад",
+                                                    "callback_data": "go:other"}]]})
+                asyncio.create_task(_bg_ggsel_info(cid, mid))
+                return
+
+            if data == "ggsell:pool":
+                await _ack(qid)
+                await _edit(cid, mid, _ggsel_pool_text(),
+                            {"inline_keyboard": [
+                                [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
+                                 {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
+                            ]})
+                return
+
+            if data.startswith("ggsell:order:"):
+                invoice_id = int(data.split(":")[2])
+                await _ack(qid)
+                await _edit(cid, mid,
+                            _ggsel_order_text(invoice_id),
+                            _ggsel_order_kb(invoice_id))
+                return
+
+            if data.startswith("ggsell:run:"):
+                invoice_id = int(data.split(":")[2])
+                await _ack(qid, "⏳ Запускаю автоматизацию...")
+                asyncio.create_task(_bg_ggsel_run(cid, mid, invoice_id))
+                return
+
+            if data.startswith("ggsell:send:"):
+                invoice_id = int(data.split(":")[2])
+                await _ack(qid, "⏳ Отправляю...")
+                asyncio.create_task(_bg_ggsel_send(cid, invoice_id))
+                return
+
+            if data.startswith("ggsell:nosend:"):
+                invoice_id = int(data.split(":")[2])
+                _ggsel_confirm.pop(invoice_id, None)
+                await _ack(qid, "❌ Отправка отменена")
+                await _edit(cid, mid,
+                            f"❌ Ссылка для заказа `#{invoice_id}` *не отправлена* покупателю.",
+                            {"inline_keyboard": [
+                                [{"text": "◀️ GGSell", "callback_data": "go:ggsell"}],
+                            ]})
+                return
+
             # Неизвестная команда
             await _ack(qid)
 
@@ -2257,6 +2589,19 @@ def _menu_tg_bot_thread() -> None:
                         msg = upd.get("message") or upd.get("edited_message")
                         if msg:
                             await _handle_msg(client, msg)
+
+                    # Drain GGSell notify queue → уведомляем о новых заказах
+                    try:
+                        from ggsell.monitor import notify_queue as _gs_q
+                        while True:
+                            try:
+                                _gs_item = _gs_q.get_nowait()
+                                if _gs_item.get("type") == "new_order":
+                                    asyncio.create_task(_ggsel_notify_order(_gs_item))
+                            except Exception:
+                                break
+                    except Exception:
+                        pass
 
                 except asyncio.CancelledError:
                     break

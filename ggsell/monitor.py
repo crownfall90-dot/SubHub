@@ -11,6 +11,7 @@ GGSell order monitor — следит за новыми заказами и до
 
 import asyncio
 import json
+import queue as _queue
 import time
 from pathlib import Path
 from typing import Awaitable, Callable, Optional, Set
@@ -26,6 +27,10 @@ POLL_INTERVAL = 60.0  # секунды между опросами
 
 # Обрабатываем только заказы YouTube Premium
 YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
+
+# Очередь уведомлений для TG-бота (thread-safe)
+# Элементы: {"type": "new_order", "invoice_id": int, "order": dict}
+notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
 
 # Сообщение покупателю при получении ссылки
 MSG_TEMPLATE = (
@@ -123,10 +128,12 @@ class GGSellMonitor:
         client: GGSellClient,
         on_new_order: Optional[Callable[[dict], Awaitable[Optional[str]]]] = None,
         poll_interval: float = POLL_INTERVAL,
+        manual_confirm: bool = True,
     ) -> None:
         self.client = client
         self.on_new_order = on_new_order
         self.poll_interval = poll_interval
+        self.manual_confirm = manual_confirm
         self._running = False
 
     def stop(self) -> None:
@@ -179,7 +186,14 @@ class GGSellMonitor:
                 f"GGSell: новый заказ YouTube Premium #{invoice_id} "
                 f"(продукт: {product.get('name', '?')})"
             )
-            await self._handle_order(invoice_id, order)
+
+            # Уведомляем TG-бот через очередь (всегда)
+            notify_queue.put({"type": "new_order", "invoice_id": invoice_id, "order": order})
+
+            # В режиме manual_confirm бот сам управляет отправкой
+            if not self.manual_confirm:
+                await self._handle_order(invoice_id, order)
+
             processed.add(invoice_id)
             _save_processed(processed)
 
@@ -238,9 +252,12 @@ def start_monitor(
     seller_id: int,
     on_new_order: Optional[Callable[[dict], Awaitable[Optional[str]]]] = None,
     poll_interval: float = POLL_INTERVAL,
+    manual_confirm: bool = True,
 ) -> None:
     """Запустить GGSell-монитор в фоновом daemon-потоке.
-    Вызывать один раз при старте приложения."""
+    manual_confirm=True (по умолчанию): только эмитирует в notify_queue,
+    отправкой управляет TG-бот.
+    manual_confirm=False: авто-отправка из пула без подтверждения."""
     global _monitor_instance
 
     if not api_key or not seller_id:
@@ -256,6 +273,7 @@ def start_monitor(
         client=client,
         on_new_order=on_new_order,
         poll_interval=poll_interval,
+        manual_confirm=manual_confirm,
     )
 
     def _thread_main() -> None:
