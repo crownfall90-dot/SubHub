@@ -336,7 +336,8 @@ class GGSellMonitor:
                 logger.debug(f"GGSell msg #{msg_id} в заказе #{id_i}: {msg}")
                 # Сообщение от продавца (нашего бота) — не уведомляем
                 is_seller = bool(
-                    msg.get("is_seller")
+                    msg.get("is_current_user")
+                    or msg.get("is_seller")
                     or msg.get("is_seller_msg")
                     or msg.get("sender") == "seller"
                     or msg.get("type") == "seller"
