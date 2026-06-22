@@ -146,8 +146,9 @@ def _menu_tg_bot_thread() -> None:
         _ggsel_cli      = [None]  # GGSell client (ленивая инициализация)
         _ggsel_orders: dict = {}  # {invoice_id: item из notify_queue}
         _ggsel_confirm: dict = {} # {invoice_id: link} — ждёт подтверждения от пользователя
-        _ggsel_done: dict    = {} # {invoice_id: datetime_str} — выполнено (ссылка отправлена)
-        _ggsel_done_loaded   = [False]
+        _ggsel_done: dict        = {} # {invoice_id: datetime_str} — выполнено (ссылка отправлена)
+        _ggsel_done_loaded       = [False]
+        _ggsel_reply_mode: dict  = {} # {cid: invoice_id} — ждём текст ответа от пользователя
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -747,7 +748,7 @@ def _menu_tg_bot_thread() -> None:
 
             try:
                 balance = await cli.get_balance()
-                bal_s = f"{balance:.2f} ₽"
+                bal_s = f"${balance:.2f}"
             except Exception as exc:
                 bal_s = f"❌ {exc}"
 
@@ -906,6 +907,55 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid,
                     f"⚠️ Заказ `#{invoice_id}`: автоматизация завершена, но новая ссылка не найдена.\n\n"
                     "_Добавьте ссылку вручную или повторите запуск._")
+
+        async def _ggsel_notify_message(item: dict) -> None:
+            """Уведомить подписчиков о новом сообщении от покупателя."""
+            invoice_id  = item.get("invoice_id")
+            msg         = item.get("message", {})
+            chat        = item.get("chat", {})
+            email       = chat.get("email") or "?"
+            msg_text    = (msg.get("text") or msg.get("message") or msg.get("body") or "…")
+            if len(msg_text) > 300:
+                msg_text = msg_text[:300] + "…"
+
+            text = (
+                f"💬 *Новое сообщение · заказ* `#{invoice_id}`\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📧 {email}\n\n"
+                f"{msg_text}"
+            )
+            kb = {"inline_keyboard": [
+                [{"text": "💬 Ответить",
+                  "callback_data": f"ggsell:reply:{invoice_id}"},
+                 {"text": f"📋 Заказ #{invoice_id}",
+                  "callback_data": f"ggsell:order:{invoice_id}"}],
+            ]}
+            for _cid in list(subs):
+                try:
+                    await client.post(f"{api}/sendMessage",
+                                      json={"chat_id": _cid, "text": text,
+                                            "parse_mode": "Markdown", "reply_markup": kb})
+                except Exception:
+                    pass
+
+        async def _bg_ggsel_reply(cid, invoice_id: int, text: str) -> None:
+            """Отправить ответ продавца в чат GGSell."""
+            cli = _get_ggsel_client()
+            if not cli:
+                await _send(cid, "❌ GGSell клиент не настроен.")
+                return
+            try:
+                ok = await cli.send_message(invoice_id, text)
+            except Exception as exc:
+                await _send(cid, f"❌ Ошибка отправки (заказ `#{invoice_id}`): {exc}")
+                return
+            if ok:
+                await _send(cid,
+                    f"✅ Сообщение отправлено покупателю!\n\n"
+                    f"Заказ: `#{invoice_id}`\n"
+                    f"_{text}_")
+            else:
+                await _send(cid, f"⚠️ Не удалось отправить сообщение (заказ `#{invoice_id}`).")
 
         async def _bg_ggsel_send(cid, invoice_id: int) -> None:
             """Отправить ссылку покупателю через GGSell API."""
@@ -2487,6 +2537,29 @@ def _menu_tg_bot_thread() -> None:
                 asyncio.create_task(_bg_ggsel_send(cid, invoice_id))
                 return
 
+            if data.startswith("ggsell:reply:"):
+                invoice_id = int(data.split(":")[2])
+                _ggsel_reply_mode[cid] = invoice_id
+                await _ack(qid)
+                await _send(cid,
+                    f"💬 *Ответ на заказ* `#{invoice_id}`\n\n"
+                    "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "❌ Отмена",
+                          "callback_data": f"ggsell:reply_cancel:{invoice_id}"}],
+                    ]})
+                return
+
+            if data.startswith("ggsell:reply_cancel:"):
+                invoice_id = int(data.split(":")[2])
+                _ggsel_reply_mode.pop(cid, None)
+                await _ack(qid, "❌ Отменено")
+                await _edit(cid, mid,
+                    f"❌ Ответ на заказ `#{invoice_id}` отменён.",
+                    {"inline_keyboard": [[{"text": "◀️ GGSell",
+                                           "callback_data": "go:ggsell"}]]})
+                return
+
             if data.startswith("ggsell:nosend:"):
                 invoice_id = int(data.split(":")[2])
                 _ggsel_confirm.pop(invoice_id, None)
@@ -2508,6 +2581,12 @@ def _menu_tg_bot_thread() -> None:
         async def _handle_msg(client, msg):
             cid  = int(msg["chat"]["id"])
             text = (msg.get("text") or "").strip()
+
+            # Режим ответа в GGSell чат — перехватываем ЛЮБОЕ сообщение
+            if cid in _ggsel_reply_mode and text and not text.startswith("/"):
+                invoice_id = _ggsel_reply_mode.pop(cid)
+                asyncio.create_task(_bg_ggsel_reply(cid, invoice_id, text))
+                return
 
             is_new = cid not in subs
             if is_new:
@@ -2649,6 +2728,8 @@ def _menu_tg_bot_thread() -> None:
                                 _gs_item = _gs_q.get_nowait()
                                 if _gs_item.get("type") == "new_order":
                                     asyncio.create_task(_ggsel_notify_order(_gs_item))
+                                elif _gs_item.get("type") == "new_message":
+                                    asyncio.create_task(_ggsel_notify_message(_gs_item))
                             except Exception:
                                 break
                     except Exception:

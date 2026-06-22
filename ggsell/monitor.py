@@ -21,7 +21,8 @@ from loguru import logger
 from .client import GGSellClient, GGSellError
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
-_ORDERS_FILE = _DATA / "ggsel_orders.json"
+_ORDERS_FILE   = _DATA / "ggsel_orders.json"
+_SEEN_MSGS_FILE = _DATA / "ggsel_seen_msgs.json"
 
 POLL_INTERVAL = 60.0  # секунды между опросами
 
@@ -54,6 +55,20 @@ def _load_processed() -> Set[int]:
         return set(int(x) for x in raw.get("processed", []))
     except Exception:
         return set()
+
+
+def _load_seen_msgs() -> dict:
+    try:
+        return json.loads(_SEEN_MSGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_seen_msgs(seen: dict) -> None:
+    _DATA.mkdir(parents=True, exist_ok=True)
+    _SEEN_MSGS_FILE.write_text(
+        json.dumps(seen, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def _save_processed(ids: Set[int]) -> None:
@@ -135,6 +150,7 @@ class GGSellMonitor:
         self.poll_interval = poll_interval
         self.manual_confirm = manual_confirm
         self._running = False
+        self._seen_msgs: dict = {}
 
     def stop(self) -> None:
         self._running = False
@@ -142,6 +158,8 @@ class GGSellMonitor:
     async def run(self) -> None:
         self._running = True
         processed = _load_processed()
+        self._seen_msgs = _load_seen_msgs()
+        _msgs_initialized = False  # первый прогон — только запоминаем текущее состояние
         logger.info(
             f"GGSell монитор запущен "
             f"(интервал={self.poll_interval:.0f}с, обработано={len(processed)} заказов)"
@@ -150,6 +168,8 @@ class GGSellMonitor:
         while self._running:
             try:
                 await self._tick(processed)
+                await self._check_new_messages(_msgs_initialized)
+                _msgs_initialized = True
             except GGSellError as exc:
                 logger.warning(f"GGSell API: {exc}")
             except asyncio.CancelledError:
@@ -163,6 +183,78 @@ class GGSellMonitor:
                 break
 
         logger.info("GGSell монитор остановлен")
+
+    async def _check_new_messages(self, initialized: bool) -> None:
+        """Проверить новые входящие сообщения от покупателей."""
+        try:
+            chats = await self.client.get_chats()
+        except Exception as exc:
+            logger.debug(f"GGSell chats: {exc}")
+            return
+
+        seen = self._seen_msgs
+        changed = False
+
+        for chat in chats:
+            id_i = int(chat.get("id_i") or 0)
+            if not id_i:
+                continue
+
+            seen_key = str(id_i)
+            last_id  = int(seen.get(seen_key) or 0)
+            cnt_new  = int(chat.get("cnt_new") or 0)
+
+            # Если инициализированы и нет непрочитанных — пропускаем
+            if initialized and cnt_new == 0:
+                continue
+
+            try:
+                messages = await self.client.get_messages(id_i, id_from=last_id)
+            except Exception:
+                continue
+
+            if not messages:
+                if seen_key not in seen:
+                    seen[seen_key] = 0
+                    changed = True
+                continue
+
+            msg_ids = [int(m.get("id") or m.get("message_id") or 0) for m in messages]
+            max_id  = max(msg_ids) if msg_ids else 0
+
+            if not initialized:
+                # Первый запуск — просто запоминаем, не шлём уведомления
+                seen[seen_key] = max(max_id, last_id)
+                changed = True
+                continue
+
+            # Находим новые сообщения от покупателя
+            for msg in messages:
+                msg_id = int(msg.get("id") or msg.get("message_id") or 0)
+                if msg_id <= last_id:
+                    continue
+                # Определяем: это сообщение от покупателя (не от продавца)
+                is_seller = bool(
+                    msg.get("is_seller")
+                    or msg.get("is_seller_msg")
+                    or msg.get("sender") == "seller"
+                    or msg.get("type") == "seller"
+                )
+                if not is_seller:
+                    notify_queue.put({
+                        "type": "new_message",
+                        "invoice_id": id_i,
+                        "message": msg,
+                        "chat": chat,
+                    })
+                    logger.info(f"GGSell: новое сообщение от покупателя в заказе #{id_i}")
+
+            if max_id > last_id:
+                seen[seen_key] = max_id
+                changed = True
+
+        if changed:
+            _save_seen_msgs(seen)
 
     async def _tick(self, processed: Set[int]) -> None:
         orders = await self.client.get_last_orders()
