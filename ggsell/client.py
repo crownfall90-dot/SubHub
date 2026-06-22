@@ -136,7 +136,12 @@ class GGSellClient:
                     f"{self.BASE_URL}{path}", params=full_params, json=json_body
                 )
             resp.raise_for_status()
-            return resp.json()
+            if not resp.content:
+                return {}
+            try:
+                return resp.json()
+            except Exception:
+                return {}
         except httpx.HTTPStatusError as exc:
             raise GGSellError(f"HTTP {exc.response.status_code} for {path}") from exc
 

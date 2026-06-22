@@ -5612,14 +5612,21 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                     chat_ids = [int(c) for c in d.get("chats", [])]
                 elif isinstance(d, list):
                     chat_ids = [int(c) for c in d]
+            _reply_markup_black = _json.dumps({"inline_keyboard": [[
+                {"text": "📦 В пул ссылок",
+                 "callback_data": f"profile:topool:{phone_number}"},
+            ]]}) if _full_url else None
             async with _httpx.AsyncClient(timeout=10, trust_env=False) as _sess:
                 for cid in chat_ids:
                     try:
+                        _payload_black = {"chat_id": cid, "text": msg,
+                                          "parse_mode": _tg_parse_mode,
+                                          "disable_web_page_preview": True}
+                        if _reply_markup_black:
+                            _payload_black["reply_markup"] = _reply_markup_black
                         resp = await _sess.post(
                             f"https://api.telegram.org/bot{tg_token}/sendMessage",
-                            json={"chat_id": cid, "text": msg,
-                                  "parse_mode": _tg_parse_mode,
-                                  "disable_web_page_preview": True},
+                            json=_payload_black,
                         )
                         if resp.status_code == 200:
                             print(f"  TG [{cid}]: отправлено")

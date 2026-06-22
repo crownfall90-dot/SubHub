@@ -1352,10 +1352,22 @@ def _menu_tg_bot_thread() -> None:
             if not cli:
                 await _send(cid, "❌ GGSell клиент не настроен.")
                 return
+
+            async def _re_ask():
+                _ggsel_reply_mode[cid] = invoice_id
+                await _send(cid,
+                    f"💬 *Ответ на заказ* `#{invoice_id}`\n\n"
+                    "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "❌ Отмена",
+                          "callback_data": f"ggsell:reply_cancel:{invoice_id}"}],
+                    ]})
+
             try:
                 ok = await cli.send_message(invoice_id, text)
             except Exception as exc:
                 await _send(cid, f"❌ Ошибка отправки (заказ `#{invoice_id}`): {exc}")
+                await _re_ask()
                 return
             if ok:
                 await _send(cid,
@@ -1363,7 +1375,8 @@ def _menu_tg_bot_thread() -> None:
                     f"Заказ: `#{invoice_id}`\n"
                     f"_{text}_")
             else:
-                await _send(cid, f"⚠️ Не удалось отправить сообщение (заказ `#{invoice_id}`).")
+                await _send(cid, f"⚠️ Не удалось отправить (заказ `#{invoice_id}`) — попробуйте ещё раз.")
+                await _re_ask()
 
         async def _bg_ggsel_send(cid, invoice_id: int) -> None:
             """Отправить ссылку покупателю через GGSell API."""
