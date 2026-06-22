@@ -2419,7 +2419,21 @@ def _menu_tg_bot_thread() -> None:
         asyncio.set_event_loop(_loop)
         try:
             _loop.run_until_complete(_poll())
+        except (KeyboardInterrupt, SystemExit):
+            pass
         finally:
+            try:
+                pending = asyncio.all_tasks(_loop)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    _loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
             _loop.close()
     else:
-        asyncio.run(_poll())
+        try:
+            asyncio.run(_poll())
+        except (KeyboardInterrupt, SystemExit):
+            pass

@@ -184,12 +184,16 @@ class GGSellMonitor:
                 logger.warning(f"GGSell API: {exc}")
             except asyncio.CancelledError:
                 break
+            except RuntimeError as exc:
+                if "shutdown" in str(exc).lower() or "closed" in str(exc).lower():
+                    break
+                logger.error(f"GGSell монитор: {exc}")
             except Exception as exc:
                 logger.error(f"GGSell монитор: {exc}")
 
             try:
                 await asyncio.sleep(MSG_POLL_INTERVAL)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, RuntimeError):
                 break
 
         logger.info("GGSell монитор остановлен")
@@ -383,7 +387,18 @@ def start_monitor(
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(_monitor_instance.run())
+        except Exception:
+            pass
         finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
             loop.close()
 
     t = threading.Thread(target=_thread_main, daemon=True, name="ggsel-monitor")
