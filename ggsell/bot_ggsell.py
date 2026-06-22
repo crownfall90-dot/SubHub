@@ -117,7 +117,7 @@ class GGSellBotHandler:
         used_cnt  = len(self.get_used())
 
         lines = [
-            "📦 *Пул ссылок GGSell*",
+            "🔗 *Ссылки GGSell*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"🟢 Невыдано: *{avail_cnt}*  ·  🔵 Выдано: *{done_cnt}*  ·  🟡 Использовано: *{used_cnt}*",
             "",
@@ -301,7 +301,7 @@ class GGSellBotHandler:
     def used_kb(self) -> dict:
         return {"inline_keyboard": [[
             {"text": "🔄 Обновить", "callback_data": "ggsell:used"},
-            {"text": "◀️ Пул",      "callback_data": "ggsell:pool"},
+            {"text": "◀️ Ссылки",   "callback_data": "ggsell:pool"},
         ]]}
 
     def _mark_profile_issued(self, link: str) -> None:
@@ -716,14 +716,14 @@ class GGSellBotHandler:
         if total_sales:
             rev = f"  │  💰 *${float(total_revenue):.2f}*" if total_revenue else ""
             lines.append(f"🛒 Продаж: *{total_sales}*{rev}")
-        lines.append(f"📦 Пул ссылок: *{pool}*  │  ✅ Обработано: *{processed_cnt}*")
+        lines.append(f"🔗 Ссылки: *{pool}*  │  ✅ Обработано: *{processed_cnt}*")
         if pending_cnt:
             lines.append("")
             lines.append(f"⚠️ *Ждут подтверждения: {pending_cnt}*")
 
         kb_rows = [
             [{"text": "📋 Заказы",     "callback_data": "ggsell:orders"},
-             {"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"}],
+             {"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}],
             [{"text": "⭐ Отзывы",     "callback_data": "ggsell:reviews"},
              {"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"}],
             [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
@@ -1002,7 +1002,7 @@ class GGSellBotHandler:
         if not order_rows:
             lines.append("\n_Все заказы уже выполнены_")
         kb_rows = order_rows[:8] + [
-            [{"text": "◀️ Пул", "callback_data": "ggsell:pool"}],
+            [{"text": "◀️ Ссылки", "callback_data": "ggsell:pool"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
 
@@ -1010,7 +1010,7 @@ class GGSellBotHandler:
         links = self.read_pool()
         if not links:
             await self._edit(cid, mid,
-                f"📦 *Пул ссылок пуст*\n\nНет доступных ссылок для заказа `#{invoice_id}`.",
+                f"🔗 *Ссылок нет*\n\nНет доступных ссылок для заказа `#{invoice_id}`.",
                 {"inline_keyboard": [[{"text": "◀️ Заказ",
                                         "callback_data": f"ggsell:order:{invoice_id}"}]]})
             return
@@ -1045,13 +1045,13 @@ class GGSellBotHandler:
                 f"✅ *Ссылка отправлена покупателю!*\n\n"
                 f"Заказ: `#{invoice_id}`\n🔗 `{link}`",
                 {"inline_keyboard": [
-                    [{"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"},
+                    [{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"},
                      {"text": "◀️ GGSell",     "callback_data": "go:ggsell"}],
                 ]})
         else:
             await self._edit(cid, mid,
                 f"❌ Не удалось отправить ссылку заказу `#{invoice_id}`.\n\nСсылка возвращена в пул.",
-                {"inline_keyboard": [[{"text": "📦 Пул", "callback_data": "ggsell:pool"}]]})
+                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
             from ggsell.monitor import add_link_to_pool
             add_link_to_pool(link)
 
