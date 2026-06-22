@@ -4220,12 +4220,13 @@ async def _handle_paytm_currency_page(page) -> bool:
             _btn_clicked = False
             try:
                 await page.wait_for_selector(
-                    "button, input[type='submit']", state="visible", timeout=5_000
+                    "button, input[type='submit'], [role='button']",
+                    state="visible", timeout=5_000
                 )
             except Exception:
                 pass
 
-            for sel in [
+            _btn_selectors = [
                 "button:has-text('Next')",
                 "button:has-text('Submit')",
                 "button:has-text('Continue')",
@@ -4233,33 +4234,47 @@ async def _handle_paytm_currency_page(page) -> bool:
                 "button:has-text('OK')",
                 "input[type='submit']",
                 "button[type='submit']",
-            ]:
+                # UQPAY / hitrust специфичные
+                "button:has-text('NEXT')",
+                "button:has-text('SUBMIT')",
+                "[role='button']:has-text('Next')",
+                "[role='button']:has-text('Submit')",
+                "a:has-text('Next')",
+                "a:has-text('Submit')",
+                "[class*='btn']:has-text('Next')",
+                "[class*='btn']:has-text('Submit')",
+                "input[type='button']",
+            ]
+            for sel in _btn_selectors:
                 try:
                     btn = page.locator(sel).first
                     if await btn.count() > 0:
-                        await btn.wait_for(state="visible", timeout=3_000)
-                        await btn.click()
-                        txt = (await btn.inner_text()).strip() if "input" not in sel else sel
-                        print(f"  3DS: нажал «{txt[:30]}»")
+                        await btn.wait_for(state="visible", timeout=2_000)
+                        _bb = await btn.bounding_box()
+                        if _bb:
+                            await page.mouse.click(
+                                _bb["x"] + _bb["width"] / 2,
+                                _bb["y"] + _bb["height"] / 2,
+                            )
+                        else:
+                            await btn.click()
+                        txt = ""
+                        try:
+                            txt = (await btn.inner_text()).strip()
+                        except Exception:
+                            pass
+                        print(f"  3DS: нажал «{txt or sel[:30]}»")
                         _btn_clicked = True
                         break
                 except Exception:
                     pass
 
             if not _btn_clicked:
-                # Пробуем iframe-кнопки через Playwright locator (cross-origin + trusted click)
+                # Пробуем iframe-кнопки (cross-origin)
                 for fr in page.frames:
                     if _btn_clicked:
                         break
-                    for _isel in [
-                        "button:has-text('Next')",
-                        "button:has-text('Submit')",
-                        "button:has-text('Continue')",
-                        "button:has-text('Proceed')",
-                        "button:has-text('OK')",
-                        "input[type='submit']",
-                        "button[type='submit']",
-                    ]:
+                    for _isel in _btn_selectors:
                         try:
                             _fb = fr.locator(_isel).first
                             if await _fb.count() > 0:
@@ -4281,6 +4296,47 @@ async def _handle_paytm_currency_page(page) -> bool:
                                 break
                         except Exception:
                             pass
+
+            if not _btn_clicked:
+                # JS-fallback: нажимаем любую видимую кнопку / submit через JS
+                try:
+                    _js_result = await page.evaluate("""() => {
+                        const words = ['Next','Submit','Continue','Proceed','OK','NEXT','SUBMIT'];
+                        // 1. Ищем по тексту
+                        for (const tag of ['button','a','input']) {
+                            for (const el of document.querySelectorAll(tag)) {
+                                const t = (el.textContent || el.value || '').trim();
+                                if (words.some(w => t.toLowerCase() === w.toLowerCase())) {
+                                    el.click(); return 'clicked:' + t;
+                                }
+                            }
+                        }
+                        // 2. Нажимаем первую видимую кнопку
+                        for (const el of document.querySelectorAll('button,[type=submit],[role=button]')) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0) {
+                                el.click(); return 'clicked_first:' + (el.textContent||'').trim();
+                            }
+                        }
+                        // 3. Submit формы
+                        const f = document.querySelector('form');
+                        if (f) { f.submit(); return 'form_submit'; }
+                        return null;
+                    }""")
+                    if _js_result:
+                        print(f"  3DS JS: {_js_result}")
+                        _btn_clicked = True
+                except Exception:
+                    pass
+
+            if not _btn_clicked:
+                # Enter как последний шанс (форма уже заполнена)
+                try:
+                    await page.keyboard.press("Enter")
+                    print(f"  3DS: Enter (fallback)")
+                    _btn_clicked = True
+                except Exception:
+                    pass
 
             if not _btn_clicked:
                 _3ds_body_low = all_text.lower()
@@ -4442,12 +4498,16 @@ async def _handle_3ds_verification(page) -> bool:
     print("  3DS: страница верификации открыта — нажимаю Next...")
 
     # Нажимаем «Next» на первой странице (выбор метода) — ищем во всех фреймах
+    _next_sel = (
+        "button:has-text('Next'), button:has-text('NEXT'), "
+        "input[value='Next'], input[value='NEXT'], input[type='submit'], "
+        "a:has-text('Next'), a:has-text('NEXT'), "
+        "[role='button']:has-text('Next'), [class*='btn']:has-text('Next')"
+    )
     _next_clicked = False
     for _nfr in [page] + list(page.frames):
         try:
-            _nb = _nfr.locator(
-                "button:has-text('Next'), input[value='Next'], a:has-text('Next')"
-            ).first
+            _nb = _nfr.locator(_next_sel).first
             if await _nb.count() > 0:
                 _nbb = await _nb.bounding_box()
                 if _nbb:
@@ -4461,16 +4521,13 @@ async def _handle_3ds_verification(page) -> bool:
                 break
         except Exception:
             pass
-    if _next_clicked:
-        await page.wait_for_timeout(1_200)
-    else:
-        # Next не нашли сразу — ждём немного и пробуем ещё раз (страница могла не догрузиться)
+
+    if not _next_clicked:
+        # Ещё раз после паузы
         await page.wait_for_timeout(2_000)
         for _nfr in [page] + list(page.frames):
             try:
-                _nb2 = _nfr.locator(
-                    "button:has-text('Next'), input[value='Next'], a:has-text('Next')"
-                ).first
+                _nb2 = _nfr.locator(_next_sel).first
                 if await _nb2.count() > 0:
                     _nbb2 = await _nb2.bounding_box()
                     if _nbb2:
@@ -4482,10 +4539,49 @@ async def _handle_3ds_verification(page) -> bool:
                         await _nb2.click()
                     _next_clicked = True
                     print("  3DS: Next нажат (повторная попытка)")
-                    await page.wait_for_timeout(1_200)
                     break
             except Exception:
                 pass
+
+    if not _next_clicked:
+        # JS-fallback: нажать любую кнопку или сабмитнуть форму
+        try:
+            _jsr = await page.evaluate("""() => {
+                const words = ['Next','Submit','Continue','NEXT','SUBMIT'];
+                for (const tag of ['button','a','input']) {
+                    for (const el of document.querySelectorAll(tag)) {
+                        const t = (el.textContent || el.value || '').trim();
+                        if (words.some(w => t.toLowerCase() === w.toLowerCase())) {
+                            el.click(); return 'js:' + t;
+                        }
+                    }
+                }
+                for (const el of document.querySelectorAll('button,[type=submit],[role=button]')) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                        el.click(); return 'js_first:' + (el.textContent||'').trim();
+                    }
+                }
+                const f = document.querySelector('form');
+                if (f) { f.submit(); return 'form_submit'; }
+                return null;
+            }""")
+            if _jsr:
+                print(f"  3DS: Next через JS — {_jsr}")
+                _next_clicked = True
+        except Exception:
+            pass
+
+    if not _next_clicked:
+        try:
+            await page.keyboard.press("Enter")
+            print("  3DS: Next через Enter (fallback)")
+            _next_clicked = True
+        except Exception:
+            pass
+
+    if _next_clicked:
+        await page.wait_for_timeout(1_200)
 
     # Ждём поле ввода OTP — ищем во всех фреймах (может быть в cross-origin iframe)
     otp_inp = None
