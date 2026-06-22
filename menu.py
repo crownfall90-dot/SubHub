@@ -4226,6 +4226,35 @@ async def _handle_paytm_currency_page(page) -> bool:
             except Exception:
                 pass
 
+            # Сначала просто кликаем по последней видимой кнопке (Next обычно последняя)
+            if not _btn_clicked:
+                for _simple_sel in ["button", "input[type='submit']", "input[type='button']"]:
+                    try:
+                        _btns = page.locator(_simple_sel)
+                        _cnt = await _btns.count()
+                        if _cnt > 0:
+                            # последняя кнопка — обычно Next/Submit, а не Cancel
+                            _last_btn = _btns.nth(_cnt - 1)
+                            if await _last_btn.is_visible():
+                                _bb = await _last_btn.bounding_box()
+                                if _bb:
+                                    await page.mouse.click(
+                                        _bb["x"] + _bb["width"] / 2,
+                                        _bb["y"] + _bb["height"] / 2,
+                                    )
+                                else:
+                                    await _last_btn.click()
+                                _txt = ""
+                                try:
+                                    _txt = (await _last_btn.inner_text()).strip()
+                                except Exception:
+                                    pass
+                                print(f"  3DS: кликнул кнопку «{_txt or _simple_sel}»")
+                                _btn_clicked = True
+                                break
+                    except Exception:
+                        pass
+
             _btn_selectors = [
                 "button:has-text('Next')",
                 "button:has-text('Submit')",
@@ -4497,14 +4526,41 @@ async def _handle_3ds_verification(page) -> bool:
         await page.wait_for_timeout(_r.uniform(600, 1_000))
     print("  3DS: страница верификации открыта — нажимаю Next...")
 
-    # Нажимаем «Next» на первой странице (выбор метода) — ищем во всех фреймах
+    # Нажимаем «Next» — сначала просто кликаем по последней кнопке на странице
+    _next_clicked = False
+    for _simple_s in ["button", "input[type='submit']", "input[type='button']"]:
+        try:
+            _bs = page.locator(_simple_s)
+            _bc = await _bs.count()
+            if _bc > 0:
+                _lb = _bs.nth(_bc - 1)
+                if await _lb.is_visible():
+                    _lbb = await _lb.bounding_box()
+                    if _lbb:
+                        await page.mouse.click(
+                            _lbb["x"] + _lbb["width"] / 2,
+                            _lbb["y"] + _lbb["height"] / 2,
+                        )
+                    else:
+                        await _lb.click()
+                    _lt = ""
+                    try:
+                        _lt = (await _lb.inner_text()).strip()
+                    except Exception:
+                        pass
+                    print(f"  3DS: кликнул «{_lt or _simple_s}»")
+                    _next_clicked = True
+                    break
+        except Exception:
+            pass
+
+    # Если простой клик не сработал — ищем по тексту во всех фреймах
     _next_sel = (
         "button:has-text('Next'), button:has-text('NEXT'), "
         "input[value='Next'], input[value='NEXT'], input[type='submit'], "
         "a:has-text('Next'), a:has-text('NEXT'), "
         "[role='button']:has-text('Next'), [class*='btn']:has-text('Next')"
     )
-    _next_clicked = False
     for _nfr in [page] + list(page.frames):
         try:
             _nb = _nfr.locator(_next_sel).first
