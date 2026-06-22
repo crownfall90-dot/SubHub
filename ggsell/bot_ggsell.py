@@ -17,7 +17,8 @@ from typing import Any, Optional
 
 from loguru import logger
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR       = Path(__file__).resolve().parent.parent / "data"
+_TEMPLATES_FILE = _DATA_DIR / "ggsel_templates.json"
 
 YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
 
@@ -102,16 +103,50 @@ class GGSellBotHandler:
             pass
 
     def pool_text(self) -> str:
-        links = self.read_pool()
-        if not links:
-            return "📦 *Пул ссылок GGSell*\n\n_Пул пуст_"
-        lines = [f"📦 *Пул ссылок GGSell* ({len(links)} шт.)", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-        for lnk in links[:10]:
-            short = lnk[:60] + "…" if len(lnk) > 60 else lnk
-            lines.append(f"▸ `{short}`")
-        if len(links) > 10:
-            lines.append(f"\n_...и ещё {len(links) - 10}_")
+        avail = self.read_pool()
+        done_links = self._done_links  # загружаем через get_done() ниже
+        self.get_done()  # убеждаемся что done_links загружены
+
+        avail_cnt = len(avail)
+        done_cnt  = len(done_links)
+
+        lines = [
+            "📦 *Пул ссылок GGSell*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"🟢 Невыдано: *{avail_cnt}*  ·  🔵 Выдано: *{done_cnt}*",
+            "",
+        ]
+
+        if avail:
+            lines.append("*Невыданные ссылки:*")
+            for i, lnk in enumerate(avail[:10]):
+                short = lnk[8:55] + "…" if len(lnk[8:]) > 47 else lnk[8:]
+                lines.append(f"🟢 `{i + 1}. {short}`")
+            if avail_cnt > 10:
+                lines.append(f"_...ещё {avail_cnt - 10}_")
+        else:
+            lines.append("_Невыданных ссылок нет_")
+
+        if done_links:
+            lines.append("")
+            lines.append("*Выданные:*")
+            done_sorted = sorted(done_links.items(), key=lambda x: -int(x[0]))[:6]
+            for inv_id, lnk in done_sorted:
+                short = lnk[8:42] + "…" if len(lnk[8:]) > 34 else lnk[8:]
+                lines.append(f"🔵 `#{inv_id}` → `{short}`")
+
         return "\n".join(lines)
+
+    def _pool_kb(self, avail: list) -> dict:
+        """Клавиатура страницы пула."""
+        link_btns = []
+        for idx, lnk in enumerate(avail[:8]):
+            preview = lnk[8:32] + "…" if len(lnk[8:]) > 24 else lnk[8:]
+            link_btns.append([{"text": f"🟢 №{idx + 1} · {preview} — Выдать",
+                                "callback_data": f"ggsell:pool_pick:{idx}"}])
+        nav = [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
+               {"text": "◀️ Назад",    "callback_data": "go:ggsell"}]
+        return {"inline_keyboard": link_btns + [nav]}
 
     # ── Выполненные заказы ───────────────────────────────────────────────────
 
@@ -637,28 +672,27 @@ class GGSellBotHandler:
             yt_orders = []
 
         done = self.get_done()
-        link_preview = link[:60] + "…" if len(link) > 60 else link
+        lp = link[8:55] + "…" if len(link[8:]) > 47 else link[8:]
         lines = [
-            "📦 *Отправить ссылку из пула*",
+            "📦 *Выдать ссылку покупателю*",
             "━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"🔗 `{link_preview}`", "",
-            "Выберите покупателя:",
+            f"🟢 `{lp}`", "",
+            "Кому отправить? (незавершённые заказы):",
         ]
         order_rows = []
-        for o in yt_orders[:8]:
+        for o in yt_orders[:10]:
             inv_i = int(o.get("invoice_id") or o.get("id") or 0)
             if inv_i in done:
                 continue
             p = self.parse_order(o)
-            label = f"#{inv_i}"
-            if p["email"]:
-                label += f" · {p['email'][:28]}"
+            email_s = f" · {p['email'][:24]}" if p["email"] else ""
+            label = f"#{inv_i}{email_s}"
             order_rows.append([{"text": label,
                                  "callback_data": f"ggsell:pool_order:{inv_i}"}])
         if not order_rows:
-            lines.append("\n_Нет незавершённых заказов для отправки_")
-        kb_rows = order_rows[:7] + [
-            [{"text": "❌ Отмена", "callback_data": "ggsell:pool"}],
+            lines.append("\n_Все заказы уже выполнены_")
+        kb_rows = order_rows[:8] + [
+            [{"text": "◀️ Пул", "callback_data": "ggsell:pool"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
 
@@ -1106,17 +1140,8 @@ class GGSellBotHandler:
 
         if data == "ggsell:pool":
             await self._ack(qid)
-            links = self.read_pool()
-            link_btns = []
-            for idx, lnk in enumerate(links[:10]):
-                preview = lnk[8:48] + "…" if len(lnk) > 48 else lnk
-                link_btns.append([{"text": f"📤 {preview}",
-                                   "callback_data": f"ggsell:pool_pick:{idx}"}])
-            kb_rows = link_btns + [
-                [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
-                 {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
-            ]
-            await self._edit(cid, mid, self.pool_text(), {"inline_keyboard": kb_rows})
+            avail = self.read_pool()
+            await self._edit(cid, mid, self.pool_text(), self._pool_kb(avail))
             return
 
         if data.startswith("ggsell:chat:"):
@@ -1237,12 +1262,8 @@ class GGSellBotHandler:
             from ggsell.monitor import add_link_to_pool
             add_link_to_pool(link)
             await self._ack(qid, "📦 Добавлено в пул!")
-            await self._edit(cid, mid,
-                f"📦 Ссылка для заказа `#{invoice_id}` добавлена в пул.\n\n🔗 `{link}`",
-                {"inline_keyboard": [
-                    [{"text": "📦 Открыть пул", "callback_data": "ggsell:pool"},
-                     {"text": "◀️ GGSell",      "callback_data": "go:ggsell"}],
-                ]})
+            avail = self.read_pool()
+            await self._edit(cid, mid, self.pool_text(), self._pool_kb(avail))
             return
 
         if data.startswith("ggsell:pool_pick:"):
