@@ -825,22 +825,29 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 _bg_del_profile = True
                 return
 
-            # Phase 1 триггерит новый OTP — ждём актуальный код из GrizzlySMS
+            # Phase 1 триггерит новый OTP — ждём код ОТЛИЧНЫЙ от исходного.
+            # Сразу возвращать старый нельзя: Flipkart уже отправил новый SMS,
+            # а старый OTP стал невалидным.
+            _original_otp = otp_code
             _fresh_otp = otp_code
             _otp_poll_dl = time.time() + 60.0
             while time.time() < _otp_poll_dl:
                 try:
                     _st2 = await client.get_status(activation_id)
                     if _st2.get("type") == "OK" and _st2.get("code"):
-                        _fresh_otp = _st2["code"]
-                        break
+                        if _st2["code"] != _original_otp:
+                            _fresh_otp = _st2["code"]
+                            break
+                        # Тот же код — ждём новый SMS от Flipkart
                     elif _st2.get("type") in ("CANCEL", "ERROR"):
                         break
                 except Exception:
                     pass
                 await asyncio.sleep(3)
-            if _fresh_otp != otp_code:
-                print(f"  [BG] Обновлённый OTP для +91 {phone_10}: {_fresh_otp}")
+            if _fresh_otp != _original_otp:
+                print(f"  [BG] Новый OTP для +91 {phone_10}: {_fresh_otp}")
+            else:
+                print(f"  [BG] Новый OTP для +91 {phone_10} не пришёл — используем исходный {_fresh_otp}")
             otp_code = _fresh_otp
 
             # Вводим OTP (посимвольно — триггерит React onChange)
