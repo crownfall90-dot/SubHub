@@ -149,34 +149,15 @@ class GGSellClient:
 
     async def get_balance_info(self) -> Dict[str, float]:
         """Вернуть полную информацию о балансе: free, hold, lock, plus."""
-        hold = 0.0
-        # v1 API: amount + amount_in_hold
-        _balance_paths = [
-            "https://seller.ggsel.com/api/v1/balance/",
-            "https://seller.ggsel.com/api/v1/account/balance/",
-            "https://seller.ggsel.com/api/v1/wallet/",
-            "https://seller.ggsel.com/api/v1/wallet/balance/",
-        ]
-        for _url in _balance_paths:
-            try:
-                resp = await self._client.get(
-                    _url,
-                    headers={"Authorization": self.api_key, "Accept": "application/json"},
-                )
-                logger.debug(f"GGSell v1 balance {_url} → {resp.status_code}")
-                if resp.status_code == 200:
-                    d = resp.json().get("data") or {}
-                    if isinstance(d, dict) and "amount_in_hold" in d:
-                        hold = float(d.get("amount_in_hold") or 0.0)
-                        logger.debug(f"GGSell hold = {hold} от {_url}")
-                        break
-            except Exception as exc:
-                logger.debug(f"GGSell v1 balance {_url}: {exc}")
-
         data = await self._get("/sellers/account/balance/info", {"locale": "ru"})
+        logger.debug(f"GGSell balance raw: {data}")
         content = data.get("content") if isinstance(data, dict) else {}
         if not isinstance(content, dict):
-            content = {}
+            content = data if isinstance(data, dict) else {}
+        hold = float(
+            content.get("amount_in_hold") or content.get("amount_t_hold")
+            or content.get("hold") or data.get("amount_in_hold") or 0.0
+        )
         return {
             "free": float(content.get("amount_t_free") or 0.0),
             "lock": float(content.get("amount_t_lock") or 0.0),
