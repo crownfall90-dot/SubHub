@@ -160,16 +160,16 @@ class GGSellClient:
         )
 
         if not hold:
+            # Считаем холд как сумму невыплаченных наград из заказов v1
             try:
-                rec = await self._get("/sellers/account/receipts", {"locale": "ru"})
-                logger.debug(f"GGSell receipts raw: {rec}")
-                rc = rec.get("content") or rec if isinstance(rec, dict) else {}
-                hold = float(
-                    rc.get("amount_in_hold") or rc.get("hold") or
-                    rc.get("amount_hold") or rc.get("total_hold") or 0.0
+                orders_v1 = await self.get_orders_v1(limit=50)
+                hold = sum(
+                    float(o.get("seller_reward_amount_usdt") or 0)
+                    for o in orders_v1
+                    if not o.get("is_seller_reward_converted")
                 )
             except Exception as exc:
-                logger.debug(f"GGSell receipts: {exc}")
+                logger.debug(f"GGSell hold via orders: {exc}")
 
         return {
             "free": float(content.get("amount_t_free") or 0.0),
