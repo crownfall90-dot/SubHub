@@ -68,6 +68,8 @@ class GGSellBotHandler:
         self._api   = tg_api_url
         self._root  = project_root
 
+        self.template_edit_mode: dict = {}  # cid → template_name
+
     # ── GGSell client ────────────────────────────────────────────────────────
 
     def get_client(self):
@@ -132,8 +134,14 @@ class GGSellBotHandler:
             lines.append("*Выданные:*")
             done_sorted = sorted(done_links.items(), key=lambda x: -int(x[0]))[:6]
             for inv_id, lnk in done_sorted:
-                short = lnk[8:42] + "…" if len(lnk[8:]) > 34 else lnk[8:]
-                lines.append(f"🔵 `#{inv_id}` → `{short}`")
+                short = lnk[8:38] + "…" if len(lnk[8:]) > 30 else lnk[8:]
+                cached = self.orders.get(int(inv_id), {})
+                order_obj = cached.get("order", {}) if isinstance(cached, dict) else {}
+                email = (cached.get("buyer_email") if isinstance(cached, dict) else "") or ""
+                if not email and order_obj:
+                    email = self.parse_order(order_obj).get("email", "")
+                who = (email[:28] + "…" if len(email) > 28 else email) if email else f"#{inv_id}"
+                lines.append(f"🔵 {who} → `{short}`")
 
         return "\n".join(lines)
 
@@ -181,10 +189,77 @@ class GGSellBotHandler:
             f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+        if link:
+            self._mark_profile_issued(link)
+
+    def _mark_profile_issued(self, link: str) -> None:
+        """По ссылке находит Chrome-профиль в profile_map и ставит issued_ts."""
+        try:
+            import time as _time
+            links_file = _DATA_DIR / "ggsel_links.json"
+            try:
+                raw = json.loads(links_file.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            profile_map: dict = raw.get("profile_map", {})
+            profile_path_str = profile_map.pop(link, "")
+            if link in raw.get("profile_map", {}):
+                raw["profile_map"] = profile_map
+                links_file.write_text(
+                    json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+            if not profile_path_str:
+                return
+            meta_file = Path(profile_path_str) / ".profile_meta.json"
+            if not meta_file.exists():
+                return
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            meta["issued_ts"]   = _time.time()
+            meta["issued_link"] = link
+            meta_file.write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info(f"GGSell: профиль {Path(profile_path_str).name} помечен как выданный")
+        except Exception as exc:
+            logger.debug(f"GGSell: _mark_profile_issued: {exc}")
 
     def get_sent_link(self, invoice_id: int) -> str:
         self.get_done()
         return self._done_links.get(invoice_id, "")
+
+    # ── Метка заказа для кнопок ─────────────────────────────────────────────
+
+    def _order_label(self, order: dict, invoice_id: int) -> str:
+        """Краткая читаемая метка: email · период · дата."""
+        p = self.parse_order(order)
+        email = p["email"]
+        if not email:
+            cached = self.orders.get(invoice_id, {})
+            email = (cached.get("buyer_email")
+                     or self.parse_order(cached.get("order", {})).get("email", "")
+                     if cached else "")
+
+        # Период подписки из options ("3 месяца" → "3мес", "12 месяцев" → "12мес")
+        period = ""
+        for opt in p["options"]:
+            val = opt.get("value", "")
+            m = re.search(r"(\d+)\s*(мес|год|month|year)", val.lower())
+            if m:
+                unit = "мес" if m.group(2) in ("мес", "month") else "г"
+                period = f"{m.group(1)}{unit}"
+                break
+
+        # Дата (день.месяц)
+        date_short = ""
+        if p["date"]:
+            date_short = p["date"][5:10].replace("-", ".")
+
+        parts = []
+        if email:
+            parts.append(email[:32])
+        if period:
+            parts.append(period)
+        if date_short:
+            parts.append(date_short)
+        return " · ".join(parts) if parts else f"#{invoice_id}"
 
     # ── Парсинг заказа ───────────────────────────────────────────────────────
 
@@ -267,19 +342,21 @@ class GGSellBotHandler:
             "━━━━━━━━━━━━━━━━━━━━━━", "",
             f"📦 *{p['name_short']}*", "",
         ]
+        # Суммы
         if p["sum_buy"] or p["sum_sell"]:
             parts = []
             if p["sum_buy"]:
-                parts.append(f"💰 Оплачено: *{p['sum_buy']}₽*")
+                parts.append(f"💰 *{p['sum_buy']}₽*")
             if p["sum_sell"]:
-                parts.append(f"💼 Выплата: *{p['sum_sell']}₽*")
-            lines.append("  ·  ".join(parts))
+                parts.append(f"💼 выплата *{p['sum_sell']}₽*")
+            lines.append("  │  ".join(parts))
+        # Email покупателя
         if email:
-            lines.append(f"👤 Email: `{email}`")
+            lines.append(f"👤 `{email}`")
+        # Дата
         if p["date"]:
-            lines.append(f"📅 Дата: {p['date']}")
-        if p["status"]:
-            lines.append(f"📍 Статус API: `{p['status']}`")
+            lines.append(f"📅 {p['date']}")
+        # Параметры заказа
         if p["options"]:
             lines.append("")
             lines.append("📝 *Параметры заказа:*")
@@ -288,9 +365,10 @@ class GGSellBotHandler:
                 v_s = opt["value"][:45] + "…" if len(opt["value"]) > 45 else opt["value"]
                 p_s = f" _(+{opt['price_add']}₽)_" if opt.get("price_add") else ""
                 lines.append(f"  • _{n_s}_: `{v_s}`{p_s}")
+        # Статус
         lines.append("")
         if invoice_id in done:
-            lines.append(f"🔵 *Выдано* · {done[invoice_id]}")
+            lines.append(f"🔵 *Выдано* · _{done[invoice_id]}_")
             if sent_link:
                 lines.append(f"🔗 `{sent_link}`")
         elif confirm_lnk:
@@ -329,18 +407,101 @@ class GGSellBotHandler:
         lines = [
             "⚙️ *GGSell — Настройки*",
             "━━━━━━━━━━━━━━━━━━━━━━", "",
-            "*Уведомления:*",
-            f"  {'🔔' if ord_on else '🔕'} Заказы: {'включены' if ord_on else 'выключены'}",
-            f"  {'🔔' if msg_on else '🔕'} Сообщения: {'включены' if msg_on else 'выключены'}",
+            "*🔔 Уведомления:*",
+            f"  {'✅' if ord_on else '❌'} Заказы: {'включены' if ord_on else 'выключены'}",
+            f"  {'✅' if msg_on else '❌'} Сообщения: {'включены' if msg_on else 'выключены'}",
+            "",
+            "*📝 Шаблоны сообщений:*",
+            "  Тексты, которые отправляются покупателю",
+            "  при выдаче ссылки и при ожидании.",
         ]
         kb = {"inline_keyboard": [
             [{"text": ("🔔 Заказы: Вкл"    if ord_on else "🔕 Заказы: Выкл"),
               "callback_data": "ggsell:toggle:orders"},
              {"text": ("🔔 Сообщения: Вкл" if msg_on else "🔕 Сообщения: Выкл"),
               "callback_data": "ggsell:toggle:messages"}],
+            [{"text": "📝 Шаблоны сообщений", "callback_data": "ggsell:templates"}],
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]}
         return "\n".join(lines), kb
+
+    # ── Шаблоны сообщений ────────────────────────────────────────────────────
+
+    _TEMPLATE_NAMES = {
+        "msg_template": ("Ссылка готова", "Отправляется покупателю вместе со ссылкой на активацию. Используй `{link}` для вставки ссылки."),
+        "msg_wait":     ("Ожидание", "Отправляется покупателю пока ссылка ещё готовится."),
+    }
+
+    def load_templates(self) -> dict:
+        try:
+            return json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _tpl_default(self, name: str) -> str:
+        from ggsell.monitor import MSG_TEMPLATE, MSG_WAIT
+        return {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT}.get(name, "")
+
+    def bg_templates_page_sync(self, cid: int) -> tuple:
+        saved = self.load_templates()
+        lines = [
+            "📝 *GGSell — Шаблоны сообщений*",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+            "Нажми на шаблон чтобы просмотреть или изменить.", "",
+        ]
+        rows = []
+        for key, (label, desc) in self._TEMPLATE_NAMES.items():
+            status = "✏️ изменён" if key in saved and saved[key].strip() else "📄 по умолчанию"
+            lines.append(f"*{label}* — _{status}_")
+            lines.append(f"  _{desc}_")
+            lines.append("")
+            rows.append([{"text": f"📝 {label}", "callback_data": f"ggsell:template_view:{key}"}])
+        rows.append([{"text": "◀️ Настройки", "callback_data": "ggsell:settings"}])
+        return "\n".join(lines), {"inline_keyboard": rows}
+
+    def bg_template_view_sync(self, name: str) -> tuple:
+        label, desc = self._TEMPLATE_NAMES.get(name, (name, ""))
+        saved = self.load_templates()
+        text  = saved.get(name, "").strip() or self._tpl_default(name)
+        is_custom = name in saved and saved[name].strip()
+        preview   = text[:300] + "…" if len(text) > 300 else text
+        lines = [
+            f"📝 *Шаблон: {label}*",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+            f"_{desc}_", "",
+            "*Текущий текст:*", "",
+            preview,
+        ]
+        if is_custom:
+            lines += ["", "✏️ _Изменён вами_"]
+        else:
+            lines += ["", "📄 _Используется текст по умолчанию_"]
+        rows = [
+            [{"text": "✏️ Изменить", "callback_data": f"ggsell:template_edit:{name}"}],
+        ]
+        if is_custom:
+            rows.append([{"text": "🔄 Сбросить к умолчанию", "callback_data": f"ggsell:template_reset:{name}"}])
+        rows.append([{"text": "◀️ Шаблоны", "callback_data": "ggsell:templates"}])
+        return "\n".join(lines), {"inline_keyboard": rows}
+
+    def check_template_edit_mode(self, cid: int, text: str) -> Optional[str]:
+        """Если cid в режиме редактирования шаблона — вернуть имя шаблона и выйти из режима."""
+        if cid in self.template_edit_mode and text and not text.startswith("/"):
+            return self.template_edit_mode.pop(cid)
+        return None
+
+    async def bg_template_save(self, cid: int, name: str, text: str) -> None:
+        from ggsell.monitor import save_template
+        save_template(name, text)
+        label, _ = self._TEMPLATE_NAMES.get(name, (name, ""))
+        preview  = text[:200] + "…" if len(text) > 200 else text
+        await self._send(cid,
+            f"✅ *Шаблон «{label}» сохранён!*\n\n"
+            f"{preview}",
+            reply_markup={"inline_keyboard": [
+                [{"text": "📝 Шаблоны", "callback_data": "ggsell:templates"}],
+            ]}
+        )
 
     # ── Баланс ───────────────────────────────────────────────────────────────
 
@@ -417,16 +578,19 @@ class GGSellBotHandler:
         pending_cnt = len(self.confirm)
 
         lines = ["💰 *GGSell — Панель продавца*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-        lines.append(f"💵 Баланс: *{bal_s}*" + (f"  ·  🔒 {lock_s}" if lock_s else ""))
+        lines.append(f"💵 Баланс: *{bal_s}*" + (f"  │  🔒 {lock_s}" if lock_s else ""))
         if plus_s:
-            dp = f" (поступит {payment_date_s})" if payment_date_s else ""
+            dp = f"  _(поступит {payment_date_s})_" if payment_date_s else ""
             lines.append(f"⏳ К поступлению: *{plus_s}*{dp}")
         lines.append("")
+        lines.append("📊 *Статистика*")
         if total_sales:
-            lines.append(f"🛒 Продаж: *{total_sales}*" + (f"  ·  💰 *${float(total_revenue):.2f}*" if total_revenue else ""))
-        lines.append(f"📦 Ссылок в пуле: *{pool}*  ·  ✅ Обработано: *{processed_cnt}*")
+            rev = f"  │  💰 *${float(total_revenue):.2f}*" if total_revenue else ""
+            lines.append(f"🛒 Продаж: *{total_sales}*{rev}")
+        lines.append(f"📦 Пул ссылок: *{pool}*  │  ✅ Обработано: *{processed_cnt}*")
         if pending_cnt:
-            lines.append(f"⏳ Ждут подтверждения: *{pending_cnt}*")
+            lines.append("")
+            lines.append(f"⚠️ *Ждут подтверждения: {pending_cnt}*")
 
         kb_rows = [
             [{"text": "📋 Заказы",     "callback_data": "ggsell:orders"},
@@ -452,8 +616,11 @@ class GGSellBotHandler:
         except Exception:
             yt_orders = []
 
+        # Сортировка: самые новые (наибольший invoice_id) — сверху
+        yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0), reverse=True)
+
         done = self.get_done()
-        lines = ["📋 *GGSell — Заказы*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+        lines = ["📋 *GGSell — Заказы* _(новые сверху)_", "━━━━━━━━━━━━━━━━━━━━━━", ""]
         order_btns = []
 
         if yt_orders:
@@ -463,26 +630,24 @@ class GGSellBotHandler:
                 p     = self.parse_order(o)
 
                 if inv_i in done:
-                    icon, status_s = "🔵", "Выдано"
+                    icon, status_s = "🔵", f"Выдано  {done[inv_i]}"
                 elif inv_i in self.confirm:
-                    icon, status_s = "⏳", "Ожидает"
+                    icon, status_s = "⏳", "Ждёт подтверждения"
                 else:
                     icon, status_s = "🟢", "Новый"
 
-                date_s = p["date"][5:16] if len(p["date"]) >= 16 else p["date"]
-                line_parts = [f"{icon} *#{inv}*"]
-                if date_s:
-                    line_parts.append(date_s)
-                if p["sum_buy"]:
-                    line_parts.append(f"💰{p['sum_buy']}₽")
-                lines.append("  ·  ".join(line_parts))
+                # Строка 1: иконка, номер, дата, сумма
+                date_s = p["date"][5:10] if len(p["date"]) >= 10 else p["date"]
+                sum_s  = f"  │  💰 *{p['sum_buy']}₽*" if p["sum_buy"] else ""
+                date_p = f"  │  📅 {date_s}" if date_s else ""
+                lines.append(f"{icon} *#{inv}*{date_p}{sum_s}")
 
-                sub_parts = []
+                # Строка 2: email и статус
                 if p["email"]:
-                    email_s = p["email"][:28] + "…" if len(p["email"]) > 28 else p["email"]
-                    sub_parts.append(f"👤 {email_s}")
-                sub_parts.append(status_s)
-                lines.append("   " + "  ·  ".join(sub_parts))
+                    email_s = p["email"][:30] + "…" if len(p["email"]) > 30 else p["email"]
+                    lines.append(f"   👤 `{email_s}`  ·  _{status_s}_")
+                else:
+                    lines.append(f"   _{status_s}_")
                 lines.append("")
 
                 order_btns.append({"text": f"{icon} #{inv}",
@@ -684,10 +849,8 @@ class GGSellBotHandler:
             inv_i = int(o.get("invoice_id") or o.get("id") or 0)
             if inv_i in done:
                 continue
-            p = self.parse_order(o)
-            email_s = f" · {p['email'][:24]}" if p["email"] else ""
-            label = f"#{inv_i}{email_s}"
-            order_rows.append([{"text": label,
+            label = self._order_label(o, inv_i)
+            order_rows.append([{"text": label[:64],
                                  "callback_data": f"ggsell:pool_order:{inv_i}"}])
         if not order_rows:
             lines.append("\n_Все заказы уже выполнены_")
@@ -726,8 +889,8 @@ class GGSellBotHandler:
             await self._edit(cid, mid, "❌ GGSell не настроен.",
                 {"inline_keyboard": [[{"text": "◀️ GGSell", "callback_data": "go:ggsell"}]]})
             return
-        from ggsell.monitor import MSG_TEMPLATE
-        ok = await cli.send_message(invoice_id, MSG_TEMPLATE.format(link=link))
+        from ggsell.monitor import get_template
+        ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
         self.remove_link(link)
         if ok:
             self.mark_done(invoice_id, link)
@@ -861,8 +1024,8 @@ class GGSellBotHandler:
         item        = self.orders.get(invoice_id, {})
         buyer_email = item.get("buyer_email") or "?"
         try:
-            from ggsell.monitor import MSG_TEMPLATE
-            ok = await cli.send_message(invoice_id, MSG_TEMPLATE.format(link=link))
+            from ggsell.monitor import get_template
+            ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
         except Exception as exc:
             await self._send(cid, f"❌ Ошибка отправки в GGSell (заказ `#{invoice_id}`): {exc}")
             return
@@ -929,33 +1092,40 @@ class GGSellBotHandler:
         p     = self.parse_order(order)
         email = item.get("buyer_email") or p["email"]
 
-        lines = [f"💸 *Новый заказ* `#{invoice_id}`", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-        lines.append(f"📦 *{p['name_short']}*")
+        lines = [
+            "💸 *НОВЫЙ ЗАКАЗ*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"*Заказ:* `#{invoice_id}`", "",
+            f"📦 *{p['name_short']}*",
+        ]
         if p["sum_buy"] or p["sum_sell"]:
             sum_parts = []
             if p["sum_buy"]:
                 sum_parts.append(f"💰 *{p['sum_buy']}₽*")
             if p["sum_sell"]:
                 sum_parts.append(f"💼 выплата *{p['sum_sell']}₽*")
-            lines.append("  ·  ".join(sum_parts))
+            lines.append("  │  ".join(sum_parts))
+        if email:
+            lines.append(f"👤 `{email}`")
         if p["date"]:
             lines.append(f"📅 {p['date']}")
         if p["options"]:
             lines.append("")
+            lines.append("📝 *Параметры:*")
             for opt in p["options"]:
                 n_s = opt["name"][:28] + "…" if len(opt["name"]) > 28 else opt["name"]
                 v_s = opt["value"][:35] + "…" if len(opt["value"]) > 35 else opt["value"]
-                p_s = f" (+{opt['price_add']}₽)" if opt.get("price_add") else ""
-                lines.append(f"  _{n_s}_: `{v_s}`{p_s}")
-        elif email:
-            lines.append(f"👤 `{email}`")
+                p_s = f" _(+{opt['price_add']}₽)_" if opt.get("price_add") else ""
+                lines.append(f"  • _{n_s}_: `{v_s}`{p_s}")
         lines.append("")
         text = "\n".join(lines)
         kb = {"inline_keyboard": [
-            [{"text": f"📋 Детали #{invoice_id}",
-              "callback_data": f"ggsell:order:{invoice_id}"}],
             [{"text": "▶️ Выполнить заказ",
               "callback_data": f"ggsell:run:{invoice_id}"}],
+            [{"text": f"📋 Детали #{invoice_id}",
+              "callback_data": f"ggsell:order:{invoice_id}"},
+             {"text": "📦 Из пула",
+              "callback_data": f"ggsell:pool_for:{invoice_id}"}],
         ]}
         for _cid in list(self.subs):
             if not self._get(_cid, "ggsel_notify_orders"):
@@ -980,10 +1150,11 @@ class GGSellBotHandler:
                     or msg.get("date_add") or "")
         msg_time = str(raw_date)[:16].replace("T", " ") if raw_date else ""
 
+        time_s = f"  │  _{msg_time}_" if msg_time else ""
         text = (
-            f"💬 *Новое сообщение · заказ* `#{invoice_id}`\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📧 {email}" + (f" · 📅 {msg_time}" if msg_time else "") + "\n\n"
+            f"💬 *Новое сообщение от покупателя*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"*Заказ:* `#{invoice_id}`  │  👤 `{email}`{time_s}\n\n"
             f"{msg_text}"
         )
         kb = {"inline_keyboard": [
@@ -1289,6 +1460,56 @@ class GGSellBotHandler:
                 return
             await self._ack(qid, "⏳ Отправляю...")
             asyncio.create_task(self.bg_pool_send(cid, mid, invoice_id, link))
+            return
+
+        # ── Шаблоны сообщений ─────────────────────────────────────────────────
+
+        if data == "ggsell:templates":
+            await self._ack(qid)
+            txt, kb = self.bg_templates_page_sync(cid)
+            await self._edit(cid, mid, txt, kb)
+            return
+
+        if data.startswith("ggsell:template_view:"):
+            name = data.split(":", 2)[2]
+            if name not in self._TEMPLATE_NAMES:
+                await self._ack(qid)
+                return
+            await self._ack(qid)
+            txt, kb = self.bg_template_view_sync(name)
+            await self._edit(cid, mid, txt, kb)
+            return
+
+        if data.startswith("ggsell:template_edit:"):
+            name = data.split(":", 2)[2]
+            if name not in self._TEMPLATE_NAMES:
+                await self._ack(qid)
+                return
+            self.template_edit_mode[cid] = name
+            label, desc = self._TEMPLATE_NAMES[name]
+            ph_note = "\n\nИспользуй `{link}` для вставки ссылки." if name == "msg_template" else ""
+            await self._ack(qid)
+            await self._send(cid,
+                f"✏️ *Редактирование шаблона «{label}»*\n\n"
+                f"_{desc}_{ph_note}\n\n"
+                "Отправь новый текст шаблона следующим сообщением:",
+                reply_markup={"inline_keyboard": [
+                    [{"text": "❌ Отмена", "callback_data": f"ggsell:template_view:{name}"}],
+                ]}
+            )
+            return
+
+        if data.startswith("ggsell:template_reset:"):
+            name = data.split(":", 2)[2]
+            if name not in self._TEMPLATE_NAMES:
+                await self._ack(qid)
+                return
+            from ggsell.monitor import save_template
+            save_template(name, "")
+            label, _ = self._TEMPLATE_NAMES[name]
+            await self._ack(qid, f"🔄 Шаблон «{label}» сброшен")
+            txt, kb = self.bg_template_view_sync(name)
+            await self._edit(cid, mid, txt, kb)
             return
 
         await self._ack(qid)

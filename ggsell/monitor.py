@@ -21,8 +21,9 @@ from loguru import logger
 from .client import GGSellClient, GGSellError
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
-_ORDERS_FILE   = _DATA / "ggsel_orders.json"
+_ORDERS_FILE    = _DATA / "ggsel_orders.json"
 _SEEN_MSGS_FILE = _DATA / "ggsel_seen_msgs.json"
+_TEMPLATES_FILE = _DATA / "ggsel_templates.json"
 
 POLL_INTERVAL     = 60.0  # секунды между проверкой заказов
 MSG_POLL_INTERVAL = 15.0  # секунды между проверкой сообщений
@@ -58,6 +59,35 @@ MSG_WAIT = (
     "Ваш заказ принят! Ссылка на активацию будет отправлена в течение нескольких минут. "
     "Пожалуйста, ожидайте."
 )
+
+
+# ── Хранение и загрузка шаблонов сообщений ───────────────────────────────────
+
+def get_template(name: str) -> str:
+    """Загрузить шаблон из файла; если нет — вернуть встроенный по умолчанию."""
+    defaults = {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT}
+    try:
+        raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
+        val = raw.get(name, "").strip()
+        if val:
+            return val
+    except Exception:
+        pass
+    return defaults.get(name, "")
+
+
+def save_template(name: str, text: str) -> None:
+    """Сохранить шаблон в файл."""
+    _DATA.mkdir(parents=True, exist_ok=True)
+    try:
+        try:
+            raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
+        raw[name] = text
+        _TEMPLATES_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ── Хранение обработанных заказов ────────────────────────────────────────────
@@ -114,8 +144,8 @@ def _pop_link() -> Optional[str]:
         return None
 
 
-def add_link_to_pool(link: str) -> None:
-    """Добавить ссылку в пул (вызывается из автоматизации после успешного создания аккаунта)."""
+def add_link_to_pool(link: str, profile_path: str = "") -> None:
+    """Добавить ссылку в пул. profile_path — путь к Chrome-профилю для авто-пометки «выдан»."""
     try:
         _DATA.mkdir(parents=True, exist_ok=True)
         try:
@@ -123,6 +153,8 @@ def add_link_to_pool(link: str) -> None:
         except Exception:
             raw = {"links": []}
         raw.setdefault("links", []).append(link)
+        if profile_path:
+            raw.setdefault("profile_map", {})[link] = str(profile_path)
         _LINKS_FILE.write_text(
             json.dumps(raw, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -336,13 +368,13 @@ class GGSellMonitor:
         link = _pop_link()
 
         if link:
-            msg = MSG_TEMPLATE.format(link=link)
+            msg = get_template("msg_template").format(link=link)
             await self.client.send_message(invoice_id, msg)
             logger.success(f"GGSell #{invoice_id}: ссылка из пула отправлена → {link}")
             return
 
         # 2. Нет ссылки в пуле — сообщаем покупателю что готовим
-        await self.client.send_message(invoice_id, MSG_WAIT)
+        await self.client.send_message(invoice_id, get_template("msg_wait"))
         logger.info(f"GGSell #{invoice_id}: пул пуст, сообщение об ожидании отправлено")
 
         # 3. Вызываем колбэк для генерации ссылки (если задан)
@@ -358,7 +390,7 @@ class GGSellMonitor:
                 link = None
 
             if link:
-                msg = MSG_TEMPLATE.format(link=link)
+                msg = get_template("msg_template").format(link=link)
                 await self.client.send_message(invoice_id, msg)
                 logger.success(f"GGSell #{invoice_id}: ссылка от колбэка отправлена → {link}")
             else:

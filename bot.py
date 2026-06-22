@@ -2184,7 +2184,7 @@ def _menu_tg_bot_thread() -> None:
                     await _ack(qid, "⚠️ Ссылка не найдена в профиле", alert=True)
                     return
                 from ggsell.monitor import add_link_to_pool
-                add_link_to_pool(link)
+                add_link_to_pool(link, profile_path=str(pp))
                 await _ack(qid, f"📦 Ссылка добавлена в пул!")
                 return
 
@@ -2220,16 +2220,21 @@ def _menu_tg_bot_thread() -> None:
             cid  = int(msg["chat"]["id"])
             text = (msg.get("text") or "").strip()
 
-            # 3DS OTP: числа 4-8 цифр сохраняем в файл для menu.py
-            # (menu.py использует тот же токен → конфликт getUpdates)
+            # 3DS OTP: ищем 4-8 цифр в любом тексте (fullmatch не ловил forwarded-сообщения)
             import re as _re_otp
-            if _re_otp.fullmatch(r"\d{4,8}", text):
+            if text and _re_otp.search(r"\b\d{4,8}\b", text):
                 _push_otp_3ds(text)
 
             # Режим ответа в GGSell чат — перехватываем ЛЮБОЕ сообщение
             _ggsel_inv = _ggsel_handler[0].check_reply_mode(cid, text) if _ggsel_handler[0] else None
             if _ggsel_inv is not None:
                 asyncio.create_task(_ggsel_handler[0].bg_reply(cid, _ggsel_inv, text))
+                return
+
+            # Режим редактирования шаблона GGSell
+            _tpl_name = _ggsel_handler[0].check_template_edit_mode(cid, text) if _ggsel_handler[0] else None
+            if _tpl_name is not None:
+                asyncio.create_task(_ggsel_handler[0].bg_template_save(cid, _tpl_name, text))
                 return
 
             is_new = cid not in subs
