@@ -36,14 +36,26 @@ notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
 
 # Сообщение покупателю при получении ссылки
 MSG_TEMPLATE = (
-    "Спасибо за покупку! Ваша ссылка:\n\n"
+    "Ссылка на активацию подписки отправлена ✅\n\n"
     "{link}\n\n"
-    "Перейдите по ссылке и примите приглашение в Family-план YouTube Premium."
+    "Пожалуйста, активируйте её в течение 1–2 часов на тот аккаунт (почту), "
+    "который вы указали в чате.\n\n"
+    "Инструкция по активации:\n\n"
+    "1. Перейдите по ссылке\n"
+    "2. Выберите нужную почту\n"
+    "3. Подтвердите активацию\n\n"
+    "Важно! Для вашей безопасности и на случай технических вопросов — пожалуйста, "
+    "запишите процесс активации на видео (запись экрана). Это поможет мне оперативно "
+    "решить любые проблемы и, при необходимости, сделать замену.\n\n"
+    "После успешной активации буду очень благодарен, если вы оставите свой драгоценный "
+    "отзыв о сервисе — это очень поможет развитию и качеству работы 🙌\n\n"
+    "🎁 Бонус: После хорошего отзыва я выдам вам промокод на скидку 5% на следующую покупку.\n\n"
+    "Спасибо за доверие и сотрудничество! Буду на связи."
 )
 
 # Сообщение если ссылка ещё готовится
 MSG_WAIT = (
-    "Ваш заказ принят! Ссылка будет отправлена в течение нескольких минут. "
+    "Ваш заказ принят! Ссылка на активацию будет отправлена в течение нескольких минут. "
     "Пожалуйста, ожидайте."
 )
 
@@ -201,26 +213,28 @@ class GGSellMonitor:
     async def _check_new_messages(self, initialized: bool) -> None:
         """Проверить новые входящие сообщения от покупателей."""
         try:
-            chats = await self.client.get_chats()
+            # На первом запуске все чаты (для инициализации last_id),
+            # потом только с новой активностью через filter_new.
+            # cnt_new не используем — GGSell сбрасывает его при get_chats(),
+            # что делает его ненадёжным для отслеживания новых сообщений.
+            chats = await self.client.get_chats(filter_new=initialized)
         except Exception as exc:
             logger.debug(f"GGSell chats: {exc}")
             return
+
+        if chats and not initialized:
+            logger.debug(f"GGSell chat[0] keys: {list(chats[0].keys())}")
 
         seen = self._seen_msgs
         changed = False
 
         for chat in chats:
-            id_i = int(chat.get("id_i") or 0)
+            id_i = int(chat.get("id_i") or chat.get("invoice_id") or chat.get("id") or 0)
             if not id_i:
                 continue
 
             seen_key = str(id_i)
             last_id  = int(seen.get(seen_key) or 0)
-            cnt_new  = int(chat.get("cnt_new") or 0)
-
-            # Если инициализированы и нет непрочитанных — пропускаем
-            if initialized and cnt_new == 0:
-                continue
 
             try:
                 messages = await self.client.get_messages(id_i, id_from=last_id)
@@ -233,11 +247,14 @@ class GGSellMonitor:
                     changed = True
                 continue
 
+            if not initialized and messages:
+                logger.debug(f"GGSell msg[0] keys: {list(messages[0].keys())}")
+
             msg_ids = [int(m.get("id") or m.get("message_id") or 0) for m in messages]
             max_id  = max(msg_ids) if msg_ids else 0
 
             if not initialized:
-                # Первый запуск — просто запоминаем, не шлём уведомления
+                # Первый запуск — запоминаем, уведомления не шлём
                 seen[seen_key] = max(max_id, last_id)
                 changed = True
                 continue
@@ -247,12 +264,14 @@ class GGSellMonitor:
                 msg_id = int(msg.get("id") or msg.get("message_id") or 0)
                 if msg_id <= last_id:
                     continue
-                # Определяем: это сообщение от покупателя (не от продавца)
+                # Сообщение от продавца (нашего бота) — не уведомляем
                 is_seller = bool(
                     msg.get("is_seller")
                     or msg.get("is_seller_msg")
                     or msg.get("sender") == "seller"
                     or msg.get("type") == "seller"
+                    or msg.get("from_seller")
+                    or msg.get("role") == "seller"
                 )
                 if not is_seller:
                     notify_queue.put({
