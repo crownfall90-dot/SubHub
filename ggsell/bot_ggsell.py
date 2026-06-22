@@ -111,11 +111,12 @@ class GGSellBotHandler:
 
         avail_cnt = len(avail)
         done_cnt  = len(done_links)
+        used_cnt  = len(self.get_used())
 
         lines = [
             "📦 *Пул ссылок GGSell*",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            f"🟢 Невыдано: *{avail_cnt}*  ·  🔵 Выдано: *{done_cnt}*",
+            f"🟢 Невыдано: *{avail_cnt}*  ·  🔵 Выдано: *{done_cnt}*  ·  🟡 Использовано: *{used_cnt}*",
             "",
         ]
 
@@ -152,9 +153,11 @@ class GGSellBotHandler:
             preview = lnk[8:32] + "…" if len(lnk[8:]) > 24 else lnk[8:]
             link_btns.append([{"text": f"🟢 №{idx + 1} · {preview} — Выдать",
                                 "callback_data": f"ggsell:pool_pick:{idx}"}])
-        nav = [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
-               {"text": "◀️ Назад",    "callback_data": "go:ggsell"}]
-        return {"inline_keyboard": link_btns + [nav]}
+        return {"inline_keyboard": link_btns + [
+            [{"text": "🟡 Архив использованных", "callback_data": "ggsell:used"}],
+            [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
+             {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
+        ]}
 
     # ── Выполненные заказы ───────────────────────────────────────────────────
 
@@ -177,6 +180,19 @@ class GGSellBotHandler:
         self.get_done()[invoice_id] = dt_str
         if link:
             self._done_links[invoice_id] = link
+
+        # Читаем profile_path ДО того как _mark_profile_issued его удалит из profile_map
+        profile_path_str = ""
+        if link:
+            try:
+                lf = _DATA_DIR / "ggsel_links.json"
+                profile_path_str = (
+                    json.loads(lf.read_text(encoding="utf-8"))
+                    .get("profile_map", {}).get(link, "")
+                )
+            except Exception:
+                pass
+
         try:
             f = _DATA_DIR / "ggsel_done.json"
             try:
@@ -186,11 +202,104 @@ class GGSellBotHandler:
             raw.setdefault("done", {})[str(invoice_id)] = dt_str
             if link:
                 raw.setdefault("links", {})[str(invoice_id)] = link
+            if profile_path_str:
+                raw.setdefault("profile_paths", {})[str(invoice_id)] = profile_path_str
             f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
         if link:
             self._mark_profile_issued(link)
+
+    def get_used(self) -> set:
+        """Множество invoice_id помеченных как «использованные»."""
+        try:
+            raw = json.loads((_DATA_DIR / "ggsel_done.json").read_text(encoding="utf-8"))
+            return set(int(k) for k in raw.get("used", {}).keys())
+        except Exception:
+            return set()
+
+    def mark_used(self, invoice_id: int) -> str:
+        """Помечает заказ использованным. Возвращает путь профиля для архивирования."""
+        dt_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        profile_path_str = ""
+        try:
+            f = _DATA_DIR / "ggsel_done.json"
+            try:
+                raw = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+            raw.setdefault("used", {})[str(invoice_id)] = dt_str
+            profile_path_str = raw.get("profile_paths", {}).get(str(invoice_id), "")
+            f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return profile_path_str
+
+    async def bg_mark_used(self, cid: int, mid: int, invoice_id: int) -> None:
+        """Помечает использованной и архивирует Chrome-профиль."""
+        profile_path_str = self.mark_used(invoice_id)
+        arch_ok = False
+        profile_name = ""
+        if profile_path_str:
+            profile_path = Path(profile_path_str)
+            profile_name = profile_path.name
+            if profile_path.exists():
+                try:
+                    archive_fn = self._m("_archive_profile")
+                    loop = asyncio.get_running_loop()
+                    arch_ok = await loop.run_in_executor(
+                        None, lambda: archive_fn(profile_path))
+                except Exception as exc:
+                    logger.debug(f"GGSell: archive profile: {exc}")
+
+        msg = f"🟡 *Ссылка отмечена как использованная*\n\nЗаказ: `#{invoice_id}`"
+        if profile_name:
+            status = "✅ заархивирован" if arch_ok else "⚠️ не найден / уже удалён"
+            msg += f"\n📁 Профиль `{profile_name}`: {status}"
+
+        await self._edit(cid, mid, msg, {"inline_keyboard": [
+            [{"text": "🟡 Архив", "callback_data": "ggsell:used"},
+             {"text": "◀️ Заказ", "callback_data": f"ggsell:order:{invoice_id}"}],
+        ]})
+
+    def used_text(self) -> str:
+        """Текст страницы архива использованных ссылок."""
+        try:
+            raw  = json.loads((_DATA_DIR / "ggsel_done.json").read_text(encoding="utf-8"))
+            used  = raw.get("used", {})
+            links = raw.get("links", {})
+        except Exception:
+            used = {}; links = {}
+
+        if not used:
+            return "🟡 *Архив использованных*\n\n_Пусто_"
+
+        lines = [
+            "🟡 *Архив использованных ссылок*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"Всего использовано: *{len(used)}*", "",
+        ]
+        for inv_id, dt_str in sorted(used.items(), key=lambda x: -int(x[0]))[:15]:
+            lnk   = links.get(str(inv_id), "")
+            short = (lnk[8:38] + "…" if len(lnk[8:]) > 30 else lnk[8:]) if lnk else "—"
+            cached    = self.orders.get(int(inv_id), {})
+            order_obj = cached.get("order", {}) if isinstance(cached, dict) else {}
+            email     = (cached.get("buyer_email") if isinstance(cached, dict) else "") or ""
+            if not email and order_obj:
+                email = self.parse_order(order_obj).get("email", "")
+            who = (email[:28] + "…" if len(email) > 28 else email) if email else f"#{inv_id}"
+            lines.append(f"🟡 *{who}* · _{dt_str}_")
+            if short != "—":
+                lines.append(f"   `{short}`")
+        if len(used) > 15:
+            lines.append(f"\n_...ещё {len(used) - 15}_")
+        return "\n".join(lines)
+
+    def used_kb(self) -> dict:
+        return {"inline_keyboard": [[
+            {"text": "🔄 Обновить", "callback_data": "ggsell:used"},
+            {"text": "◀️ Пул",      "callback_data": "ggsell:pool"},
+        ]]}
 
     def _mark_profile_issued(self, link: str) -> None:
         """По ссылке находит Chrome-профиль в profile_map и ставит issued_ts."""
@@ -367,7 +476,12 @@ class GGSellBotHandler:
                 lines.append(f"  • _{n_s}_: `{v_s}`{p_s}")
         # Статус
         lines.append("")
-        if invoice_id in done:
+        used_ids = self.get_used()
+        if invoice_id in used_ids:
+            lines.append(f"🟡 *Использована* · _{done.get(invoice_id, '')}_ ✅")
+            if sent_link:
+                lines.append(f"🔗 `{sent_link}`")
+        elif invoice_id in done:
             lines.append(f"🔵 *Выдано* · _{done[invoice_id]}_")
             if sent_link:
                 lines.append(f"🔗 `{sent_link}`")
@@ -380,6 +494,7 @@ class GGSellBotHandler:
 
     def order_kb(self, invoice_id: int) -> dict:
         done        = self.get_done()
+        used_ids    = self.get_used()
         confirm_lnk = self.confirm.get(invoice_id)
         rows = []
         if confirm_lnk:
@@ -394,6 +509,8 @@ class GGSellBotHandler:
                 {"text": "📦 Из пула",         "callback_data": f"ggsell:pool_for:{invoice_id}"},
                 {"text": "✅ Отметить выдано",  "callback_data": f"ggsell:mark_done:{invoice_id}"},
             ])
+        elif invoice_id not in used_ids:
+            rows.append([{"text": "🟡 Использована", "callback_data": f"ggsell:mark_used:{invoice_id}"}])
         rows.append([
             {"text": "💬 Чат",      "callback_data": f"ggsell:chat:{invoice_id}"},
             {"text": "🔄 Обновить", "callback_data": f"ggsell:order:{invoice_id}"},
@@ -1173,6 +1290,151 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
+    # ── Отзывы ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def parse_review(r: dict) -> dict:
+        """Нормализует сырой dict отзыва в единый формат."""
+        invoice_id = int(r.get("invoice_id") or r.get("id_i") or r.get("order_id") or 0)
+        rating     = int(r.get("rating") or r.get("score") or r.get("stars") or 0)
+        text       = str(r.get("text") or r.get("comment") or r.get("review") or r.get("body") or "").strip()
+        date       = str(r.get("date") or r.get("created_at") or r.get("date_add") or "").replace("T", " ")[:16]
+        email      = str(r.get("email") or r.get("buyer_email") or
+                         (r.get("buyer") or {}).get("email") or "").strip()
+        rid        = str(r.get("id") or r.get("review_id") or r.get("feedback_id") or "")
+        return {"invoice_id": invoice_id, "rating": rating, "text": text,
+                "date": date, "email": email, "id": rid}
+
+    @staticmethod
+    def _stars(rating: int) -> str:
+        if not rating:
+            return ""
+        return "⭐" * max(1, min(5, rating)) + f" {rating}/5"
+
+    async def notify_review(self, item: dict) -> None:
+        invoice_id = item.get("invoice_id")
+        r          = self.parse_review(item.get("review", {}))
+        stars      = self._stars(r["rating"])
+        lines = [
+            "⭐ *Новый отзыв от покупателя*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+        if invoice_id:
+            lines.append(f"*Заказ:* `#{invoice_id}`")
+        if r["email"]:
+            lines.append(f"👤 `{r['email']}`")
+        if r["date"]:
+            lines.append(f"📅 {r['date']}")
+        if stars:
+            lines.append(f"\n{stars}")
+        if r["text"]:
+            lines.append(f"\n_{r['text'][:400]}_")
+        text = "\n".join(lines)
+        kb_rows = []
+        if invoice_id:
+            kb_rows.append([{"text": f"📋 Заказ #{invoice_id}",
+                              "callback_data": f"ggsell:order:{invoice_id}"}])
+        kb_rows.append([{"text": "⭐ Все отзывы", "callback_data": "ggsell:reviews"}])
+        kb = {"inline_keyboard": kb_rows}
+        for _cid in list(self.subs):
+            if not self._get(_cid, "ggsel_notify_reviews"):
+                continue
+            try:
+                await self._http.post(f"{self._api}/sendMessage",
+                                      json={"chat_id": _cid, "text": text,
+                                            "parse_mode": "Markdown", "reply_markup": kb})
+            except Exception:
+                pass
+
+    async def bg_reviews_page(self, cid: int, mid: int) -> None:
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            return
+        try:
+            reviews_raw = await cli.get_reviews(limit=50)
+        except Exception as exc:
+            await self._edit(cid, mid, f"❌ Ошибка загрузки отзывов: {exc}",
+                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            return
+
+        reviews = [self.parse_review(r) for r in reviews_raw]
+        # Сортировка: новые сверху (по дате или invoice_id)
+        reviews.sort(key=lambda r: (r["date"] or "", r["invoice_id"]), reverse=True)
+
+        total  = len(reviews)
+        avg    = sum(r["rating"] for r in reviews if r["rating"]) / max(1, sum(1 for r in reviews if r["rating"]))
+        avg_s  = f"{avg:.1f}" if any(r["rating"] for r in reviews) else "—"
+
+        lines = [
+            "⭐ *GGSell — Отзывы покупателей*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"_Всего: {total}  │  Средняя оценка: {avg_s}_", "",
+        ]
+        for r in reviews[:15]:
+            stars = self._stars(r["rating"])
+            inv_s = f"  │  `#{r['invoice_id']}`" if r["invoice_id"] else ""
+            date_s = f"  │  _{r['date']}_" if r["date"] else ""
+            lines.append(f"{stars}{inv_s}{date_s}" if stars else f"`#{r['invoice_id']}`{date_s}")
+            if r["email"]:
+                lines.append(f"👤 `{r['email']}`")
+            if r["text"]:
+                preview = r["text"][:120] + "…" if len(r["text"]) > 120 else r["text"]
+                lines.append(f"_{preview}_")
+            lines.append("")
+
+        if not reviews:
+            lines.append("_Отзывов пока нет_")
+
+        kb = {"inline_keyboard": [
+            [{"text": "🔄 Обновить", "callback_data": "ggsell:reviews"},
+             {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
+        ]}
+        await self._edit(cid, mid, "\n".join(lines), kb)
+
+    async def bg_order_review(self, cid: int, mid: int, invoice_id: int) -> None:
+        """Показать отзыв на конкретный заказ."""
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "◀️ Заказ",
+                                        "callback_data": f"ggsell:order:{invoice_id}"}]]})
+            return
+        try:
+            raw = await cli.get_order_review(invoice_id)
+        except Exception as exc:
+            await self._edit(cid, mid, f"❌ Ошибка: {exc}",
+                {"inline_keyboard": [[{"text": "◀️ Заказ",
+                                        "callback_data": f"ggsell:order:{invoice_id}"}]]})
+            return
+
+        if not raw:
+            await self._edit(cid, mid,
+                f"⭐ *Отзыв на заказ #{invoice_id}*\n\n_Отзыв не найден._",
+                {"inline_keyboard": [[{"text": "◀️ Заказ",
+                                        "callback_data": f"ggsell:order:{invoice_id}"}]]})
+            return
+
+        r = self.parse_review(raw)
+        lines = [
+            f"⭐ *Отзыв на заказ* `#{invoice_id}`",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+        ]
+        if r["rating"]:
+            lines.append(self._stars(r["rating"]))
+        if r["email"]:
+            lines.append(f"👤 `{r['email']}`")
+        if r["date"]:
+            lines.append(f"📅 {r['date']}")
+        if r["text"]:
+            lines.append(f"\n_{r['text']}_")
+        kb = {"inline_keyboard": [[
+            {"text": "◀️ Заказ", "callback_data": f"ggsell:order:{invoice_id}"},
+            {"text": "⭐ Все отзывы", "callback_data": "ggsell:reviews"},
+        ]]}
+        await self._edit(cid, mid, "\n".join(lines), kb)
+
     # ── Webhook handler ───────────────────────────────────────────────────────
 
     def make_webhook_handler(self, webhook_queue: asyncio.Queue, aio_web):
@@ -1510,6 +1772,17 @@ class GGSellBotHandler:
             await self._ack(qid, f"🔄 Шаблон «{label}» сброшен")
             txt, kb = self.bg_template_view_sync(name)
             await self._edit(cid, mid, txt, kb)
+            return
+
+        if data.startswith("ggsell:mark_used:"):
+            invoice_id = int(data.split(":")[2])
+            await self._ack(qid, "⏳ Архивирую...")
+            asyncio.create_task(self.bg_mark_used(cid, mid, invoice_id))
+            return
+
+        if data == "ggsell:used":
+            await self._ack(qid)
+            await self._edit(cid, mid, self.used_text(), self.used_kb())
             return
 
         await self._ack(qid)

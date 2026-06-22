@@ -2154,26 +2154,6 @@ def screen_profiles():
             if action in ("0", ""):
                 break
 
-            # Проверка залогиненности перед действиями (кроме пометок, удаления, восстановления).
-            # Для ВЫДАННЫХ профилей — НЕ удаляем при истёкшей сессии:
-            # клиент мог уже активировать, а куки истечь. Пусть пользователь сам решит.
-            if action not in ("2", "В", "3", "И", "9", "К", "П", "7"):
-                print(f"  {DIM}Проверяю сессию профиля +91 {selected['username']}...{RST}")
-                import shutil as _sh_lck
-                _logged_in = asyncio.run(_flipkart_is_logged_in(selected["path"]))
-                if not _logged_in:
-                    if selected.get("issued_ts"):
-                        print(f"  {Y}⚠ Сессия истекла (профиль выдан — возможно уже активирован).{RST}")
-                        print(f"  {DIM}Используй «П» для проверки активации или «3/И» для архива.{RST}")
-                    else:
-                        print(f"  {R}Профиль +91 {selected['username']} не залогинен — удаляю.{RST}")
-                        try:
-                            _sh_lck.rmtree(selected["path"], ignore_errors=True)
-                        except Exception:
-                            pass
-                        time.sleep(2)
-                        break
-
             if action in ("П", "7"):
                 _uname  = selected["username"]
                 _ppath  = selected["path"]
@@ -2691,8 +2671,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         # Повторяем grant ПОСЛЕ навигации — в persistent context важен порядок
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         await page.wait_for_timeout(2_000)
-        if "login" in page.url.lower():
-            return False, "Не выполнен вход в аккаунт — войдите через пункт 1"
 
         # Buy Now создаёт реальную сессию чекаута (прямой URL формы не работает)
         err = await _click_buy_now(page, _BLACK_URLS[3])
@@ -3144,10 +3122,6 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
             await page.wait_for_load_state("networkidle", timeout=5_000)
         except Exception:
             pass
-
-    # Не залогинен — Flipkart редиректит на /account/login
-    if "login" in page.url.lower():
-        return "Не выполнен вход в аккаунт — войдите через пункт 1"
 
     # Если Flipkart уже отредиректил на checkout/payments — Buy Now не нужен
     if any(s in page.url for s in _SUCCESS_PARTS):
@@ -4207,6 +4181,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                                 lambda u: "flipkart.com" in u, timeout=60_000
                             )
                             print(f"  {G}✅ OTP подтверждён автоматически — вернулись на Flipkart{RST}")
+                            _tg_send_direct(f"✅ *OTP* `{_3ds_otp}` *введён успешно* — возврат на Flipkart")
                             _otp_required = False
                         except Exception:
                             print(f"  {Y}⚠ Навигация после OTP не завершилась — жду вручную{RST}")
@@ -4639,6 +4614,7 @@ async def _handle_3ds_verification(page) -> bool:
             while asyncio.get_event_loop().time() < _otp_tgt:
                 if "flipkart.com" in page.url:
                     print(f"  {G}✅ 3DS подтверждён — Flipkart{RST}")
+                    _tg_send_direct("✅ *3DS подтверждён* — возврат на Flipkart")
                     _otp_submitted = True
                     break
                 # Читаем OTP из файла (bot.py пишет туда входящие коды)
@@ -4648,6 +4624,7 @@ async def _handle_3ds_verification(page) -> bool:
                         _nc = _codes.pop(0)
                         _OTP_FILE_3D.write_text(_json3d.dumps(_codes, ensure_ascii=False), encoding="utf-8")
                         print(f"  {G}✅ OTP из Telegram: {_nc} — ввожу...{RST}")
+                        _tg_send_direct(f"🔑 *OTP* `{_nc}` *— ввожу в форму...*")
                         for _frl in [page] + list(page.frames):
                             try:
                                 _il = _frl.locator(
@@ -4757,6 +4734,7 @@ async def _get_3ds_otp_from_telegram() -> str | None:
                 # Обновляем файл (убираем использованный код)
                 _OTP_FILE.write_text(_json.dumps(codes, ensure_ascii=False), encoding="utf-8")
                 print(f"  3DS OTP получен: {code}")
+                _tg_send_direct(f"🔑 *OTP получен:* `{code}` — ввожу на странице...")
                 return code
         except Exception:
             pass

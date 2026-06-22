@@ -292,3 +292,32 @@ class GGSellClient:
         except GGSellError as exc:
             logger.error(f"GGSell: ошибка отправки сообщения в #{order_id}: {exc}")
             return False
+
+    # ── Reviews ──────────────────────────────────────────────────────────────
+
+    async def get_reviews(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Список отзывов покупателей. Эндпоинт: GET /api_sellers/api/reviews"""
+        data = await self._get("/reviews", {"locale": "ru", "limit": limit})
+        logger.debug(f"GGSell reviews raw type={type(data).__name__}: "
+                     f"{list(data.keys()) if isinstance(data, dict) else data[:1] if isinstance(data, list) and data else data}")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for field in ("content", "items", "data", "reviews", "feedbacks"):
+                v = data.get(field)
+                if isinstance(v, list):
+                    return v
+        return []
+
+    async def get_order_review(self, invoice_id: int) -> Optional[Dict[str, Any]]:
+        """Отзыв на конкретный заказ; None если отзыва нет.
+        Ищет в общем списке отзывов, фильтруя по invoice_id."""
+        try:
+            reviews = await self.get_reviews(limit=200)
+            for r in reviews:
+                rid = int(r.get("invoice_id") or r.get("id_i") or r.get("order_id") or 0)
+                if rid == invoice_id:
+                    return r
+        except Exception as exc:
+            logger.debug(f"GGSell get_order_review #{invoice_id}: {exc}")
+        return None

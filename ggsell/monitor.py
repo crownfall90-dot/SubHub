@@ -21,12 +21,14 @@ from loguru import logger
 from .client import GGSellClient, GGSellError
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
-_ORDERS_FILE    = _DATA / "ggsel_orders.json"
-_SEEN_MSGS_FILE = _DATA / "ggsel_seen_msgs.json"
-_TEMPLATES_FILE = _DATA / "ggsel_templates.json"
+_ORDERS_FILE      = _DATA / "ggsel_orders.json"
+_SEEN_MSGS_FILE   = _DATA / "ggsel_seen_msgs.json"
+_TEMPLATES_FILE   = _DATA / "ggsel_templates.json"
+_SEEN_REVIEWS_FILE = _DATA / "ggsel_seen_reviews.json"
 
-POLL_INTERVAL     = 60.0  # секунды между проверкой заказов
-MSG_POLL_INTERVAL = 15.0  # секунды между проверкой сообщений
+POLL_INTERVAL        = 60.0  # секунды между проверкой заказов
+MSG_POLL_INTERVAL    = 15.0  # секунды между проверкой сообщений
+REVIEW_POLL_INTERVAL = 120.0 # секунды между проверкой отзывов
 
 # Обрабатываем только заказы YouTube Premium
 YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
@@ -122,6 +124,23 @@ def _save_processed(ids: Set[int]) -> None:
     )
 
 
+def _load_seen_reviews() -> Set[str]:
+    """Загрузить множество виденных review-ключей (invoice_id:review_id)."""
+    try:
+        raw = json.loads(_SEEN_REVIEWS_FILE.read_text(encoding="utf-8"))
+        return set(raw.get("seen", []))
+    except Exception:
+        return set()
+
+
+def _save_seen_reviews(seen: Set[str]) -> None:
+    _DATA.mkdir(parents=True, exist_ok=True)
+    _SEEN_REVIEWS_FILE.write_text(
+        json.dumps({"seen": sorted(seen)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 # ── Пул ссылок (если накоплены заранее) ──────────────────────────────────────
 
 _LINKS_FILE = _DATA / "ggsel_links.json"
@@ -195,7 +214,8 @@ class GGSellMonitor:
         self.poll_interval = poll_interval
         self.manual_confirm = manual_confirm
         self._running = False
-        self._seen_msgs: dict = {}
+        self._seen_msgs: dict    = {}
+        self._seen_reviews: set  = set()
 
     def stop(self) -> None:
         self._running = False
@@ -203,27 +223,35 @@ class GGSellMonitor:
     async def run(self) -> None:
         self._running = True
         processed = _load_processed()
-        self._seen_msgs = _load_seen_msgs()
-        _msgs_initialized = False
-        _last_order_check = 0.0  # время последней проверки заказов
+        self._seen_msgs    = _load_seen_msgs()
+        self._seen_reviews = _load_seen_reviews()
+        _msgs_initialized    = False
+        _reviews_initialized = False
+        _last_order_check  = 0.0
+        _last_review_check = 0.0
 
         logger.info(
             f"GGSell монитор запущен "
             f"(заказы={self.poll_interval:.0f}с, сообщения={MSG_POLL_INTERVAL:.0f}с, "
+            f"отзывы={REVIEW_POLL_INTERVAL:.0f}с, "
             f"обработано={len(processed)} заказов)"
         )
 
         while self._running:
             now = time.monotonic()
             try:
-                # Заказы — раз в poll_interval
                 if now - _last_order_check >= self.poll_interval:
                     await self._tick(processed)
                     _last_order_check = time.monotonic()
 
-                # Сообщения — каждый тик (MSG_POLL_INTERVAL)
                 await self._check_new_messages(_msgs_initialized)
                 _msgs_initialized = True
+
+                if now - _last_review_check >= REVIEW_POLL_INTERVAL:
+                    await self._check_new_reviews(_reviews_initialized)
+                    _reviews_initialized = True
+                    _last_review_check = time.monotonic()
+
             except GGSellError as exc:
                 logger.warning(f"GGSell API: {exc}")
             except asyncio.CancelledError:
@@ -320,6 +348,59 @@ class GGSellMonitor:
 
         if changed:
             _save_seen_msgs(seen)
+
+    async def _check_new_reviews(self, initialized: bool) -> None:
+        """Проверить новые отзывы покупателей."""
+        try:
+            reviews = await self.client.get_reviews(limit=50)
+        except Exception as exc:
+            logger.debug(f"GGSell reviews poll: {exc}")
+            return
+
+        if not reviews:
+            return
+
+        if not initialized:
+            # Первый запуск — логируем структуру и запоминаем, не уведомляем
+            if reviews:
+                logger.debug(f"GGSell review[0] keys: {list(reviews[0].keys())}")
+                logger.debug(f"GGSell review[0] sample: {reviews[0]}")
+            for r in reviews:
+                key = self._review_key(r)
+                if key:
+                    self._seen_reviews.add(key)
+            _save_seen_reviews(self._seen_reviews)
+            return
+
+        changed = False
+        for r in reviews:
+            key = self._review_key(r)
+            if not key or key in self._seen_reviews:
+                continue
+            self._seen_reviews.add(key)
+            changed = True
+            invoice_id = int(r.get("invoice_id") or r.get("id_i") or r.get("order_id") or 0)
+            logger.info(f"GGSell: новый отзыв #{invoice_id if invoice_id else '?'}")
+            notify_queue.put({
+                "type":       "new_review",
+                "invoice_id": invoice_id,
+                "review":     r,
+            })
+
+        if changed:
+            _save_seen_reviews(self._seen_reviews)
+
+    @staticmethod
+    def _review_key(r: dict) -> str:
+        """Уникальный ключ отзыва для дедупликации."""
+        rid = (r.get("id") or r.get("review_id") or r.get("feedback_id") or "")
+        iid = (r.get("invoice_id") or r.get("id_i") or r.get("order_id") or "")
+        if rid:
+            return f"{iid}:{rid}"
+        # Нет ID — используем хэш текста + дата
+        text = str(r.get("text") or r.get("comment") or r.get("review") or "")
+        date = str(r.get("date") or r.get("created_at") or r.get("date_add") or "")
+        return f"{iid}:{text[:40]}:{date}" if (text or date) else ""
 
     async def _tick(self, processed: Set[int]) -> None:
         orders = await self.client.get_last_orders()
