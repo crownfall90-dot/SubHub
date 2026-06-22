@@ -4609,28 +4609,111 @@ async def _handle_3ds_verification(page) -> bool:
                     except Exception:
                         pass
         else:
-            # Авто-получение не настроено — ждём ручного ввода
+            # Код из Telegram не пришёл — ждём код или ручного ввода (до 15 мин)
             print()
             print(f"  {Y}══════════════════════════════════════════════════{RST}")
             print(f"  {Y}  3DS OTP: введи код в браузере и нажми SUBMIT.  {RST}")
             print(f"  {Y}══════════════════════════════════════════════════{RST}")
             print()
+            _otp_tgt = asyncio.get_event_loop().time() + 900  # 15 мин
+            _otp_tok = _get_telegram_token()
+            _otp_uid = 0
+            import re as _re3d
+            import httpx as _hx3d
+            if _otp_tok:
+                try:
+                    async with _hx3d.AsyncClient(timeout=8, trust_env=False) as _cl:
+                        _rv = await _cl.get(
+                            f"https://api.telegram.org/bot{_otp_tok}/getUpdates",
+                            params={"limit": 1, "offset": -1})
+                        _rvr = _rv.json().get("result", [])
+                        if _rvr:
+                            _otp_uid = _rvr[-1]["update_id"]
+                except Exception:
+                    pass
+            _otp_submitted = False
+            while asyncio.get_event_loop().time() < _otp_tgt:
+                if "flipkart.com" in page.url:
+                    print(f"  {G}✅ 3DS подтверждён — Flipkart{RST}")
+                    _otp_submitted = True
+                    break
+                if _otp_tok:
+                    try:
+                        async with _hx3d.AsyncClient(timeout=8, trust_env=False) as _cl:
+                            _rv = await _cl.get(
+                                f"https://api.telegram.org/bot{_otp_tok}/getUpdates",
+                                params={"offset": _otp_uid + 1, "timeout": 5, "limit": 10})
+                            for _pu in _rv.json().get("result", []):
+                                _otp_uid = _pu["update_id"]
+                                _pm = _pu.get("message") or _pu.get("channel_post") or {}
+                                _pt = _pm.get("text", "") or _pm.get("caption", "")
+                                _pc = (_re3d.search(r"-\s*(\d{4,8})\s*$", _pt)
+                                       or _re3d.search(r"\b(\d{4,8})\b", _pt))
+                                if _pc:
+                                    _nc = _pc.group(1)
+                                    print(f"  {G}✅ OTP из Telegram: {_nc} — ввожу...{RST}")
+                                    for _frl in [page] + list(page.frames):
+                                        try:
+                                            _il = _frl.locator(
+                                                "input[name*='otp' i], input[name*='code' i], "
+                                                "input[placeholder*='otp' i], "
+                                                "input[maxlength='6'], input[maxlength='4'], "
+                                                "input[type='tel'], input[type='number'][maxlength]"
+                                            ).first
+                                            if await _il.count() > 0:
+                                                await _il.click()
+                                                await _il.fill(_nc)
+                                                await page.wait_for_timeout(300)
+                                                try:
+                                                    await _il.press("Enter")
+                                                except Exception:
+                                                    pass
+                                                await page.wait_for_timeout(400)
+                                                for _sl in [
+                                                    "a#btnSubmit", "a.gobtn",
+                                                    "button:has-text('SUBMIT')",
+                                                    "button:has-text('Submit')",
+                                                    "button[type='submit']",
+                                                    "input[type='submit']",
+                                                ]:
+                                                    try:
+                                                        _bl = _frl.locator(_sl).first
+                                                        if await _bl.count() > 0:
+                                                            _bbl = await _bl.bounding_box()
+                                                            if _bbl:
+                                                                await page.mouse.click(
+                                                                    _bbl["x"] + _bbl["width"] / 2,
+                                                                    _bbl["y"] + _bbl["height"] / 2)
+                                                            else:
+                                                                await _bl.click()
+                                                            print(f"  3DS: SUBMIT нажат")
+                                                            break
+                                                    except Exception:
+                                                        pass
+                                                _otp_submitted = True
+                                                break
+                                        except Exception:
+                                            pass
+                    except Exception:
+                        pass
+                if _otp_submitted:
+                    break
+                await asyncio.sleep(5)
     else:
         print(f"  {Y}⚠ Поле ввода OTP не найдено — действуй вручную.{RST}")
 
-    # Ждём редиректа на Flipkart до 60 сек, иначе переходим сами
-    import random as _r3d
-    _t3d = _r3d.randint(45, 60)
-    try:
-        await page.wait_for_url(lambda u: "flipkart.com" in u, timeout=_t3d * 1_000)
-        print(f"  3DS пройден, возврат на Flipkart.")
-    except Exception:
-        print(f"  3DS: ждал {_t3d} сек, редиректа нет — перехожу на flipkart-black-store...")
+    # Ждём возврата на Flipkart (до 60 сек), если ещё не там
+    if "flipkart.com" not in page.url:
         try:
-            await page.goto("https://www.flipkart.com/flipkart-black-store",
-                            wait_until="domcontentloaded", timeout=20_000)
+            await page.wait_for_url(lambda u: "flipkart.com" in u, timeout=60_000)
+            print(f"  3DS пройден, возврат на Flipkart.")
         except Exception:
-            pass
+            print(f"  3DS: редиректа нет — перехожу на flipkart-black-store...")
+            try:
+                await page.goto("https://www.flipkart.com/flipkart-black-store",
+                                wait_until="domcontentloaded", timeout=20_000)
+            except Exception:
+                pass
 
     return True
 
