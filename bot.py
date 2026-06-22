@@ -656,7 +656,7 @@ def _menu_tg_bot_thread() -> None:
             buyer_email = item.get("buyer_email") or "?"
             product     = order.get("product") or {}
             price_rub   = product.get("price_rub", "?")
-            date        = str(order.get("date") or "")[:10]
+            date        = str(order.get("date") or "").replace("T", " ")[:16]
             confirm_lnk = _ggsel_confirm.get(invoice_id)
             lines = [
                 f"📋 *Заказ GGSell #{invoice_id}*",
@@ -731,7 +731,7 @@ def _menu_tg_bot_thread() -> None:
                 lines += ["", "🛒 *Последние заказы YouTube Premium:*"]
                 for o in yt_orders[:5]:
                     inv  = o.get("invoice_id") or o.get("id") or "?"
-                    dt   = str(o.get("date") or "")[:10]
+                    dt   = str(o.get("date") or "").replace("T", " ")[:16]
                     pr   = (o.get("product") or {}).get("price_rub") or ""
                     pr_s = f" · {pr}₽" if pr else ""
                     tag  = " ⏳" if (str(inv).isdigit() and int(inv) in _ggsel_confirm) else ""
@@ -759,7 +759,7 @@ def _menu_tg_bot_thread() -> None:
             order       = item.get("order", {})
             product     = order.get("product") or {}
             price_rub   = product.get("price_rub", "?")
-            date        = str(order.get("date") or "")[:10]
+            date        = str(order.get("date") or "").replace("T", " ")[:16]
             _ggsel_orders[invoice_id] = item
 
             text = (
