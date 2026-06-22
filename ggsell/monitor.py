@@ -13,6 +13,7 @@ import asyncio
 import json
 import queue as _queue
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Optional, Set
 
@@ -146,6 +147,10 @@ def _save_seen_reviews(seen: Set[str]) -> None:
 _LINKS_FILE = _DATA / "ggsel_links.json"
 
 
+def _pool_entry_url(entry) -> str:
+    return entry["url"] if isinstance(entry, dict) else entry
+
+
 def _pop_link() -> Optional[str]:
     """Взять одну ссылку из пула и удалить её оттуда."""
     try:
@@ -153,12 +158,12 @@ def _pop_link() -> Optional[str]:
         links: list = raw.get("links", [])
         if not links:
             return None
-        link = links.pop(0)
+        entry = links.pop(0)
         _LINKS_FILE.write_text(
-            json.dumps({"links": links}, ensure_ascii=False, indent=2),
+            json.dumps(raw, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return link
+        return _pool_entry_url(entry)
     except Exception:
         return None
 
@@ -171,7 +176,10 @@ def add_link_to_pool(link: str, profile_path: str = "") -> None:
             raw = json.loads(_LINKS_FILE.read_text(encoding="utf-8"))
         except Exception:
             raw = {"links": []}
-        raw.setdefault("links", []).append(link)
+        entry: dict = {"url": link, "added_at": datetime.now().isoformat(timespec="seconds")}
+        if profile_path:
+            entry["profile_path"] = str(profile_path)
+        raw.setdefault("links", []).append(entry)
         if profile_path:
             raw.setdefault("profile_map", {})[link] = str(profile_path)
         _LINKS_FILE.write_text(

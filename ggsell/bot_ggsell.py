@@ -91,10 +91,40 @@ class GGSellBotHandler:
 
     # ── Пул ссылок ───────────────────────────────────────────────────────────
 
+    _STALE_HOURS = 2  # ссылка считается устаревшей через N часов
+
+    @staticmethod
+    def _parse_pool_entry(entry) -> dict:
+        if isinstance(entry, str):
+            return {"url": entry, "added_at": "", "profile_path": ""}
+        return {
+            "url":          entry.get("url", ""),
+            "added_at":     entry.get("added_at", ""),
+            "profile_path": entry.get("profile_path", ""),
+        }
+
     def read_pool(self) -> list:
+        """Список URL-строк (backward compat)."""
         try:
             f = _DATA_DIR / "ggsel_links.json"
-            return json.loads(f.read_text(encoding="utf-8")).get("links", [])
+            raw = json.loads(f.read_text(encoding="utf-8")).get("links", [])
+            return [self._parse_pool_entry(e)["url"] for e in raw]
+        except Exception:
+            return []
+
+    def read_pool_full(self) -> list:
+        """Список словарей {url, added_at, profile_path}."""
+        try:
+            f = _DATA_DIR / "ggsel_links.json"
+            raw_data = json.loads(f.read_text(encoding="utf-8"))
+            profile_map = raw_data.get("profile_map", {})
+            result = []
+            for e in raw_data.get("links", []):
+                entry = self._parse_pool_entry(e)
+                if not entry["profile_path"] and entry["url"] in profile_map:
+                    entry["profile_path"] = profile_map[entry["url"]]
+                result.append(entry)
+            return result
         except Exception:
             return []
 
@@ -102,19 +132,36 @@ class GGSellBotHandler:
         try:
             f = _DATA_DIR / "ggsel_links.json"
             raw = json.loads(f.read_text(encoding="utf-8"))
-            raw["links"] = [l for l in raw.get("links", []) if l != link]
+            raw["links"] = [e for e in raw.get("links", [])
+                            if self._parse_pool_entry(e)["url"] != link]
+            raw.get("profile_map", {}).pop(link, None)
             f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 
+    @staticmethod
+    def _pool_age(added_at: str):
+        """Возвращает (возраст в секундах, строка времени) или (-1, '')."""
+        if not added_at:
+            return -1, ""
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(added_at)
+            age = (datetime.now() - dt).total_seconds()
+            time_str = dt.strftime("%d %b %H:%M")
+            return age, time_str
+        except Exception:
+            return -1, ""
+
     def pool_text(self) -> str:
-        avail = self.read_pool()
-        done_links = self._done_links  # загружаем через get_done() ниже
-        self.get_done()  # убеждаемся что done_links загружены
+        avail = self.read_pool_full()
+        done_links = self._done_links
+        self.get_done()
 
         avail_cnt = len(avail)
         done_cnt  = len(done_links)
         used_cnt  = len(self.get_used())
+        stale_sec = self._STALE_HOURS * 3600
 
         lines = [
             "🔗 *Ссылки GGSell*",
@@ -125,9 +172,18 @@ class GGSellBotHandler:
 
         if avail:
             lines.append("*Невыданные ссылки:*")
-            for i, lnk in enumerate(avail[:10]):
-                short = lnk[8:55] + "…" if len(lnk[8:]) > 47 else lnk[8:]
-                lines.append(f"🟢 `{i + 1}. {short}`")
+            for i, entry in enumerate(avail[:10]):
+                lnk = entry["url"]
+                short = lnk[8:50] + "…" if len(lnk[8:]) > 42 else lnk[8:]
+                age, time_str = self._pool_age(entry["added_at"])
+                if age >= stale_sec:
+                    h, m = int(age // 3600), int((age % 3600) // 60)
+                    age_s = f"{h}ч {m}м" if m else f"{h}ч"
+                    lines.append(f"⚠️ `{i + 1}. {short}` _{time_str} · {age_s} — устарела_")
+                elif time_str:
+                    lines.append(f"🟢 `{i + 1}. {short}` _({time_str})_")
+                else:
+                    lines.append(f"🟢 `{i + 1}. {short}`")
             if avail_cnt > 10:
                 lines.append(f"_...ещё {avail_cnt - 10}_")
         else:
@@ -150,12 +206,23 @@ class GGSellBotHandler:
         return "\n".join(lines)
 
     def _pool_kb(self, avail: list) -> dict:
-        """Клавиатура страницы пула."""
+        """Клавиатура страницы пула. avail — список dict из read_pool_full()."""
+        stale_sec = self._STALE_HOURS * 3600
         link_btns = []
-        for idx, lnk in enumerate(avail[:8]):
-            preview = lnk[8:32] + "…" if len(lnk[8:]) > 24 else lnk[8:]
-            link_btns.append([{"text": f"🟢 №{idx + 1} · {preview} — Выдать",
-                                "callback_data": f"ggsell:pool_pick:{idx}"}])
+        for idx, entry in enumerate(avail[:8]):
+            lnk = entry["url"] if isinstance(entry, dict) else entry
+            pp  = entry.get("profile_path", "") if isinstance(entry, dict) else ""
+            added_at = entry.get("added_at", "") if isinstance(entry, dict) else ""
+            preview = lnk[8:28] + "…" if len(lnk[8:]) > 20 else lnk[8:]
+            age, time_str = self._pool_age(added_at)
+            t_label = f" · {time_str}" if time_str else ""
+            if age >= stale_sec and pp:
+                link_btns.append([{"text": f"⚠️ №{idx + 1} · {preview}{t_label} — Обновить",
+                                    "callback_data": f"ggsell:pool_refresh:{idx}"}])
+            else:
+                icon = "⚠️" if age >= stale_sec else "🟢"
+                link_btns.append([{"text": f"{icon} №{idx + 1} · {preview}{t_label} — Выдать",
+                                    "callback_data": f"ggsell:pool_pick:{idx}"}])
         return {"inline_keyboard": link_btns + [
             [{"text": "🟡 Архив использованных", "callback_data": "ggsell:used"}],
             [{"text": "🔄 Обновить", "callback_data": "ggsell:pool"},
@@ -1055,6 +1122,59 @@ class GGSellBotHandler:
             from ggsell.monitor import add_link_to_pool
             add_link_to_pool(link)
 
+    async def bg_refresh_link(self, cid: int, mid: int, link_idx: int) -> None:
+        """Обновить устаревшую ссылку в пуле: зайти в профиль Flipkart и взять новую."""
+        from pathlib import Path as _Path
+        pool = self.read_pool_full()
+        if link_idx >= len(pool):
+            await self._edit(cid, mid, "❌ Ссылка не найдена (пул изменился).",
+                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
+            return
+        entry = pool[link_idx]
+        old_url = entry["url"]
+        profile_path = entry.get("profile_path", "")
+        if not profile_path or not _Path(profile_path).exists():
+            await self._edit(cid, mid,
+                "❌ Профиль Flipkart не привязан к этой ссылке — обновите вручную.",
+                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
+            return
+
+        await self._edit(cid, mid, "⏳ Захожу в Flipkart и обновляю ссылку…",
+            {"inline_keyboard": []})
+
+        try:
+            pp = _Path(profile_path)
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: asyncio.run(
+                self._m("_check_black_store_activation")(pp, headless=True)))
+        except Exception as exc:
+            await self._edit(cid, mid, f"❌ Ошибка при обновлении ссылки: {exc}",
+                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
+            return
+
+        if not isinstance(result, dict):
+            await self._edit(cid, mid, "❌ Не удалось получить ссылку из профиля.",
+                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
+            return
+
+        new_url = result.get("short_link") or result.get("activation_url") or ""
+        if not new_url:
+            st = result.get("status", "?")
+            await self._edit(cid, mid,
+                f"❌ Статус профиля: *{st}* — свежая ссылка недоступна.",
+                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
+            return
+
+        self.remove_link(old_url)
+        from ggsell.monitor import add_link_to_pool
+        add_link_to_pool(new_url, profile_path=str(profile_path))
+
+        short_p = new_url[8:44] + "…" if len(new_url) > 52 else new_url
+        avail = self.read_pool_full()
+        await self._edit(cid, mid,
+            f"✅ *Ссылка обновлена!*\n\n🔗 `{short_p}`",
+            self._pool_kb(avail))
+
     async def bg_link_to_buyer_page(self, cid: int, mid: int, phone: str, link: str, offset: int = 0) -> None:
         """Показать список заказов для отправки ссылки покупателю (пагинация по 5)."""
         cli = self.get_client()
@@ -1843,7 +1963,7 @@ class GGSellBotHandler:
 
         if data == "ggsell:pool":
             await self._ack(qid)
-            avail = self.read_pool()
+            avail = self.read_pool_full()
             await self._edit(cid, mid, self.pool_text(), self._pool_kb(avail))
             return
 
@@ -1965,7 +2085,7 @@ class GGSellBotHandler:
             from ggsell.monitor import add_link_to_pool
             add_link_to_pool(link)
             await self._ack(qid, "📦 Добавлено в пул!")
-            avail = self.read_pool()
+            avail = self.read_pool_full()
             await self._edit(cid, mid, self.pool_text(), self._pool_kb(avail))
             return
 
@@ -1982,6 +2102,12 @@ class GGSellBotHandler:
                              {"inline_keyboard": [[{"text": "❌ Отмена",
                                                      "callback_data": "ggsell:pool"}]]})
             asyncio.create_task(self.bg_pool_pick(cid, mid, link))
+            return
+
+        if data.startswith("ggsell:pool_refresh:"):
+            idx = int(data.split(":")[2])
+            await self._ack(qid)
+            asyncio.create_task(self.bg_refresh_link(cid, mid, idx))
             return
 
         if data.startswith("ggsell:pool_order:"):
