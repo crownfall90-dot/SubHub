@@ -298,16 +298,60 @@ class GGSellClient:
     async def get_reviews(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Список отзывов покупателей. Эндпоинт: GET /api_sellers/api/reviews"""
         data = await self._get("/reviews", {"locale": "ru", "limit": limit})
-        logger.debug(f"GGSell reviews raw type={type(data).__name__}: "
-                     f"{list(data.keys()) if isinstance(data, dict) else data[:1] if isinstance(data, list) and data else data}")
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
-            for field in ("content", "items", "data", "reviews", "feedbacks"):
+            # API возвращает {retval, retdesc, totalPages, totalItems, totalGood, totalBad, reviews}
+            v = data.get("reviews")
+            if isinstance(v, list):
+                return v
+            for field in ("content", "items", "data", "feedbacks"):
                 v = data.get(field)
                 if isinstance(v, list):
                     return v
         return []
+
+    # ── Products / Prices ────────────────────────────────────────────────────
+
+    async def get_products(self) -> List[Dict[str, Any]]:
+        """Список товаров продавца с вариантами."""
+        data = await self._get("/products", {"locale": "ru"})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for field in ("content", "items", "data", "products"):
+                v = data.get(field)
+                if isinstance(v, list):
+                    return v
+        return []
+
+    async def get_product(self, product_id: int) -> Dict[str, Any]:
+        """Информация об одном товаре (варианты, цены)."""
+        data = await self._get(f"/product/{product_id}", {"locale": "ru"})
+        if isinstance(data, dict):
+            return data.get("content") or data
+        return {}
+
+    async def update_prices(self, entries: List[Dict[str, Any]]) -> bool:
+        """Обновить цены товаров/вариантов в bulk.
+
+        entries — список dict:
+            product_id: int
+            price:      float  (опционально — цена товара)
+            variants:   list of {variant_id, rate, type}
+                type: percentplus | percentminus | priceminus | priceplus
+        """
+        try:
+            data = await self._post("/product/edit/prices", json_body=entries)
+            logger.info(f"GGSell update_prices: {data}")
+            if isinstance(data, dict):
+                if "taskId" in data:  # async task — всегда успех
+                    return True
+                return data.get("retval", -1) == 0
+            return True
+        except Exception as exc:
+            logger.error(f"GGSell update_prices error: {exc}")
+            return False
 
     async def get_order_review(self, invoice_id: int) -> Optional[Dict[str, Any]]:
         """Отзыв на конкретный заказ; None если отзыва нет.

@@ -47,6 +47,7 @@ class GGSellBotHandler:
         http_client,
         tg_api_url: str,
         project_root: Path,
+        webhook_url: str = "",
     ):
         self.orders = orders
         self.confirm = confirm
@@ -58,17 +59,19 @@ class GGSellBotHandler:
         self._cli = cli_holder
         self.subs = subs
 
-        self._edit  = edit_fn
-        self._send  = send_fn
-        self._ack   = ack_fn
-        self._get   = get_fn
-        self._set   = set_fn
-        self._m     = m_fn
-        self._http  = http_client
-        self._api   = tg_api_url
-        self._root  = project_root
+        self._edit       = edit_fn
+        self._send       = send_fn
+        self._ack        = ack_fn
+        self._get        = get_fn
+        self._set        = set_fn
+        self._m          = m_fn
+        self._http       = http_client
+        self._api        = tg_api_url
+        self._root       = project_root
+        self.webhook_url = webhook_url.rstrip("/")
 
         self.template_edit_mode: dict = {}  # cid → template_name
+        self.price_edit_mode:    dict = {}  # cid → {product_id, variant_id, label}
 
     # ── GGSell client ────────────────────────────────────────────────────────
 
@@ -492,7 +495,7 @@ class GGSellBotHandler:
             lines.append("🟢 *Новый* — ожидает выполнения")
         return "\n".join(lines)
 
-    def order_kb(self, invoice_id: int) -> dict:
+    def order_kb(self, invoice_id: int, has_review: bool = False) -> dict:
         done        = self.get_done()
         used_ids    = self.get_used()
         confirm_lnk = self.confirm.get(invoice_id)
@@ -511,33 +514,49 @@ class GGSellBotHandler:
             ])
         elif invoice_id not in used_ids:
             rows.append([{"text": "🟡 Использована", "callback_data": f"ggsell:mark_used:{invoice_id}"}])
-        rows.append([
+        chat_row = [
             {"text": "💬 Чат",      "callback_data": f"ggsell:chat:{invoice_id}"},
             {"text": "🔄 Обновить", "callback_data": f"ggsell:order:{invoice_id}"},
-        ])
+        ]
+        if has_review:
+            chat_row.append({"text": "⭐ Отзыв", "callback_data": f"ggsell:review_order:{invoice_id}"})
+        rows.append(chat_row)
         rows.append([{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}])
         return {"inline_keyboard": rows}
 
     def settings_page(self, cid) -> tuple:
         ord_on = self._get(cid, "ggsel_notify_orders")
         msg_on = self._get(cid, "ggsel_notify_messages")
+        rev_on = self._get(cid, "ggsel_notify_reviews")
         lines = [
             "⚙️ *GGSell — Настройки*",
             "━━━━━━━━━━━━━━━━━━━━━━", "",
             "*🔔 Уведомления:*",
             f"  {'✅' if ord_on else '❌'} Заказы: {'включены' if ord_on else 'выключены'}",
             f"  {'✅' if msg_on else '❌'} Сообщения: {'включены' if msg_on else 'выключены'}",
+            f"  {'✅' if rev_on else '❌'} Отзывы: {'включены' if rev_on else 'выключены'}",
             "",
             "*📝 Шаблоны сообщений:*",
             "  Тексты, которые отправляются покупателю",
             "  при выдаче ссылки и при ожидании.",
         ]
+        if self.webhook_url:
+            wh_endpoint = f"{self.webhook_url}/ggsel/notify"
+            lines += [
+                "",
+                "*🌐 Вебхук (уведомления от GGSell):*",
+                f"  `{wh_endpoint}`",
+                "  _Вставь этот URL в настройки GGSell → Уведомления_",
+            ]
         kb = {"inline_keyboard": [
             [{"text": ("🔔 Заказы: Вкл"    if ord_on else "🔕 Заказы: Выкл"),
               "callback_data": "ggsell:toggle:orders"},
              {"text": ("🔔 Сообщения: Вкл" if msg_on else "🔕 Сообщения: Выкл"),
               "callback_data": "ggsell:toggle:messages"}],
-            [{"text": "📝 Шаблоны сообщений", "callback_data": "ggsell:templates"}],
+            [{"text": ("⭐ Отзывы: Вкл"    if rev_on else "⭐ Отзывы: Выкл"),
+              "callback_data": "ggsell:toggle:reviews"}],
+            [{"text": "📝 Шаблоны сообщений", "callback_data": "ggsell:templates"},
+             {"text": "💰 Цены",              "callback_data": "ggsell:prices"}],
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]}
         return "\n".join(lines), kb
@@ -713,9 +732,10 @@ class GGSellBotHandler:
             [{"text": "📋 Заказы",     "callback_data": "ggsell:orders"},
              {"text": "💬 Чаты",       "callback_data": "ggsell:chats"}],
             [{"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"},
-             {"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"}],
-            [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
-             {"text": "◀️ Назад",      "callback_data": "go:other"}],
+             {"text": "⭐ Отзывы",     "callback_data": "ggsell:reviews"}],
+            [{"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"},
+             {"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"}],
+            [{"text": "◀️ Назад",      "callback_data": "go:other"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
 
@@ -896,7 +916,25 @@ class GGSellBotHandler:
                     self.orders[invoice_id] = item
             except Exception:
                 pass
-        await self._edit(cid, mid, self.order_text(invoice_id), self.order_kb(invoice_id))
+        # Показываем заказ; если есть отзыв — добавляем блок
+        text = self.order_text(invoice_id)
+        if cli:
+            try:
+                review_raw = await cli.get_order_review(invoice_id)
+                if review_raw:
+                    r = self.parse_review(review_raw)
+                    rv_lines = ["", "━━━━━━━━━━━━━━━━━━━━━━", "⭐ *Отзыв покупателя*"]
+                    if r["rating"]:
+                        rv_lines.append(self._stars(r["rating"]))
+                    if r["text"]:
+                        rv_lines.append(f"_{r['text'][:300]}_")
+                    if r["date"]:
+                        rv_lines.append(f"📅 _{r['date']}_")
+                    text = text + "\n".join(rv_lines)
+            except Exception:
+                pass
+        kb = self.order_kb(invoice_id, has_review=bool(cli))
+        await self._edit(cid, mid, text, kb)
 
     async def bg_chat(self, cid, mid, invoice_id: int) -> None:
         cli = self.get_client()
@@ -1435,6 +1473,105 @@ class GGSellBotHandler:
         ]]}
         await self._edit(cid, mid, "\n".join(lines), kb)
 
+    # ── Управление ценами ─────────────────────────────────────────────────────
+
+    def check_price_edit_mode(self, cid: int, text: str):
+        """Если cid в режиме ввода цены — вернуть {product_id, variant_id, label} и выйти.
+        При /cancel очищает режим и возвращает None."""
+        if cid not in self.price_edit_mode:
+            return None
+        if text and text.strip().lower() in ("/cancel", "/отмена"):
+            self.price_edit_mode.pop(cid)
+            return None
+        if text and not text.startswith("/"):
+            return self.price_edit_mode.pop(cid)
+        return None
+
+    async def bg_prices_page(self, cid: int, mid: int) -> None:
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "ggsell:settings"}]]})
+            return
+
+        products = []
+        try:
+            products = await cli.get_products()
+        except Exception as exc:
+            logger.debug(f"GGSell get_products: {exc}")
+
+        lines = ["💰 *GGSell — Управление ценами*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+        kb_rows = []
+
+        if products:
+            # Логируем структуру для отладки
+            if products:
+                logger.debug(f"GGSell products[0] keys: {list(products[0].keys())}")
+                logger.debug(f"GGSell products[0]: {products[0]}")
+
+            for prod in products[:8]:
+                pid      = int(prod.get("id") or prod.get("product_id") or 0)
+                name     = str(prod.get("name") or prod.get("title") or f"Товар #{pid}")[:50]
+                price    = prod.get("price") or prod.get("price_t") or ""
+                price_s  = f"  │  💰 {price}₽" if price else ""
+                lines.append(f"*{name}*{price_s}")
+                variants = prod.get("variants") or prod.get("options") or []
+                if variants:
+                    for v in variants[:6]:
+                        vid   = int(v.get("id") or v.get("variant_id") or 0)
+                        vname = str(v.get("name") or v.get("title") or f"Вариант #{vid}")[:40]
+                        vpr   = v.get("price") or v.get("price_t") or v.get("rate") or ""
+                        vpr_s = f" — {vpr}₽" if vpr else ""
+                        lines.append(f"  • _{vname}{vpr_s}_")
+                        kb_rows.append([{"text": f"✏️ {name[:20]} · {vname[:20]}",
+                                         "callback_data": f"ggsell:price_edit:{pid}:{vid}"}])
+                else:
+                    kb_rows.append([{"text": f"✏️ {name[:30]} (цена товара)",
+                                     "callback_data": f"ggsell:price_edit:{pid}:0"}])
+                lines.append("")
+        else:
+            lines.append("_Не удалось загрузить список товаров._")
+            lines.append("_Попробуй изменить цену вручную:_")
+            lines.append(f"_Товар YouTube Premium: `#{YOUTUBE_PREMIUM_PRODUCT_ID}`_")
+            kb_rows.append([{"text": f"✏️ YouTube Premium (цена)",
+                             "callback_data": f"ggsell:price_edit:{YOUTUBE_PREMIUM_PRODUCT_ID}:0"}])
+
+        kb_rows.append([{"text": "🔄 Обновить", "callback_data": "ggsell:prices"},
+                        {"text": "◀️ Настройки", "callback_data": "ggsell:settings"}])
+        await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+    async def bg_price_save(self, cid: int, product_id: int, variant_id: int,
+                             label: str, raw_text: str) -> None:
+        raw_text = raw_text.strip().replace(",", ".").replace("₽", "").strip()
+        try:
+            new_price = float(raw_text)
+        except ValueError:
+            await self._send(cid,
+                f"❌ Не удалось распознать цену: `{raw_text}`\n_Введи число, например_ `499` _или_ `499.90`")
+            return
+
+        cli = self.get_client()
+        if not cli:
+            await self._send(cid, "❌ GGSell не настроен.")
+            return
+
+        if variant_id:
+            entry = {"product_id": product_id,
+                     "variants": [{"variant_id": variant_id, "rate": new_price, "type": "priceplus"}]}
+        else:
+            entry = {"product_id": product_id, "price": new_price}
+
+        ok = await cli.update_prices([entry])
+        if ok:
+            await self._send(cid,
+                f"✅ *Задача принята* — цена обновляется\n_{label}_\n💰 *{new_price:.2f}₽*",
+                kb={"inline_keyboard": [[{"text": "💰 Цены", "callback_data": "ggsell:prices"},
+                                          {"text": "◀️ Назад", "callback_data": "ggsell:settings"}]]})
+        else:
+            await self._send(cid,
+                f"❌ Ошибка обновления цены _{label}_. Проверь логи.",
+                kb={"inline_keyboard": [[{"text": "💰 Цены", "callback_data": "ggsell:prices"}]]})
+
     # ── Webhook handler ───────────────────────────────────────────────────────
 
     def make_webhook_handler(self, webhook_queue: asyncio.Queue, aio_web):
@@ -1571,6 +1708,42 @@ class GGSellBotHandler:
             await self._edit(cid, mid, txt, kb)
             return
 
+        if data == "ggsell:prices":
+            await self._ack(qid)
+            await self._edit(cid, mid, "⏳ Загружаю товары...",
+                             {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "ggsell:settings"}]]})
+            asyncio.create_task(self.bg_prices_page(cid, mid))
+            return
+
+        if data.startswith("ggsell:price_edit:"):
+            parts      = data.split(":")
+            product_id = int(parts[2])
+            variant_id = int(parts[3])
+            await self._ack(qid)
+            label = f"Товар #{product_id}" + (f" · вариант #{variant_id}" if variant_id else "")
+            self.price_edit_mode[cid] = {"product_id": product_id, "variant_id": variant_id, "label": label}
+            await self._send(cid,
+                f"💰 *Введи новую цену* для _{label}_\n\n"
+                f"_Введи число в рублях, например_ `499` _или_ `1290.50`\n"
+                f"_Отправь_ /cancel _чтобы отменить._")
+            return
+
+        if data == "ggsell:reviews":
+            await self._ack(qid)
+            await self._edit(cid, mid, "⏳ Загружаю отзывы...",
+                             {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+            asyncio.create_task(self.bg_reviews_page(cid, mid))
+            return
+
+        if data.startswith("ggsell:review_order:"):
+            invoice_id = int(data.split(":")[2])
+            await self._ack(qid)
+            await self._edit(cid, mid, f"⏳ Загружаю отзыв на `#{invoice_id}`...",
+                             {"inline_keyboard": [[{"text": "◀️ Заказ",
+                                                     "callback_data": f"ggsell:order:{invoice_id}"}]]})
+            asyncio.create_task(self.bg_order_review(cid, mid, invoice_id))
+            return
+
         if data == "ggsell:pool":
             await self._ack(qid)
             avail = self.read_pool()
@@ -1646,7 +1819,7 @@ class GGSellBotHandler:
             invoice_id = int(data.split(":")[2])
             self.mark_done(invoice_id)
             await self._ack(qid, "✅ Отмечено как выдано")
-            await self._edit(cid, mid, self.order_text(invoice_id), self.order_kb(invoice_id))
+            asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
             return
 
         if data.startswith("ggsell:pool_for:"):
@@ -1674,7 +1847,7 @@ class GGSellBotHandler:
 
         if data.startswith("ggsell:toggle:"):
             kind = data.split(":")[2]
-            if kind in ("orders", "messages"):
+            if kind in ("orders", "messages", "reviews"):
                 cfg_key = f"ggsel_notify_{kind}"
                 new_val = not self._get(cid, cfg_key)
                 self._set(cid, cfg_key, new_val)

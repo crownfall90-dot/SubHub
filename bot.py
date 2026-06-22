@@ -115,13 +115,34 @@ def _menu_tg_bot_thread() -> None:
         _tg_status = "error:pip install httpx"
         return
 
-    # Проверяем наличие GGSell-ключей
+    # Проверяем наличие GGSell-ключей и режим сервера
+    _server_mode   = False
+    _webhook_url   = ""
     try:
         _gs = (_m("_read_secrets")().get("ggsel") or {})
         if _gs.get("api_key", "").strip() and str(_gs.get("seller_id") or "").strip():
             _ggsel_status = "ok"
+        _webhook_url = str(_gs.get("webhook_url") or "").rstrip("/")
     except Exception:
         pass
+    try:
+        _tg_cfg = (_m("_read_secrets")().get("telegram") or {})
+        _server_mode = bool(_tg_cfg.get("server_mode", False))
+    except Exception:
+        pass
+
+    _HEARTBEAT_FILE = Path(__file__).resolve().parent / "data" / "console_heartbeat.json"
+
+    def _is_console_running() -> bool:
+        """True если консоль (menu.py/main.py) сейчас запущена."""
+        if _server_mode:
+            try:
+                import time as _t
+                raw = json.loads(_HEARTBEAT_FILE.read_text(encoding="utf-8"))
+                return _t.time() - float(raw.get("ts", 0)) < 120
+            except Exception:
+                return False
+        return True  # не server_mode → консоль локально = всегда доступна
 
     TG_SUBSCRIBERS_FILE = _m("TG_SUBSCRIBERS_FILE")
     TG_STATS_FILE       = _m("TG_STATS_FILE")
@@ -1468,6 +1489,13 @@ def _menu_tg_bot_thread() -> None:
             # Навигация: запуск ────────────────────────────────────────────────
             if data in ("go:launch", "show:actions", "go:run_ctrl"):
                 await _ack(qid)
+                if _server_mode and not _is_console_running():
+                    await _edit(cid, mid,
+                        "❌ *Консоль не запущена*\n\n"
+                        "_Бот работает в серверном режиме._\n"
+                        "_Для запуска автоматизации запустите_ `menu.py` _или_ `main.py` _локально._",
+                        {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:main"}]]})
+                    return
                 await _edit(cid, mid, _launch_text(), _launch_kb())
                 if _running():
                     _ctrl[0] = {"chat_id": cid, "msg_id": mid}
@@ -2237,6 +2265,14 @@ def _menu_tg_bot_thread() -> None:
                 asyncio.create_task(_ggsel_handler[0].bg_template_save(cid, _tpl_name, text))
                 return
 
+            # Режим ввода новой цены GGSell
+            _price_ctx = _ggsel_handler[0].check_price_edit_mode(cid, text) if _ggsel_handler[0] else None
+            if _price_ctx is not None:
+                asyncio.create_task(_ggsel_handler[0].bg_price_save(
+                    cid, _price_ctx["product_id"], _price_ctx["variant_id"],
+                    _price_ctx["label"], text))
+                return
+
             is_new = cid not in subs
             if is_new:
                 subs.add(cid)
@@ -2340,6 +2376,7 @@ def _menu_tg_bot_thread() -> None:
                 http_client=client,
                 tg_api_url=api,
                 project_root=Path(__file__).parent,
+                webhook_url=_webhook_url,
             )
 
             # ── GGSell webhook сервер ─────────────────────────────────────────
@@ -2424,6 +2461,8 @@ def _menu_tg_bot_thread() -> None:
                                     asyncio.create_task(_ggsel_handler[0].notify_order(_gs_item))
                                 elif _gs_item.get("type") == "new_message":
                                     asyncio.create_task(_ggsel_handler[0].notify_message(_gs_item))
+                                elif _gs_item.get("type") == "new_review":
+                                    asyncio.create_task(_ggsel_handler[0].notify_review(_gs_item))
                             except Exception:
                                 break
                     except Exception:

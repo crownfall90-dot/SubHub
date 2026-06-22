@@ -272,6 +272,27 @@ CARDS_FILE          = _DATA / "cards.json"
 
 MSK = timezone(timedelta(hours=3))
 
+# ── Heartbeat для серверного режима ───────────────────────────────────────────
+# Пишет файл data/console_heartbeat.json каждые 30 сек, пока этот процесс жив.
+# bot.py на сервере читает его чтобы понять — запущена ли консоль локально.
+def _start_heartbeat():
+    import threading as _th, time as _ti, json as _js
+    _hb_file = _DATA / "console_heartbeat.json"
+
+    def _beat():
+        while True:
+            try:
+                _hb_file.write_text(_js.dumps({"ts": _ti.time(), "pid": os.getpid()}),
+                                    encoding="utf-8")
+            except Exception:
+                pass
+            _ti.sleep(30)
+
+    t = _th.Thread(target=_beat, daemon=True, name="console-heartbeat")
+    t.start()
+
+_start_heartbeat()
+
 # ── Git executable (Windows PATH может не включать git) ───────────────────────
 def _find_git() -> str:
     found = shutil.which("git")

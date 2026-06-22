@@ -244,12 +244,16 @@ class GGSellMonitor:
                     await self._tick(processed)
                     _last_order_check = time.monotonic()
 
-                await self._check_new_messages(_msgs_initialized)
-                _msgs_initialized = True
+                try:
+                    await self._check_new_messages(_msgs_initialized)
+                finally:
+                    _msgs_initialized = True
 
                 if now - _last_review_check >= REVIEW_POLL_INTERVAL:
-                    await self._check_new_reviews(_reviews_initialized)
-                    _reviews_initialized = True
+                    try:
+                        await self._check_new_reviews(_reviews_initialized)
+                    finally:
+                        _reviews_initialized = True
                     _last_review_check = time.monotonic()
 
             except GGSellError as exc:
@@ -283,7 +287,7 @@ class GGSellMonitor:
             return
 
         if chats and not initialized:
-            logger.debug(f"GGSell chat[0] keys: {list(chats[0].keys())}")
+            logger.trace(f"GGSell chat[0] keys: {list(chats[0].keys())}")
 
         seen = self._seen_msgs
         changed = False
@@ -306,9 +310,6 @@ class GGSellMonitor:
                     seen[seen_key] = 0
                     changed = True
                 continue
-
-            if not initialized and messages:
-                logger.debug(f"GGSell msg[0] keys: {list(messages[0].keys())}")
 
             msg_ids = [int(m.get("id") or m.get("message_id") or 0) for m in messages]
             max_id  = max(msg_ids) if msg_ids else 0
@@ -363,8 +364,8 @@ class GGSellMonitor:
         if not initialized:
             # Первый запуск — логируем структуру и запоминаем, не уведомляем
             if reviews:
-                logger.debug(f"GGSell review[0] keys: {list(reviews[0].keys())}")
-                logger.debug(f"GGSell review[0] sample: {reviews[0]}")
+                logger.trace(f"GGSell review[0] keys: {list(reviews[0].keys())}")
+                logger.trace(f"GGSell review[0] sample: {reviews[0]}")
             for r in reviews:
                 key = self._review_key(r)
                 if key:
