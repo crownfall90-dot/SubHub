@@ -689,24 +689,60 @@ def _menu_tg_bot_thread() -> None:
                 lines.append(f"\n_...и ещё {len(links) - 10}_")
             return "\n".join(lines)
 
+        def _ggsel_parse_order(order: dict) -> dict:
+            """Извлечь поля заказа с множеством fallback-имён."""
+            product  = order.get("product") or {}
+            name     = (product.get("name") or product.get("product_name")
+                        or order.get("product_name") or order.get("name") or "YouTube Premium")
+            buyer    = order.get("buyer") or order.get("buyer_info") or {}
+            email    = (buyer.get("email") or order.get("email")
+                        or order.get("buyer_email") or "")
+            sum_buy  = (order.get("sum") or order.get("amount") or order.get("price")
+                        or order.get("price_rub") or product.get("price_rub") or "")
+            sum_sell = (order.get("sum_seller") or order.get("seller_sum")
+                        or order.get("profit") or order.get("payout") or "")
+            status   = order.get("status") or order.get("state") or ""
+            date     = str(order.get("date") or "").replace("T", " ")[:16]
+            # Обрезаем длинное название — оставляем первые два сегмента через |
+            name_short = name
+            parts = [p.strip() for p in str(name).split("|")]
+            if len(parts) >= 2:
+                name_short = f"{parts[0]} | {parts[1]}"
+            if len(name_short) > 60:
+                name_short = name_short[:57] + "…"
+            return {
+                "name": str(name),
+                "name_short": name_short,
+                "email": str(email),
+                "sum_buy": sum_buy,
+                "sum_sell": sum_sell,
+                "status": str(status),
+                "date": date,
+            }
+
         def _ggsel_order_text(invoice_id: int) -> str:
             item        = _ggsel_orders.get(invoice_id, {})
             order       = item.get("order", {})
-            buyer_email = item.get("buyer_email") or "?"
-            product     = order.get("product") or {}
-            price_rub   = product.get("price_rub", "?")
-            date        = str(order.get("date") or "").replace("T", " ")[:16]
+            p           = _ggsel_parse_order(order)
+            email       = item.get("buyer_email") or p["email"] or "?"
             confirm_lnk = _ggsel_confirm.get(invoice_id)
             lines = [
                 f"📋 *Заказ GGSell #{invoice_id}*",
                 "━━━━━━━━━━━━━━━━━━━━━━", "",
-                "🎵 YouTube Premium",
-                f"💵 {price_rub} ₽" if price_rub != "?" else "",
-                f"📅 {date}" if date else "",
-                f"📧 `{buyer_email}`",
+                f"📦 {p['name']}",
             ]
-            lines = [l for l in lines if l != ""]
-            lines += ["", f"📊 Статус: {_ggsel_order_status(invoice_id)}"]
+            if email and email != "?":
+                lines.append(f"👤 `{email}`")
+            if p["sum_buy"]:
+                buy_line = f"💰 Сумма: *{p['sum_buy']}₽*"
+                if p["sum_sell"]:
+                    buy_line += f"  ·  💼 Выплата: *{p['sum_sell']}₽*"
+                lines.append(buy_line)
+            if p["status"]:
+                lines.append(f"📍 Статус: `{p['status']}`")
+            if p["date"]:
+                lines.append(f"🕒 {p['date']}")
+            lines += ["", f"📊 {_ggsel_order_status(invoice_id)}"]
             if confirm_lnk:
                 lines += ["", f"🔗 *Ссылка готова:*\n`{confirm_lnk}`"]
             return "\n".join(lines)
@@ -845,40 +881,42 @@ def _menu_tg_bot_thread() -> None:
             done = _ggsel_get_done()
             lines = ["📋 *GGSell — Заказы*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
 
+            action_rows = []  # кнопки для заказов, требующих действия
+
             if yt_orders:
-                lines.append("*YouTube Premium — последние заказы:*")
                 for o in yt_orders[:10]:
                     inv   = o.get("invoice_id") or o.get("id") or "?"
-                    dt    = str(o.get("date") or "").replace("T", " ")[:16]
-                    pr    = (o.get("product") or {}).get("price_rub") or ""
-                    pr_s  = f" · {pr}₽" if pr else ""
                     inv_i = int(inv) if str(inv).isdigit() else 0
+                    p     = _ggsel_parse_order(o)
+
                     if inv_i in done:
-                        tag = " ✅"
+                        tag = "✅"
                     elif inv_i in _ggsel_confirm:
-                        tag = " ⏳"
+                        tag = "⏳"
                     else:
-                        tag = " 🆕"
-                    lines.append(f"▸ `#{inv}`{pr_s} · {dt}{tag}")
+                        tag = "🆕"
+
+                    sum_s = f" · {p['sum_buy']}₽" if p["sum_buy"] else ""
+                    sell_s = f" → {p['sum_sell']}₽" if p["sum_sell"] else ""
+                    lines.append(
+                        f"*{tag} #{inv}* · {p['date']}\n"
+                        f"    {p['name_short']}{sum_s}{sell_s}"
+                    )
+                    if p["email"]:
+                        lines.append(f"    👤 {p['email']}")
+
+                    # Кнопка только для не завершённых
+                    if inv_i not in done:
+                        if inv_i in _ggsel_confirm:
+                            action_rows.append([{"text": f"⏳ #{inv} — отправить ссылку",
+                                                  "callback_data": f"ggsell:order:{inv_i}"}])
+                        else:
+                            action_rows.append([{"text": f"▶️ #{inv} — выполнить",
+                                                  "callback_data": f"ggsell:order:{inv_i}"}])
             else:
                 lines.append("_Нет последних заказов YouTube Premium_")
 
-            # Кнопки для заказов, ждущих подтверждения
-            pending_rows = [
-                [{"text": f"⏳ #{inv_id} — отправить ссылку",
-                  "callback_data": f"ggsell:order:{inv_id}"}]
-                for inv_id in list(_ggsel_confirm)[:5]
-            ]
-            # Кнопки для новых заказов
-            new_order_rows = [
-                [{"text": f"🆕 #{o.get('invoice_id') or o.get('id')} — выполнить",
-                  "callback_data": f"ggsell:order:{o.get('invoice_id') or o.get('id')}"}]
-                for o in yt_orders[:5]
-                if (int(o.get("invoice_id") or o.get("id") or 0) not in done
-                    and int(o.get("invoice_id") or o.get("id") or 0) not in _ggsel_confirm)
-            ][:3]
-
-            kb_rows = pending_rows + new_order_rows + [
+            kb_rows = action_rows[:5] + [
                 [{"text": "🔄 Обновить",  "callback_data": "ggsell:orders"},
                  {"text": "◀️ Назад",     "callback_data": "go:ggsell"}],
             ]
@@ -945,18 +983,25 @@ def _menu_tg_bot_thread() -> None:
             """Отправить уведомление о новом заказе всем подписчикам."""
             invoice_id  = item.get("invoice_id")
             order       = item.get("order", {})
-            product     = order.get("product") or {}
-            price_rub   = product.get("price_rub", "?")
-            date        = str(order.get("date") or "").replace("T", " ")[:16]
             _ggsel_orders[invoice_id] = item
 
-            text = (
-                f"🛒 *Новый заказ GGSell* `#{invoice_id}`\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🎵 YouTube Premium · {price_rub} ₽\n"
-                f"📅 {date}\n\n"
-                "_Нажмите «Выполнить» чтобы запустить автоматизацию._"
-            )
+            p = _ggsel_parse_order(order)
+            email = item.get("buyer_email") or p["email"]
+
+            lines = [f"💸 *Новый заказ* `#{invoice_id}`", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+            lines.append(f"📦 {p['name']}")
+            if email:
+                lines.append(f"👤 `{email}`")
+            if p["sum_buy"]:
+                lines.append(f"💰 Сумма покупки: *{p['sum_buy']}₽*")
+            if p["sum_sell"]:
+                lines.append(f"💼 Твоя выплата: *{p['sum_sell']}₽*")
+            if p["status"]:
+                lines.append(f"📍 Статус: `{p['status']}`")
+            if p["date"]:
+                lines.append(f"🕒 {p['date']}")
+            lines += ["", "_Нажмите «Выполнить» чтобы запустить автоматизацию._"]
+            text = "\n".join(lines)
             kb = {"inline_keyboard": [
                 [{"text": f"📋 Детали #{invoice_id}",
                   "callback_data": f"ggsell:order:{invoice_id}"}],
