@@ -3974,7 +3974,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                                     _bb = await _inr_el.bounding_box()
                                     if _bb and _bb["width"] > 20 and _bb["height"] > 8:
                                         print(f"  Выбираю INR: клик «{_kw}» (attempt {attempt+1})")
-                                        await _inr_el.click()
+                                        await page.mouse.click(_bb["x"] + _bb["width"] / 2, _bb["y"] + _bb["height"] / 2)
                                         await page.wait_for_timeout(1_200)
                                         _inr_selected = True
                                         break
@@ -4016,7 +4016,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                             print(f"  Нажимаю Pay INR: {_t[:50]!r} (frame: {_fr.url[:40]})")
                             await _b.scroll_into_view_if_needed()
                             await page.wait_for_timeout(300)
-                            await _b.click()
+                            await page.mouse.click(_bb["x"] + _bb["width"] / 2, _bb["y"] + _bb["height"] / 2)
                             pay_clicked = True
                             await page.wait_for_timeout(2_000)
                             break
