@@ -723,10 +723,13 @@ def _menu_tg_bot_thread() -> None:
             buyer    = order.get("buyer") or order.get("buyer_info") or {}
             email    = (buyer.get("email") or order.get("email")
                         or order.get("buyer_email") or "")
-            sum_buy  = (order.get("sum") or order.get("amount") or order.get("price")
-                        or order.get("price_rub") or product.get("price_rub") or "")
+            # Сумма покупателя — НЕ product.price_rub (это цена товара, не итог заказа)
+            sum_buy  = (order.get("sum_t") or order.get("sum") or order.get("amount_t")
+                        or order.get("amount") or order.get("buyer_sum")
+                        or order.get("price_total") or order.get("total") or "")
             sum_sell = (order.get("sum_seller") or order.get("seller_sum")
-                        or order.get("profit") or order.get("payout") or "")
+                        or order.get("profit") or order.get("payout")
+                        or order.get("amount_seller") or "")
             status   = order.get("status") or order.get("state") or ""
             date     = str(order.get("date") or "").replace("T", " ")[:16]
             # Обрезаем длинное название — оставляем первые два сегмента через |
@@ -774,9 +777,11 @@ def _menu_tg_bot_thread() -> None:
             return "\n".join(lines)
 
         def _ggsel_order_kb(invoice_id: int) -> dict:
+            chat_btn = {"text": "💬 Чат", "callback_data": f"ggsell:chat:{invoice_id}"}
             if invoice_id in _ggsel_get_done():
                 return {"inline_keyboard": [
-                    [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+                    [chat_btn,
+                     {"text": "◀️ Назад", "callback_data": "go:ggsell"}],
                 ]}
             confirm_lnk = _ggsel_confirm.get(invoice_id)
             if confirm_lnk:
@@ -785,12 +790,14 @@ def _menu_tg_bot_thread() -> None:
                       "callback_data": f"ggsell:send:{invoice_id}"},
                      {"text": "❌ Не отправлять",
                       "callback_data": f"ggsell:nosend:{invoice_id}"}],
-                    [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+                    [chat_btn,
+                     {"text": "◀️ Назад", "callback_data": "go:ggsell"}],
                 ]}
             return {"inline_keyboard": [
                 [{"text": "▶️ Выполнить заказ",
                   "callback_data": f"ggsell:run:{invoice_id}"}],
-                [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+                [chat_btn,
+                 {"text": "◀️ Назад", "callback_data": "go:ggsell"}],
             ]}
 
         # ── GGSell: вспомогательная функция баланса ──────────────────────────
@@ -1025,11 +1032,11 @@ def _menu_tg_bot_thread() -> None:
                     preview = last_msg[:60] + "…" if len(last_msg) > 60 else last_msg
                     lines.append(f"    _{preview}_")
 
-                # Кнопка
+                # Кнопка → чат (просмотр переписки)
                 email_s = email[:30] + "…" if len(email) > 30 else email
                 time_s  = f" · {last_time[5:]}" if last_time else ""  # MM-DD HH:MM
                 btn = f"{'🔴 ' if cnt_new else '💬 '}#{inv_id} · {email_s}{time_s}"
-                chat_rows.append([{"text": btn[:64], "callback_data": f"ggsell:order:{inv_id}"}])
+                chat_rows.append([{"text": btn[:64], "callback_data": f"ggsell:chat:{inv_id}"}])
 
             if not parsed:
                 lines.append("_Нет активных чатов_")
@@ -1123,11 +1130,76 @@ def _menu_tg_bot_thread() -> None:
                 from ggsell.monitor import add_link_to_pool
                 add_link_to_pool(link)
 
+        async def _bg_ggsel_chat(cid, mid, invoice_id: int) -> None:
+            """Показать историю переписки с покупателем по заказу."""
+            cli = _get_ggsel_client()
+            if not cli:
+                await _edit(cid, mid, "❌ GGSell не настроен.",
+                    {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": f"ggsell:order:{invoice_id}"}]]})
+                return
+            try:
+                messages = await cli.get_messages(invoice_id)
+            except Exception as exc:
+                await _edit(cid, mid, f"❌ Ошибка загрузки чата: {exc}",
+                    {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": f"ggsell:order:{invoice_id}"}]]})
+                return
+
+            lines = [f"💬 *Чат · заказ #{invoice_id}*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+            if messages:
+                for msg in messages[-20:]:  # последние 20 сообщений
+                    is_seller = bool(
+                        msg.get("is_seller") or msg.get("is_seller_msg")
+                        or msg.get("sender") == "seller" or msg.get("type") == "seller"
+                    )
+                    raw_date = (msg.get("date") or msg.get("created_at")
+                                or msg.get("timestamp") or msg.get("date_add") or "")
+                    t = str(raw_date)[:16].replace("T", " ") if raw_date else ""
+                    text_m = (msg.get("text") or msg.get("message") or msg.get("body") or "")
+                    if len(text_m) > 200:
+                        text_m = text_m[:200] + "…"
+                    sender = "🏪 *Вы*" if is_seller else "👤 *Покупатель*"
+                    header = sender + (f" · _{t}_" if t else "")
+                    lines.append(header)
+                    if text_m:
+                        lines.append(text_m)
+                    lines.append("")
+            else:
+                lines.append("_Сообщений пока нет_")
+
+            kb = {"inline_keyboard": [
+                [{"text": "💬 Написать сообщение",
+                  "callback_data": f"ggsell:reply:{invoice_id}"}],
+                [{"text": "🔄 Обновить",  "callback_data": f"ggsell:chat:{invoice_id}"},
+                 {"text": "📋 Заказ",     "callback_data": f"ggsell:order:{invoice_id}"},
+                 {"text": "◀️ Чаты",      "callback_data": "ggsell:chats"}],
+            ]}
+            await _edit(cid, mid, "\n".join(lines), kb)
+
         async def _ggsel_notify_order(item: dict) -> None:
             """Отправить уведомление о новом заказе всем подписчикам."""
             invoice_id  = item.get("invoice_id")
-            order       = item.get("order", {})
+            order       = dict(item.get("order", {}))  # копия для мержа
             _ggsel_orders[invoice_id] = item
+
+            # Обогащаем данными из детального запроса (суммы, email)
+            try:
+                cli = _get_ggsel_client()
+                if cli:
+                    info = await cli.get_order_info(invoice_id)
+                    content = (info.get("content") if isinstance(info, dict) else None) or {}
+                    # Мержим поля сумм если их нет в order от last-sales
+                    for fld in ("sum_t", "sum", "amount", "sum_seller", "profit", "status"):
+                        if content.get(fld) is not None and not order.get(fld):
+                            order[fld] = content[fld]
+                    # email покупателя из buyer_info
+                    bi = content.get("buyer_info") or {}
+                    if bi.get("email") and not order.get("email"):
+                        order.setdefault("buyer", {})["email"] = bi["email"]
+                    # Сохраняем обогащённый order обратно
+                    item["order"] = order
+                    _ggsel_orders[invoice_id] = item
+            except Exception:
+                pass
 
             p = _ggsel_parse_order(order)
             email = item.get("buyer_email") or p["email"]
@@ -2883,6 +2955,15 @@ def _menu_tg_bot_thread() -> None:
                      {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
                 ]
                 await _edit(cid, mid, _ggsel_pool_text(), {"inline_keyboard": kb_rows})
+                return
+
+            if data.startswith("ggsell:chat:"):
+                invoice_id = int(data.split(":")[2])
+                await _ack(qid)
+                await _edit(cid, mid, f"⏳ Загружаю чат `#{invoice_id}`...",
+                            {"inline_keyboard": [[{"text": "◀️ Назад",
+                                                    "callback_data": f"ggsell:order:{invoice_id}"}]]})
+                asyncio.create_task(_bg_ggsel_chat(cid, mid, invoice_id))
                 return
 
             if data.startswith("ggsell:order:"):
