@@ -759,6 +759,20 @@ def _menu_tg_bot_thread() -> None:
                 name_short = f"{parts[0]} | {parts[1]}"
             if len(name_short) > 60:
                 name_short = name_short[:57] + "…"
+            # Параметры заказа (email, период подписки и т.д.)
+            raw_opts = order.get("options") or []
+            parsed_options = []
+            for opt in raw_opts:
+                opt_name  = (opt.get("name") or opt.get("title") or opt.get("label") or "").strip()
+                opt_val   = (opt.get("user_data") or opt.get("value") or opt.get("selected") or "").strip()
+                opt_price = (opt.get("price_add") or opt.get("amount_add")
+                             or opt.get("price_increase") or 0)
+                if opt_name and opt_val:
+                    parsed_options.append({
+                        "name":      opt_name,
+                        "value":     opt_val,
+                        "price_add": opt_price,
+                    })
             return {
                 "name": str(name),
                 "name_short": name_short,
@@ -767,6 +781,7 @@ def _menu_tg_bot_thread() -> None:
                 "sum_sell": sum_sell,
                 "status": str(status),
                 "date": date,
+                "options": parsed_options,
             }
 
         def _ggsel_order_text(invoice_id: int) -> str:
@@ -796,6 +811,14 @@ def _menu_tg_bot_thread() -> None:
                 lines.append(f"📅 Дата: {p['date']}")
             if p["status"]:
                 lines.append(f"📍 Статус API: `{p['status']}`")
+            if p["options"]:
+                lines.append("")
+                lines.append("📝 *Параметры заказа:*")
+                for opt in p["options"]:
+                    n_s = opt["name"][:32] + "…" if len(opt["name"]) > 32 else opt["name"]
+                    v_s = opt["value"][:45] + "…" if len(opt["value"]) > 45 else opt["value"]
+                    p_s = f" _(+{opt['price_add']}₽)_" if opt.get("price_add") else ""
+                    lines.append(f"  • _{n_s}_: `{v_s}`{p_s}")
             lines.append("")
             if invoice_id in done:
                 lines.append(f"🔵 *Выдано* · {done[invoice_id]}")
@@ -1265,6 +1288,9 @@ def _menu_tg_bot_thread() -> None:
                     bi = content.get("buyer_info") or {}
                     if bi.get("email") and not order.get("email"):
                         order.setdefault("buyer", {})["email"] = bi["email"]
+                    # параметры заказа (options: email, период подписки и т.д.)
+                    if content.get("options") and not order.get("options"):
+                        order["options"] = content["options"]
                     # Сохраняем обогащённый order обратно
                     item["order"] = order
                     _ggsel_orders[invoice_id] = item
@@ -1275,18 +1301,27 @@ def _menu_tg_bot_thread() -> None:
             email = item.get("buyer_email") or p["email"]
 
             lines = [f"💸 *Новый заказ* `#{invoice_id}`", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-            lines.append(f"📦 {p['name']}")
-            if email:
-                lines.append(f"👤 `{email}`")
-            if p["sum_buy"]:
-                lines.append(f"💰 Сумма покупки: *{p['sum_buy']}₽*")
-            if p["sum_sell"]:
-                lines.append(f"💼 Твоя выплата: *{p['sum_sell']}₽*")
-            if p["status"]:
-                lines.append(f"📍 Статус: `{p['status']}`")
+            lines.append(f"📦 *{p['name_short']}*")
+            if p["sum_buy"] or p["sum_sell"]:
+                sum_parts = []
+                if p["sum_buy"]:
+                    sum_parts.append(f"💰 *{p['sum_buy']}₽*")
+                if p["sum_sell"]:
+                    sum_parts.append(f"💼 выплата *{p['sum_sell']}₽*")
+                lines.append("  ·  ".join(sum_parts))
             if p["date"]:
-                lines.append(f"🕒 {p['date']}")
-            lines += ["", "_Нажмите «Выполнить» чтобы запустить автоматизацию._"]
+                lines.append(f"📅 {p['date']}")
+            # Параметры заказа
+            if p["options"]:
+                lines.append("")
+                for opt in p["options"]:
+                    n_s = opt["name"][:28] + "…" if len(opt["name"]) > 28 else opt["name"]
+                    v_s = opt["value"][:35] + "…" if len(opt["value"]) > 35 else opt["value"]
+                    p_s = f" (+{opt['price_add']}₽)" if opt.get("price_add") else ""
+                    lines.append(f"  _{n_s}_: `{v_s}`{p_s}")
+            elif email:
+                lines.append(f"👤 `{email}`")
+            lines.append("")
             text = "\n".join(lines)
             kb = {"inline_keyboard": [
                 [{"text": f"📋 Детали #{invoice_id}",
