@@ -731,6 +731,50 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
             ]}
 
+        # ── GGSell: вспомогательная функция баланса ──────────────────────────
+        async def _ggsel_fetch_balance(cli):
+            """Возвращает (bal_s, lock_s, plus_s, payment_date_s)."""
+            bal_s = lock_s = plus_s = payment_date_s = ""
+            try:
+                bi = await cli.get_balance_info()
+                bal_s  = f"${bi['free']:.2f}"
+                lock_s = f"${bi['lock']:.2f}" if bi["lock"] else ""
+                plus_s = f"${bi['plus']:.2f}" if bi["plus"] else ""
+            except Exception as exc:
+                bal_s = f"❌ {exc}"
+            try:
+                sched = await cli.get_payment_schedule()
+                if isinstance(sched, dict) and sched:
+                    c = sched.get("content") or sched
+                    items = c if isinstance(c, list) else (
+                        c.get("items") or c.get("data") or c.get("transactions") or []
+                    )
+                    if isinstance(items, list) and items:
+                        f0 = items[0]
+                        amt = (f0.get("amount") or f0.get("sum") or f0.get("total") or "")
+                        dt  = (f0.get("date") or f0.get("payment_date") or f0.get("release_date") or "")
+                        if amt and not plus_s:
+                            try:
+                                plus_s = f"${float(amt):.2f}"
+                            except Exception:
+                                plus_s = str(amt)
+                        if dt:
+                            payment_date_s = str(dt)[:16].replace("T", " ")
+                    elif isinstance(c, dict):
+                        amt = c.get("pending") or c.get("pending_amount") or ""
+                        dt  = c.get("next_payment") or c.get("next_payment_date") or ""
+                        if amt and not plus_s:
+                            try:
+                                plus_s = f"${float(amt):.2f}"
+                            except Exception:
+                                plus_s = str(amt)
+                        if dt:
+                            payment_date_s = str(dt)[:16].replace("T", " ")
+            except Exception:
+                pass
+            return bal_s, lock_s, plus_s, payment_date_s
+
+        # ── GGSell: главная панель ────────────────────────────────────────────
         async def _bg_ggsel_info(cid, mid):
             cli = _get_ggsel_client()
             if cli is None:
@@ -746,116 +790,64 @@ def _menu_tg_bot_thread() -> None:
             except Exception:
                 processed_cnt = 0
 
-            # Баланс (доступный + замороженный + ожидаемые поступления)
-            bal_s = lock_s = plus_s = payment_date_s = "?"
-            bal_info = {}
-            try:
-                bal_info = await cli.get_balance_info()
-                bal_s  = f"${bal_info['free']:.2f}"
-                lock_s = f"${bal_info['lock']:.2f}" if bal_info["lock"] else ""
-                plus_s = f"${bal_info['plus']:.2f}" if bal_info["plus"] else ""
-                payment_date_s = ""
-            except Exception as exc:
-                bal_s = f"❌ {exc}"
-                lock_s = plus_s = payment_date_s = ""
+            bal_s, lock_s, plus_s, payment_date_s = await _ggsel_fetch_balance(cli)
 
-            # Расписание выплат (даты и суммы к поступлению)
-            try:
-                sched = await cli.get_payment_schedule()
-                if isinstance(sched, dict) and sched:
-                    content = sched.get("content") or sched
-                    items = (
-                        content if isinstance(content, list)
-                        else (content.get("items") or content.get("data") or content.get("transactions") or [])
-                    )
-                    if isinstance(items, list) and items:
-                        first = items[0]
-                        amt = (first.get("amount") or first.get("sum")
-                               or first.get("total") or first.get("amount_t_plus") or "")
-                        dt  = (first.get("date") or first.get("payment_date")
-                               or first.get("release_date") or first.get("date_plus") or "")
-                        if amt and not plus_s:
-                            try:
-                                plus_s = f"${float(amt):.2f}"
-                            except Exception:
-                                plus_s = str(amt)
-                        if dt:
-                            payment_date_s = str(dt)[:16].replace("T", " ")
-                    elif isinstance(content, dict):
-                        amt = (content.get("pending") or content.get("pending_amount")
-                               or content.get("amount_pending") or "")
-                        dt  = (content.get("next_payment") or content.get("next_payment_date")
-                               or content.get("date_plus") or "")
-                        if amt and not plus_s:
-                            try:
-                                plus_s = f"${float(amt):.2f}"
-                            except Exception:
-                                plus_s = str(amt)
-                        if dt:
-                            payment_date_s = str(dt)[:16].replace("T", " ")
-            except Exception:
-                pass
-
-            # Статистика продаж с дашборда
-            stat_lines: list = []
+            # Быстрая статистика
+            total_sales = total_revenue = ""
             try:
                 stat = await cli.get_stats()
                 if isinstance(stat, dict):
-                    content = stat.get("content") or stat
-                    # Поля статистики (разные варианты API)
-                    total_sales   = content.get("total_sales") or content.get("cnt_sales") or content.get("cnt") or ""
-                    total_revenue = content.get("total_revenue") or content.get("revenue") or content.get("sum") or ""
-                    # Товары/продукты
-                    products = content.get("products") or content.get("items") or []
-                    if total_sales:
-                        stat_lines.append(f"🛒 Всего продаж: *{total_sales}*")
-                    if total_revenue:
-                        stat_lines.append(f"💰 Выручка: *${float(total_revenue):.2f}*")
-                    if products and isinstance(products, list):
-                        stat_lines.append("📦 *Топ товаров:*")
-                        for p in products[:5]:
-                            pname = p.get("name") or p.get("product_name") or "?"
-                            pcnt  = p.get("cnt") or p.get("count") or p.get("sales") or ""
-                            pname = pname[:40] + "…" if len(str(pname)) > 40 else pname
-                            stat_lines.append(f"  ▸ {pname}" + (f" · {pcnt} шт." if pcnt else ""))
+                    c = stat.get("content") or stat
+                    total_sales   = c.get("total_sales") or c.get("cnt_sales") or c.get("cnt") or ""
+                    total_revenue = c.get("total_revenue") or c.get("revenue") or c.get("sum") or ""
             except Exception:
                 pass
+
+            pending_cnt = len(_ggsel_confirm)
+
+            lines = ["💰 *GGSell — Панель продавца*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+            lines.append(f"💵 Баланс: *{bal_s}*" + (f"  ·  🔒 {lock_s}" if lock_s else ""))
+            if plus_s:
+                dp = f" (поступит {payment_date_s})" if payment_date_s else ""
+                lines.append(f"⏳ К поступлению: *{plus_s}*{dp}")
+            lines.append("")
+            if total_sales:
+                lines.append(f"🛒 Продаж: *{total_sales}*" + (f"  ·  💰 *${float(total_revenue):.2f}*" if total_revenue else ""))
+            lines.append(f"📦 Ссылок в пуле: *{pool}*  ·  ✅ Обработано: *{processed_cnt}*")
+            if pending_cnt:
+                lines.append(f"⏳ Ждут подтверждения: *{pending_cnt}*")
+
+            kb_rows = [
+                [{"text": "📋 Заказы",      "callback_data": "ggsell:orders"},
+                 {"text": "💬 Чаты",        "callback_data": "ggsell:chats"}],
+                [{"text": "📦 Пул ссылок",  "callback_data": "ggsell:pool"},
+                 {"text": "⚙️ Настройки",   "callback_data": "ggsell:settings"}],
+                [{"text": "🔄 Обновить",    "callback_data": "ggsell:refresh"},
+                 {"text": "◀️ Назад",       "callback_data": "go:other"}],
+            ]
+            await _edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+        # ── GGSell: страница заказов ──────────────────────────────────────────
+        async def _bg_ggsel_orders_page(cid, mid):
+            cli = _get_ggsel_client()
+            if cli is None:
+                await _edit(cid, mid, "❌ GGSell не настроен.",
+                    {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+                return
 
             try:
                 orders = await cli.get_last_orders()
                 yt_orders = [o for o in orders
                              if int((o.get("product") or {}).get("id") or 0) == 102276416]
             except Exception:
-                orders = []
                 yt_orders = []
 
-            pending_cnt = len(_ggsel_confirm)
-            bal_line = f"💵 Баланс: *{bal_s}*" + (f"  ·  🔒 {lock_s}" if lock_s else "")
-            plus_line = ""
-            if plus_s:
-                date_part = f" (поступит {payment_date_s})" if payment_date_s else ""
-                plus_line = f"⏳ К поступлению: *{plus_s}*{date_part}"
-
-            lines = [
-                "💰 *GGSell — Панель продавца*",
-                "━━━━━━━━━━━━━━━━━━━━━━", "",
-                bal_line,
-            ]
-            if plus_line:
-                lines.append(plus_line)
-            lines += [
-                f"📦 Ссылок в пуле: *{pool}*",
-                f"✅ Обработано заказов: *{processed_cnt}*",
-            ]
-            if pending_cnt:
-                lines.append(f"⏳ Ждут подтверждения: *{pending_cnt}*")
-            if stat_lines:
-                lines += [""] + stat_lines
+            done = _ggsel_get_done()
+            lines = ["📋 *GGSell — Заказы*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
 
             if yt_orders:
-                done = _ggsel_get_done()
-                lines += ["", "🛒 *Последние заказы YouTube Premium:*"]
-                for o in yt_orders[:5]:
+                lines.append("*YouTube Premium — последние заказы:*")
+                for o in yt_orders[:10]:
                     inv   = o.get("invoice_id") or o.get("id") or "?"
                     dt    = str(o.get("date") or "").replace("T", " ")[:16]
                     pr    = (o.get("product") or {}).get("price_rub") or ""
@@ -866,30 +858,88 @@ def _menu_tg_bot_thread() -> None:
                     elif inv_i in _ggsel_confirm:
                         tag = " ⏳"
                     else:
-                        tag = ""
+                        tag = " 🆕"
                     lines.append(f"▸ `#{inv}`{pr_s} · {dt}{tag}")
             else:
-                lines += ["", "_Нет последних заказов YouTube Premium_"]
+                lines.append("_Нет последних заказов YouTube Premium_")
 
-            # Строки ожидающих подтверждения
+            # Кнопки для заказов, ждущих подтверждения
             pending_rows = [
-                [{"text": f"⏳ #{inv_id} — ждёт отправки",
+                [{"text": f"⏳ #{inv_id} — отправить ссылку",
                   "callback_data": f"ggsell:order:{inv_id}"}]
-                for inv_id in list(_ggsel_confirm)[:3]
+                for inv_id in list(_ggsel_confirm)[:5]
             ]
-            ord_on  = _get(cid, "ggsel_notify_orders")
-            msg_on  = _get(cid, "ggsel_notify_messages")
-            kb_rows = [
-                [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
-                 {"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"}],
-                [{"text": ("🔔" if ord_on  else "🔕") + " Заказы: "     + ("Вкл" if ord_on  else "Выкл"),
-                  "callback_data": "ggsell:toggle:orders"},
-                 {"text": ("🔔" if msg_on  else "🔕") + " Сообщения: "  + ("Вкл" if msg_on  else "Выкл"),
-                  "callback_data": "ggsell:toggle:messages"}],
-            ] + pending_rows + [
-                [{"text": "◀️ Назад",      "callback_data": "go:other"}],
+            # Кнопки для новых заказов
+            new_order_rows = [
+                [{"text": f"🆕 #{o.get('invoice_id') or o.get('id')} — выполнить",
+                  "callback_data": f"ggsell:order:{o.get('invoice_id') or o.get('id')}"}]
+                for o in yt_orders[:5]
+                if (int(o.get("invoice_id") or o.get("id") or 0) not in done
+                    and int(o.get("invoice_id") or o.get("id") or 0) not in _ggsel_confirm)
+            ][:3]
+
+            kb_rows = pending_rows + new_order_rows + [
+                [{"text": "🔄 Обновить",  "callback_data": "ggsell:orders"},
+                 {"text": "◀️ Назад",     "callback_data": "go:ggsell"}],
             ]
             await _edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+        # ── GGSell: страница чатов ────────────────────────────────────────────
+        async def _bg_ggsel_chats_page(cid, mid):
+            cli = _get_ggsel_client()
+            if cli is None:
+                await _edit(cid, mid, "❌ GGSell не настроен.",
+                    {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+                return
+
+            try:
+                chats = await cli.get_chats()
+            except Exception as exc:
+                await _edit(cid, mid, f"❌ Ошибка загрузки чатов: {exc}",
+                    {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:ggsell"}]]})
+                return
+
+            lines = ["💬 *GGSell — Чаты с покупателями*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+            chat_rows = []
+            if chats:
+                for ch in chats[:15]:
+                    inv_id  = ch.get("id_i") or ch.get("invoice_id") or ch.get("id") or "?"
+                    email   = ch.get("email") or ch.get("buyer_email") or "?"
+                    cnt_new = int(ch.get("cnt_new") or 0)
+                    new_tag = f" · 🔴 {cnt_new} новых" if cnt_new else ""
+                    email_s = str(email)[:30]
+                    lines.append(f"▸ `#{inv_id}` {email_s}{new_tag}")
+                    btn_label = f"{'🔴 ' + str(cnt_new) + ' · ' if cnt_new else ''}#{inv_id} {email_s[:20]}"
+                    chat_rows.append([{"text": btn_label,
+                                       "callback_data": f"ggsell:order:{inv_id}"}])
+            else:
+                lines.append("_Нет активных чатов_")
+
+            kb_rows = chat_rows[:8] + [
+                [{"text": "🔄 Обновить", "callback_data": "ggsell:chats"},
+                 {"text": "◀️ Назад",    "callback_data": "go:ggsell"}],
+            ]
+            await _edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+        # ── GGSell: страница настроек (синхронная) ────────────────────────────
+        def _ggsel_settings_page(cid, mid_unused):
+            ord_on = _get(cid, "ggsel_notify_orders")
+            msg_on = _get(cid, "ggsel_notify_messages")
+            lines = [
+                "⚙️ *GGSell — Настройки*",
+                "━━━━━━━━━━━━━━━━━━━━━━", "",
+                "*Уведомления:*",
+                f"  {'🔔' if ord_on else '🔕'} Заказы: {'включены' if ord_on else 'выключены'}",
+                f"  {'🔔' if msg_on else '🔕'} Сообщения: {'включены' if msg_on else 'выключены'}",
+            ]
+            kb = {"inline_keyboard": [
+                [{"text": ("🔔 Заказы: Вкл"      if ord_on else "🔕 Заказы: Выкл"),
+                  "callback_data": "ggsell:toggle:orders"},
+                 {"text": ("🔔 Сообщения: Вкл"   if msg_on else "🔕 Сообщения: Выкл"),
+                  "callback_data": "ggsell:toggle:messages"}],
+                [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
+            ]}
+            return "\n".join(lines), kb
 
         async def _ggsel_notify_order(item: dict) -> None:
             """Отправить уведомление о новом заказе всем подписчикам."""
@@ -2603,6 +2653,28 @@ def _menu_tg_bot_thread() -> None:
                 asyncio.create_task(_bg_ggsel_info(cid, mid))
                 return
 
+            if data == "ggsell:orders":
+                await _ack(qid)
+                await _edit(cid, mid, "⏳ *GGSell* — загружаю заказы...",
+                            {"inline_keyboard": [[{"text": "◀️ Назад",
+                                                    "callback_data": "go:ggsell"}]]})
+                asyncio.create_task(_bg_ggsel_orders_page(cid, mid))
+                return
+
+            if data == "ggsell:chats":
+                await _ack(qid)
+                await _edit(cid, mid, "⏳ *GGSell* — загружаю чаты...",
+                            {"inline_keyboard": [[{"text": "◀️ Назад",
+                                                    "callback_data": "go:ggsell"}]]})
+                asyncio.create_task(_bg_ggsel_chats_page(cid, mid))
+                return
+
+            if data == "ggsell:settings":
+                await _ack(qid)
+                txt, kb = _ggsel_settings_page(cid, mid)
+                await _edit(cid, mid, txt, kb)
+                return
+
             if data == "ggsell:pool":
                 await _ack(qid)
                 await _edit(cid, mid, _ggsel_pool_text(),
@@ -2674,10 +2746,9 @@ def _menu_tg_bot_thread() -> None:
                     _set(cid, cfg_key, new_val)
                     label = "🔔 Включено" if new_val else "🔕 Выключено"
                     await _ack(qid, label)
-                    await _edit(cid, mid, "⏳ *GGSell* — загружаю данные...",
-                                {"inline_keyboard": [[{"text": "◀️ Назад",
-                                                        "callback_data": "go:other"}]]})
-                    asyncio.create_task(_bg_ggsel_info(cid, mid))
+                    # Обновляем страницу настроек на месте
+                    txt, kb = _ggsel_settings_page(cid, mid)
+                    await _edit(cid, mid, txt, kb)
                 else:
                     await _ack(qid)
                 return
