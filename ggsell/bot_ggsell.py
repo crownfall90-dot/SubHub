@@ -349,28 +349,21 @@ class GGSellBotHandler:
                      or self.parse_order(cached.get("order", {})).get("email", "")
                      if cached else "")
 
-        # Период подписки из options ("3 месяца" → "3мес", "12 месяцев" → "12мес")
+        # Период подписки из options ("3 месяца" → "3м", "12 месяцев" → "12м")
         period = ""
         for opt in p["options"]:
             val = opt.get("value", "")
             m = re.search(r"(\d+)\s*(мес|год|month|year)", val.lower())
             if m:
-                unit = "мес" if m.group(2) in ("мес", "month") else "г"
+                unit = "м" if m.group(2) in ("мес", "month") else "г"
                 period = f"{m.group(1)}{unit}"
                 break
 
-        # Дата (день.месяц)
-        date_short = ""
-        if p["date"]:
-            date_short = p["date"][5:10].replace("-", ".")
-
         parts = []
-        if email:
-            parts.append(email[:32])
         if period:
             parts.append(period)
-        if date_short:
-            parts.append(date_short)
+        if email:
+            parts.append(email[:32])
         return " · ".join(parts) if parts else f"#{invoice_id}"
 
     # ── Парсинг заказа ───────────────────────────────────────────────────────
@@ -730,12 +723,11 @@ class GGSellBotHandler:
 
         kb_rows = [
             [{"text": "📋 Заказы",     "callback_data": "ggsell:orders"},
-             {"text": "💬 Чаты",       "callback_data": "ggsell:chats"}],
-            [{"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"},
-             {"text": "⭐ Отзывы",     "callback_data": "ggsell:reviews"}],
-            [{"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"},
-             {"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"}],
-            [{"text": "◀️ Назад",      "callback_data": "go:other"}],
+             {"text": "📦 Пул ссылок", "callback_data": "ggsell:pool"}],
+            [{"text": "⭐ Отзывы",     "callback_data": "ggsell:reviews"},
+             {"text": "⚙️ Настройки",  "callback_data": "ggsell:settings"}],
+            [{"text": "🔄 Обновить",   "callback_data": "ggsell:refresh"},
+             {"text": "◀️ Назад",      "callback_data": "go:other"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
 
@@ -787,7 +779,8 @@ class GGSellBotHandler:
                     lines.append(f"   _{status_s}_")
                 lines.append("")
 
-                order_btns.append({"text": f"{icon} #{inv}",
+                btn_label = self._order_label(o, inv_i)
+                order_btns.append({"text": f"{icon} {btn_label}"[:64],
                                    "callback_data": f"ggsell:order:{inv_i}"})
         else:
             lines.append("_Нет последних заказов YouTube Premium_")
@@ -977,8 +970,7 @@ class GGSellBotHandler:
             [{"text": "💬 Написать сообщение",
               "callback_data": f"ggsell:reply:{invoice_id}"}],
             [{"text": "🔄 Обновить",  "callback_data": f"ggsell:chat:{invoice_id}"},
-             {"text": "📋 Заказ",     "callback_data": f"ggsell:order:{invoice_id}"},
-             {"text": "◀️ Чаты",      "callback_data": "ggsell:chats"}],
+             {"text": "◀️ Заказ",     "callback_data": f"ggsell:order:{invoice_id}"}],
         ]}
         await self._edit(cid, mid, "\n".join(lines), kb)
 
@@ -1144,7 +1136,7 @@ class GGSellBotHandler:
         async def _re_ask():
             self.reply_mode[cid] = invoice_id
             await self._send(cid,
-                f"💬 *Ответ на заказ* `#{invoice_id}`\n\n"
+                f"💬 *Ответ покупателю* · заказ `#{invoice_id}`\n\n"
                 "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
                 reply_markup={"inline_keyboard": [
                     [{"text": "❌ Отмена",
@@ -1419,7 +1411,8 @@ class GGSellBotHandler:
                 lines.append(f"👤 `{r['email']}`")
             if r["text"]:
                 preview = r["text"][:120] + "…" if len(r["text"]) > 120 else r["text"]
-                lines.append(f"_{preview}_")
+                safe = preview.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+                lines.append(safe)
             lines.append("")
 
         if not reviews:
@@ -1454,6 +1447,7 @@ class GGSellBotHandler:
                                         "callback_data": f"ggsell:order:{invoice_id}"}]]})
             return
 
+        logger.debug(f"GGSell review raw #{invoice_id}: {raw}")
         r = self.parse_review(raw)
         lines = [
             f"⭐ *Отзыв на заказ* `#{invoice_id}`",
@@ -1466,7 +1460,16 @@ class GGSellBotHandler:
         if r["date"]:
             lines.append(f"📅 {r['date']}")
         if r["text"]:
-            lines.append(f"\n_{r['text']}_")
+            # Экранируем символы которые ломают Markdown
+            safe = r["text"].replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+            lines.append(f"\n{safe}")
+        elif raw:
+            # Если parse_review не нашёл текст — показываем всё что есть в raw
+            for fld in ("message", "description", "answer", "note", "feedback", "content"):
+                val = str(raw.get(fld) or "").strip()
+                if val:
+                    lines.append(f"\n{val}")
+                    break
         kb = {"inline_keyboard": [[
             {"text": "◀️ Заказ", "callback_data": f"ggsell:order:{invoice_id}"},
             {"text": "⭐ Все отзывы", "callback_data": "ggsell:reviews"},
@@ -1785,7 +1788,7 @@ class GGSellBotHandler:
             self.reply_mode[cid] = invoice_id
             await self._ack(qid)
             await self._send(cid,
-                f"💬 *Ответ на заказ* `#{invoice_id}`\n\n"
+                f"💬 *Ответ покупателю* · заказ `#{invoice_id}`\n\n"
                 "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
                 reply_markup={"inline_keyboard": [
                     [{"text": "❌ Отмена",
