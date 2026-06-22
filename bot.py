@@ -746,11 +746,42 @@ def _menu_tg_bot_thread() -> None:
             except Exception:
                 processed_cnt = 0
 
+            # Баланс (доступный + замороженный)
+            bal_s = lock_s = "?"
             try:
-                balance = await cli.get_balance()
-                bal_s = f"${balance:.2f}"
+                bal_info = await cli.get_balance_info()
+                bal_s  = f"${bal_info['free']:.2f}"
+                if bal_info["lock"]:
+                    lock_s = f"${bal_info['lock']:.2f}"
+                else:
+                    lock_s = ""
             except Exception as exc:
                 bal_s = f"❌ {exc}"
+
+            # Статистика продаж с дашборда
+            stat_lines: list = []
+            try:
+                stat = await cli.get_stats()
+                if isinstance(stat, dict):
+                    content = stat.get("content") or stat
+                    # Поля статистики (разные варианты API)
+                    total_sales   = content.get("total_sales") or content.get("cnt_sales") or content.get("cnt") or ""
+                    total_revenue = content.get("total_revenue") or content.get("revenue") or content.get("sum") or ""
+                    # Товары/продукты
+                    products = content.get("products") or content.get("items") or []
+                    if total_sales:
+                        stat_lines.append(f"🛒 Всего продаж: *{total_sales}*")
+                    if total_revenue:
+                        stat_lines.append(f"💰 Выручка: *${float(total_revenue):.2f}*")
+                    if products and isinstance(products, list):
+                        stat_lines.append("📦 *Топ товаров:*")
+                        for p in products[:5]:
+                            pname = p.get("name") or p.get("product_name") or "?"
+                            pcnt  = p.get("cnt") or p.get("count") or p.get("sales") or ""
+                            pname = pname[:40] + "…" if len(str(pname)) > 40 else pname
+                            stat_lines.append(f"  ▸ {pname}" + (f" · {pcnt} шт." if pcnt else ""))
+            except Exception:
+                pass
 
             try:
                 orders = await cli.get_last_orders()
@@ -764,12 +795,14 @@ def _menu_tg_bot_thread() -> None:
             lines = [
                 "💰 *GGSell — Панель продавца*",
                 "━━━━━━━━━━━━━━━━━━━━━━", "",
-                f"💵 Баланс: *{bal_s}*",
+                f"💵 Баланс: *{bal_s}*" + (f"  ·  🔒 {lock_s}" if lock_s else ""),
                 f"📦 Ссылок в пуле: *{pool}*",
                 f"✅ Обработано заказов: *{processed_cnt}*",
             ]
             if pending_cnt:
                 lines.append(f"⏳ Ждут подтверждения: *{pending_cnt}*")
+            if stat_lines:
+                lines += [""] + stat_lines
 
             if yt_orders:
                 done = _ggsel_get_done()

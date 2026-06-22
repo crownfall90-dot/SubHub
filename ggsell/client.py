@@ -142,18 +142,26 @@ class GGSellClient:
 
     # ── Account ──────────────────────────────────────────────────────────────
 
-    async def get_balance(self) -> float:
-        """Вернуть баланс продавца."""
+    async def get_balance_info(self) -> Dict[str, float]:
+        """Вернуть полную информацию о балансе: free, lock, plus."""
         data = await self._get("/sellers/account/balance/info", {"locale": "ru"})
-        # API возвращает {"content": {"amount_t_free": 171.08, ...}}
-        content = data.get("content") if isinstance(data, dict) else None
-        if isinstance(content, dict):
-            for field in ("amount_t_free", "amount_t_lock", "amount_t_plus"):
-                val = content.get(field)
-                if val is not None:
-                    return float(val)
-        logger.debug(f"GGSell balance raw: {data}")
-        return 0.0
+        content = data.get("content") if isinstance(data, dict) else {}
+        if not isinstance(content, dict):
+            content = {}
+        return {
+            "free": float(content.get("amount_t_free") or 0.0),
+            "lock": float(content.get("amount_t_lock") or 0.0),
+            "plus": float(content.get("amount_t_plus") or 0.0),
+        }
+
+    async def get_balance(self) -> float:
+        """Вернуть доступный баланс продавца."""
+        info = await self.get_balance_info()
+        return info["free"]
+
+    async def get_stats(self) -> Dict[str, Any]:
+        """Статистика продаж с дашборда."""
+        return await self._get("/seller-last-sales/stat", {"locale": "ru"})
 
     async def get_buyer_email(self, invoice_id: int) -> Optional[str]:
         """Извлечь email покупателя для YouTube из деталей заказа."""
