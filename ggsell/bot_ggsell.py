@@ -1003,44 +1003,55 @@ class GGSellBotHandler:
                 else:
                     icon, status_s = "🟢", "новый"
 
-                date_s = p["date"][5:10] if len(p["date"]) >= 10 else p["date"]
-                head_parts = [f"{icon} *#{inv}*"]
-                if date_s:
-                    head_parts.append(f"📅 {date_s}")
-                if p["sum_buy"]:
-                    head_parts.append(f"💰 *{p['sum_buy']}₽*")
-                lines.append("  ·  ".join(head_parts))
+                # Название продукта (период подписки)
+                name_line = p.get("name_short") or p.get("name") or "YouTube Premium"
+                period = ""
+                for opt in p.get("options", []):
+                    val = opt.get("value", "")
+                    m = re.search(r"(\d+)\s*(мес|год|month|year)", val.lower())
+                    if m:
+                        unit = "мес" if m.group(2) in ("мес", "month") else "год"
+                        period = f"{m.group(1)} {unit}"
+                        break
+                if period:
+                    name_line = f"YouTube Premium — {period}"
 
-                detail_parts = [f"_{status_s}_"]
-                if p["email"]:
-                    email_s = p["email"][:32] + "…" if len(p["email"]) > 32 else p["email"]
-                    detail_parts.insert(0, f"`{email_s}`")
+                # Дата + время
+                dt_full = p["date"]  # уже "YYYY-MM-DD HH:MM"
+                dt_show = dt_full[5:16] if len(dt_full) >= 16 else dt_full  # "MM-DD HH:MM"
+
+                # Email
+                email_s = p["email"] or ""
+                if not email_s:
+                    cached = self.orders.get(inv_i, {})
+                    if isinstance(cached, dict):
+                        email_s = cached.get("buyer_email") or ""
+
+                lines.append(f"{icon} *{name_line}*")
+                if email_s:
+                    lines.append(f"📧 `{email_s}`")
+                meta_parts = [f"📅 {dt_show}", f"_{status_s}_"]
+                if p["sum_buy"]:
+                    meta_parts.append(f"💰 {p['sum_buy']}₽")
                 rv = o.get("review_score")
                 if rv is not None:
-                    detail_parts.append(self._stars(int(rv)))
-                usdt = o.get("seller_reward_amount_usdt")
-                if usdt is not None:
-                    detail_parts.append(f"💵 ${float(usdt):.2f}")
-                hold = self._fmt_hold_date(str(o.get("seller_reward_complete_at") or ""))
-                if hold:
-                    detail_parts.append(f"🔒 {hold}")
-                lines.append("  ·  ".join(detail_parts))
+                    meta_parts.append(self._stars(int(rv)))
+                lines.append("  ·  ".join(meta_parts))
                 lines.append("")
 
-                btn_label = self._order_label(o, inv_i)
-                order_btns.append({"text": f"{icon} {btn_label}"[:64],
+                # Кнопка: email + дата
+                if email_s:
+                    btn_label = f"{icon} {email_s[:28]}  {dt_show}"
+                else:
+                    btn_label = f"{icon} #{inv}  {dt_show}"
+                order_btns.append({"text": btn_label[:64],
                                    "callback_data": f"ggsell:order:{inv_i}"})
         else:
             lines.append("_Нет последних заказов YouTube Premium_")
 
-        btn_rows = []
-        for i in range(0, len(order_btns), 2):
-            row = [order_btns[i]]
-            if i + 1 < len(order_btns):
-                row.append(order_btns[i + 1])
-            btn_rows.append(row)
+        btn_rows = [[b] for b in order_btns]  # каждая кнопка в отдельной строке
 
-        kb_rows = btn_rows[:5] + [
+        kb_rows = btn_rows[:10] + [
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
