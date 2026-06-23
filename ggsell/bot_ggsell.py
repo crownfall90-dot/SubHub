@@ -521,7 +521,8 @@ class GGSellBotHandler:
         item        = self.orders.get(invoice_id, {})
         order       = item.get("order", {})
         p           = self.parse_order(order)
-        email       = item.get("buyer_email") or p["email"] or ""
+        email       = (item.get("buyer_email") or p["email"]
+                       or self._done_buyer_emails.get(invoice_id, ""))
         confirm_lnk = self.confirm.get(invoice_id)
         done        = self.get_done()
         sent_link   = self.get_sent_link(invoice_id)
@@ -1198,13 +1199,13 @@ class GGSellBotHandler:
         cli   = self.get_client()
         item  = self.orders.get(invoice_id, {})
         order = dict(item.get("order", {}))
-        _has_email = order.get("email") or order.get("buyer_email") or item.get("buyer_email")
-        _needs_more = not _has_email or not order.get("sum_t") or not order.get("date")
-        if cli and _needs_more:
+
+        if cli:
+            # Шаг 1: быстрый v2 (публичный API /api/v1/orders/{id})
             try:
                 v2 = await cli.get_order_info_v2(invoice_id)
                 if v2:
-                    if v2.get("selected_options"):
+                    if v2.get("selected_options") and not order.get("selected_options"):
                         order["selected_options"] = v2["selected_options"]
                     if v2.get("buyer_email") and not order.get("buyer_email"):
                         order["buyer_email"] = v2["buyer_email"]
@@ -1216,11 +1217,61 @@ class GGSellBotHandler:
                         order["date"] = v2["created_at"]
                     if v2.get("offer_title") and not order.get("name"):
                         order["name"] = v2["offer_title"]
-                    item = dict(item)
-                    item["order"] = order
-                    self.orders[invoice_id] = item
             except Exception:
                 pass
+
+            # Шаг 2: Seller API v1 (/purchase/info/) — фоллбэк для email/сумм/опций
+            _still_missing = (
+                not (order.get("email") or order.get("buyer_email") or item.get("buyer_email"))
+                or not order.get("sum_t")
+                or not order.get("date")
+            )
+            if _still_missing:
+                try:
+                    info = await cli.get_order_info(invoice_id)
+                    c = info.get("content", {}) if isinstance(info, dict) else {}
+                    if c:
+                        # Email из options (YouTube email)
+                        if not order.get("buyer_email"):
+                            for opt in c.get("options", []):
+                                n = (opt.get("name") or "").lower()
+                                if any(k in n for k in ("youtube", "почт", "email", "mail")):
+                                    em = (opt.get("user_data") or "").strip()
+                                    if em and "@" in em:
+                                        order["buyer_email"] = em
+                                        break
+                        if not order.get("buyer_email"):
+                            buyer = c.get("buyer_info", {}) or {}
+                            em = buyer.get("email") or ""
+                            if em:
+                                order["buyer_email"] = em
+                        # Суммы
+                        if not order.get("sum_t"):
+                            order["sum_t"] = c.get("sum_t") or c.get("amount") or ""
+                        if not order.get("sum_seller"):
+                            order["sum_seller"] = c.get("sum_seller") or c.get("seller_reward_amount") or ""
+                        # Опции для отображения
+                        if not order.get("options") and not order.get("selected_options"):
+                            order["options"] = c.get("options") or []
+                        # Дата
+                        if not order.get("date"):
+                            order["date"] = c.get("date") or c.get("created_at") or ""
+                        # Название
+                        if not order.get("name"):
+                            prod = c.get("product") or {}
+                            order["name"] = prod.get("name") or prod.get("product_name") or ""
+                except Exception:
+                    pass
+
+            # Сохраняем обогащённые данные в кэш
+            em_final = order.get("buyer_email") or order.get("email") or ""
+            item = dict(item)
+            item["order"] = order
+            if em_final and not item.get("buyer_email"):
+                item["buyer_email"] = em_final
+                if invoice_id not in self._done_buyer_emails:
+                    self._done_buyer_emails[invoice_id] = em_final
+            self.orders[invoice_id] = item
         # Показываем заказ; если есть отзыв — добавляем блок
         text = self.order_text(invoice_id)
         review_raw = None
