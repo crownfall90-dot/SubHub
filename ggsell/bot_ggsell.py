@@ -971,7 +971,7 @@ class GGSellBotHandler:
         except Exception:
             return str(ts)[:10]
 
-    async def bg_orders_page(self, cid, mid):
+    async def bg_orders_page(self, cid, mid, offset: int = 0):
         cli = self.get_client()
         if cli is None:
             await self._edit(cid, mid, "❌ GGSell не настроен.",
@@ -1046,7 +1046,10 @@ class GGSellBotHandler:
         if not yt_orders:
             lines.append("_Нет последних заказов YouTube Premium_")
 
-        for o in yt_orders[:15]:
+        PAGE_SIZE = 5
+        page_orders = yt_orders[offset:offset + PAGE_SIZE]
+
+        for o in page_orders:
             inv   = o.get("invoice_id") or o.get("id") or "?"
             inv_i = int(inv) if str(inv).isdigit() else 0
             p     = self.parse_order(o)
@@ -1096,7 +1099,12 @@ class GGSellBotHandler:
 
         btn_rows = [[b] for b in order_btns]
 
-        kb_rows = btn_rows[:15] + [
+        # Пагинация: кнопка "следующие 5" если есть ещё заказы
+        if offset + PAGE_SIZE < len(yt_orders):
+            btn_rows.append([{"text": f"Показать следующие 5 ›",
+                              "callback_data": f"ggsell:orders:{offset + PAGE_SIZE}"}])
+
+        kb_rows = btn_rows + [
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
@@ -1190,7 +1198,9 @@ class GGSellBotHandler:
         cli   = self.get_client()
         item  = self.orders.get(invoice_id, {})
         order = dict(item.get("order", {}))
-        if cli and not order.get("selected_options") and not order.get("options"):
+        _has_email = order.get("email") or order.get("buyer_email") or item.get("buyer_email")
+        _needs_more = not _has_email or not order.get("sum_t") or not order.get("date")
+        if cli and _needs_more:
             try:
                 v2 = await cli.get_order_info_v2(invoice_id)
                 if v2:
@@ -2481,12 +2491,18 @@ class GGSellBotHandler:
             asyncio.create_task(self.bg_info(cid, mid))
             return
 
-        if data == "ggsell:orders":
+        if data == "ggsell:orders" or data.startswith("ggsell:orders:"):
             await self._ack(qid)
+            offset = 0
+            if data.startswith("ggsell:orders:"):
+                try:
+                    offset = int(data.split(":", 2)[2])
+                except Exception:
+                    offset = 0
             await self._edit(cid, mid, "⏳ *GGSell* — загружаю заказы...",
                              {"inline_keyboard": [[{"text": "◀️ Назад",
                                                      "callback_data": "go:ggsell"}]]})
-            asyncio.create_task(self.bg_orders_page(cid, mid))
+            asyncio.create_task(self.bg_orders_page(cid, mid, offset=offset))
             return
 
         if data == "ggsell:chats":
