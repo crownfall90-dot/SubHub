@@ -865,6 +865,7 @@ class GGSellBotHandler:
         bal_s = lock_s = plus_s = payment_date_s = ""
         try:
             bi = await cli.get_balance_info()
+            print(f"[DEBUG balance] bi={bi}", flush=True)
             bal_s  = f"${bi['free']:.2f}"
             lock_s = f"${bi['lock']:.2f}" if bi.get("lock") else ""
             plus_s = f"${bi['plus']:.2f}" if bi.get("plus") else ""
@@ -946,6 +947,7 @@ class GGSellBotHandler:
              {"text": "📋 Заказы",    "callback_data": "ggsell:orders"},
              {"text": "📦 Офферы",    "callback_data": "ggsell:offers"}],
             [{"text": "⚙️ Настройки", "callback_data": "ggsell:settings"}],
+            [{"text": "◀️ Назад",     "callback_data": "go:other"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
 
