@@ -181,14 +181,18 @@ class GGSellClient:
 
     async def get_balance_info(self) -> Dict[str, float]:
         """Вернуть информацию о балансе: free, lock, plus."""
-        data = await self._get("/sellers/account/balance/info", {"locale": "ru"})
-        content = data.get("content") if isinstance(data, dict) else {}
+        raw = await self._get("/sellers/account/balance/info", {"locale": "ru"})
+        c = raw if isinstance(raw, dict) else {}
+        # Поддерживаем обёртки data/content/root
+        content = (
+            c.get("data") or c.get("content") or c
+        )
         if not isinstance(content, dict):
-            content = data if isinstance(data, dict) else {}
+            content = c
         return {
-            "free": float(content.get("amount_t_free") or 0.0),
-            "lock": float(content.get("amount_t_lock") or 0.0),
-            "plus": float(content.get("amount_t_plus") or 0.0),
+            "free": float(content.get("amount")        or content.get("amount_t_free")  or 0.0),
+            "lock": float(content.get("amount_in_hold") or content.get("amount_t_lock") or 0.0),
+            "plus": float(content.get("amount_plus")   or content.get("amount_t_plus")  or 0.0),
         }
 
     async def get_balance(self) -> float:
