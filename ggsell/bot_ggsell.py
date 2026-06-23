@@ -228,7 +228,7 @@ class GGSellBotHandler:
                 link_btns.append([{"text": f"{icon} №{idx + 1} · {preview}{t_label} — Выдать",
                                     "callback_data": f"ggsell:pool_pick:{idx}"}])
         return {"inline_keyboard": link_btns + [
-            [{"text": "🟡 Архив использованных", "callback_data": "ggsell:used"}],
+            [{"text": "🗄 Архив", "callback_data": "ggsell:used"}],
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]}
 
@@ -346,7 +346,7 @@ class GGSellBotHandler:
             msg += f"\n📁 Профиль `{profile_name}`: {status}"
 
         await self._edit(cid, mid, msg, {"inline_keyboard": [
-            [{"text": "🟡 Архив", "callback_data": "ggsell:used"},
+            [{"text": "🗄 Архив", "callback_data": "ggsell:used"},
              {"text": "◀️ Заказ", "callback_data": f"ggsell:order:{invoice_id}"}],
         ]})
 
@@ -360,10 +360,10 @@ class GGSellBotHandler:
             used = {}; links = {}
 
         if not used:
-            return "🟡 *Архив использованных*\n\n_Пусто_"
+            return "🗄 *Архив*\n\n_Пусто_"
 
         lines = [
-            "🟡 *Архив использованных ссылок*",
+            "🗄 *Архив*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"Всего использовано: *{len(used)}*", "",
         ]

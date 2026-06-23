@@ -394,7 +394,7 @@ def _menu_tg_bot_thread() -> None:
                 f"Готов к оплате: *{len(hasaddr)}*\n"
                 f"Оплаченные: *{len(paid)}*\n"
                 f"Выданные: *{len(active)}*\n"
-                f"Использованные (в архиве): *{archiv}*\n\n"
+                f"Архив: *{archiv}*\n\n"
                 "Выберите действие:"
             )
 
@@ -406,9 +406,8 @@ def _menu_tg_bot_thread() -> None:
                  {"text": f"💳 Готов к оплате ({len(hasaddr)})", "callback_data": "profiles:list:hasaddr"}],
                 [{"text": f"💰 Оплаченные ({len(paid)})", "callback_data": "profiles:list:paid"},
                  {"text": f"📤 Выданные ({len(active)})", "callback_data": "profiles:list:active"}],
-                [{"text": f"🗄 Использованные ({archiv})", "callback_data": "profiles:list:archive"}],
-                [{"text": "✅ Проверить всех неактивных", "callback_data": "profiles:checkall"}],
-                [{"text": "📍 Адреса (без адреса)", "callback_data": "profiles:addrall"}],
+                [{"text": f"🗄 Архив ({archiv})", "callback_data": "profiles:list:archive"}],
+                [{"text": "✅ Проверить все доступные", "callback_data": "profiles:checkall"}],
                 [{"text": "🍪 Восстановить из куков", "callback_data": "profiles:cookies_info"}],
                 [{"text": "◀️ Назад", "callback_data": "go:main"}],
             ]}
@@ -759,7 +758,7 @@ def _menu_tg_bot_thread() -> None:
                 f"▸ Потрачено: `${tt.get('spent', 0.0):.4f}`",
                 "",
                 "💼 *Профили:*",
-                f"▸ Готово: *{avail}*  ·  В архиве: *{archiv}*",
+                f"▸ Готово: *{avail}*  ·  Архив: *{archiv}*",
             ]
             if bal is not None:
                 lines += ["", f"💰 *Баланс GrizzlySMS: `${bal:.4f}`*"]
