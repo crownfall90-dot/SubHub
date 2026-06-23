@@ -200,6 +200,8 @@ def _kill_chrome_for_profile_standalone(profile_path) -> int:
 _RENTALS = {}
 _MONITOR_TASK = None
 _BG_FUTURES = []
+# IDs успешно завершённых активаций — монитор не должен их повторно регистрировать
+_COMPLETED_IDS: set = set()
 
 def register_rental(activation_id, phone_10, rented_at, profile_path=None, login_url=None, months=3, intercept_mode=False, **_ignored):
     """Регистрирует арендованный номер для отслеживания и отмены.
@@ -231,6 +233,7 @@ def update_rental_browser(activation_id, profile_path=None, **_ignored):
 def mark_completed(activation_id):
     """Помечает номер как успешно завершённый (вход выполнен)."""
     aid = str(activation_id)
+    _COMPLETED_IDS.add(aid)
     _RENTALS.pop(aid, None)
 
 def mark_failed(activation_id):
@@ -303,7 +306,7 @@ async def _rental_monitor_loop():
                     for _item in (_active_list or []):
                         _aid = str(_item.get("activationId") or _item.get("id") or "")
                         _ph_raw = str(_item.get("phoneNumber") or _item.get("phone") or "")
-                        if not _aid or _aid in _RENTALS:
+                        if not _aid or _aid in _RENTALS or _aid in _COMPLETED_IDS:
                             continue
                         _ph10 = _ph_raw[-10:] if len(_ph_raw) >= 10 else _ph_raw
                         print(f"\n  {_Y}[Фон] Обнаружен активный номер +91 {_ph10} (id={_aid}) в GrizzlySMS{_RST}")
@@ -809,6 +812,17 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
             if profile_path.exists():
                 print(f"  [BG] Профиль +91 {phone_10} уже существует, пропускаю")
                 return
+            # Также проверяем профили с другим форматом имени (напр. profile_0004_919850389594)
+            try:
+                phone_variants = (phone_10, "91" + phone_10)
+                if any(
+                    any(v in p.name for v in phone_variants)
+                    for p in DONE_PROFILES_DIR.iterdir() if p.is_dir()
+                ):
+                    print(f"  [BG] Профиль +91 {phone_10} уже существует (другое имя), пропускаю")
+                    return
+            except Exception:
+                pass
 
             profile_path.mkdir(parents=True, exist_ok=True)
             _pre_inject_chrome_prefs(profile_path)
@@ -825,32 +839,9 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 _bg_del_profile = True
                 return
 
-            # Phase 1 триггерит новый OTP — ждём код ОТЛИЧНЫЙ от исходного.
-            # Сразу возвращать старый нельзя: Flipkart уже отправил новый SMS,
-            # а старый OTP стал невалидным.
-            _original_otp = otp_code
-            _fresh_otp = otp_code
-            _otp_poll_dl = time.time() + 60.0
-            while time.time() < _otp_poll_dl:
-                try:
-                    _st2 = await client.get_status(activation_id)
-                    if _st2.get("type") == "OK" and _st2.get("code"):
-                        if _st2["code"] != _original_otp:
-                            _fresh_otp = _st2["code"]
-                            break
-                        # Тот же код — ждём новый SMS от Flipkart
-                    elif _st2.get("type") in ("CANCEL", "ERROR"):
-                        break
-                except Exception:
-                    pass
-                await asyncio.sleep(3)
-            if _fresh_otp != _original_otp:
-                print(f"  [BG] Новый OTP для +91 {phone_10}: {_fresh_otp}")
-            else:
-                print(f"  [BG] Новый OTP для +91 {phone_10} не пришёл — используем исходный {_fresh_otp}")
-            otp_code = _fresh_otp
-
             # Вводим OTP (посимвольно — триггерит React onChange)
+            # GrizzlySMS не отдаёт новый код после статуса OK, поэтому используем
+            # исходный OTP — он ещё действителен сразу после Phase 1.
             print(f"  [BG] +91 {phone_10}: OTP {otp_code} — ввожу")
             otp_el = page2.locator(_OTP_SEL).first
             _auto_submitted = False
