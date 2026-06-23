@@ -348,9 +348,10 @@ def _menu_tg_bot_thread() -> None:
 
         # ── Профили ───────────────────────────────────────────────────────────
         def _get_profile_categories():
-            noaddr = []
-            hasaddr = []
-            active = []
+            noaddr  = []  # Доступные
+            hasaddr = []  # Готов к оплате
+            paid    = []  # Оплаченные (есть ссылка, не выдан)
+            active  = []  # Выданные
             if DONE_PROFILES_DIR.exists():
                 for p in DONE_PROFILES_DIR.glob("profile_*"):
                     if not p.is_dir():
@@ -362,39 +363,50 @@ def _menu_tg_bot_thread() -> None:
                     ph = _ph(m, p)
                     vt = m.get("black_valid_till") or ""
                     st = m.get("status") or ""
-                    is_active = (st in ("activated", "explore_now", "activate_now")) or bool(vt)
-                    if is_active:
+                    is_issued  = bool(m.get("issued_ts"))
+                    has_link   = bool(m.get("black_activation_link") or m.get("activation_url"))
+                    is_subact  = (st in ("activated", "explore_now", "activate_now")) or bool(vt)
+                    is_paid    = (has_link or is_subact) and not is_issued
+                    is_ready   = bool(
+                        m.get("prepared_ts") or m.get("buyer_email") or st == "email_completed"
+                    ) and not is_issued and not is_paid
+                    if is_issued:
                         active.append((ph, p, m))
-                    elif st == "email_completed":
+                    elif is_paid:
+                        paid.append((ph, p, m))
+                    elif is_ready:
                         hasaddr.append((ph, p, m))
                     else:
                         noaddr.append((ph, p, m))
             noaddr.sort(key=lambda x: x[2].get("login_ts") or 0, reverse=True)
-            hasaddr.sort(key=lambda x: x[2].get("login_ts") or 0, reverse=True)
-            active.sort(key=lambda x: x[2].get("login_ts") or 0, reverse=True)
-            return noaddr, hasaddr, active
+            hasaddr.sort(key=lambda x: x[2].get("prepared_ts") or x[2].get("login_ts") or 0, reverse=True)
+            paid.sort(key=lambda x: x[2].get("login_ts") or 0, reverse=True)
+            active.sort(key=lambda x: x[2].get("issued_ts") or x[2].get("login_ts") or 0, reverse=True)
+            return noaddr, hasaddr, paid, active
 
         def _profiles_text():
-            noaddr, hasaddr, active = _get_profile_categories()
+            noaddr, hasaddr, paid, active = _get_profile_categories()
             _, archiv = _cnt_profiles()
             return (
                 "📁 *Профили*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"Неактивные (без адреса): *{len(noaddr)}*\n"
-                f"Неактивные (с адресом): *{len(hasaddr)}*\n"
-                f"Активные: *{len(active)}*\n"
-                f"В архиве: *{archiv}*\n\n"
+                f"Доступные: *{len(noaddr)}*\n"
+                f"Готов к оплате: *{len(hasaddr)}*\n"
+                f"Оплаченные: *{len(paid)}*\n"
+                f"Выданные: *{len(active)}*\n"
+                f"Использованные (в архиве): *{archiv}*\n\n"
                 "Выберите действие:"
             )
 
         def _profiles_kb():
-            noaddr, hasaddr, active = _get_profile_categories()
+            noaddr, hasaddr, paid, active = _get_profile_categories()
             _, archiv = _cnt_profiles()
             return {"inline_keyboard": [
-                [{"text": f"❌ Без адреса ({len(noaddr)})", "callback_data": "profiles:list:noaddr"},
-                 {"text": f"📍 С адресом ({len(hasaddr)})", "callback_data": "profiles:list:hasaddr"}],
-                [{"text": f"🌟 Активные ({len(active)})", "callback_data": "profiles:list:active"},
-                 {"text": f"📦 Архив ({archiv})", "callback_data": "profiles:list:archive"}],
+                [{"text": f"✅ Доступные ({len(noaddr)})", "callback_data": "profiles:list:noaddr"},
+                 {"text": f"💳 Готов к оплате ({len(hasaddr)})", "callback_data": "profiles:list:hasaddr"}],
+                [{"text": f"💰 Оплаченные ({len(paid)})", "callback_data": "profiles:list:paid"},
+                 {"text": f"📤 Выданные ({len(active)})", "callback_data": "profiles:list:active"}],
+                [{"text": f"🗄 Использованные ({archiv})", "callback_data": "profiles:list:archive"}],
                 [{"text": "✅ Проверить всех неактивных", "callback_data": "profiles:checkall"}],
                 [{"text": "📍 Адреса (без адреса)", "callback_data": "profiles:addrall"}],
                 [{"text": "🍪 Восстановить из куков", "callback_data": "profiles:cookies_info"}],
@@ -411,15 +423,18 @@ def _menu_tg_bot_thread() -> None:
 
         def _profile_list_text(list_type="noaddr"):
             try:
-                noaddr, hasaddr, active = _get_profile_categories()
+                noaddr, hasaddr, paid, active = _get_profile_categories()
                 if list_type == "noaddr":
-                    title = f"❌ *Неактивные профили (без адреса)* ({len(noaddr)} шт.)"
+                    title = f"✅ *Доступные профили* ({len(noaddr)} шт.)"
                     pairs = noaddr
                 elif list_type == "hasaddr":
-                    title = f"📍 *Неактивные профили (с адресом)* ({len(hasaddr)} шт.)"
+                    title = f"💳 *Готов к оплате* ({len(hasaddr)} шт.)"
                     pairs = hasaddr
+                elif list_type == "paid":
+                    title = f"💰 *Оплаченные профили* ({len(paid)} шт.)"
+                    pairs = paid
                 elif list_type == "active":
-                    title = f"🌟 *Активные профили* ({len(active)} шт.)"
+                    title = f"📤 *Выданные профили* ({len(active)} шт.)"
                     pairs = active
                 elif list_type == "archive":
                     return _archive_text()
@@ -433,10 +448,22 @@ def _menu_tg_bot_thread() -> None:
                 for ph, p, m in pairs[:20]:
                     vt = m.get("black_valid_till") or ""
                     st = m.get("status") or ""
-                    icon = "🌟" if (st in ("activated", "explore_now", "activate_now") or vt) else ("📍" if st == "email_completed" else "❌")
+                    is_iss  = bool(m.get("issued_ts"))
+                    has_lnk = bool(m.get("black_activation_link") or m.get("activation_url"))
+                    is_rdy  = bool(m.get("prepared_ts") or m.get("buyer_email") or st == "email_completed")
+                    if is_iss:
+                        icon = "📤"
+                    elif has_lnk or (st in ("activated", "explore_now", "activate_now") or vt):
+                        icon = "💰"
+                    elif is_rdy:
+                        icon = "💳"
+                    else:
+                        icon = "✅"
                     line = f"{icon} `{ph}`"
                     if vt:
                         line += f"  до {vt}"
+                    elif has_lnk and list_type == "paid":
+                        line += "  🔗"
                     lines.append(line)
                 if len(pairs) > 20:
                     lines.append(f"\n...и ещё {len(pairs) - 20} профилей")
@@ -449,11 +476,13 @@ def _menu_tg_bot_thread() -> None:
                 if list_type == "archive":
                     return _archive_kb()
 
-                noaddr, hasaddr, active = _get_profile_categories()
+                noaddr, hasaddr, paid, active = _get_profile_categories()
                 if list_type == "noaddr":
                     pairs = noaddr
                 elif list_type == "hasaddr":
                     pairs = hasaddr
+                elif list_type == "paid":
+                    pairs = paid
                 elif list_type == "active":
                     pairs = active
                 else:
@@ -463,21 +492,20 @@ def _menu_tg_bot_thread() -> None:
                 for ph, p, m in pairs[:20]:
                     vt = m.get("black_valid_till") or ""
                     st = m.get("status") or ""
-                    is_iss = bool(m.get("issued_ts"))
+                    is_iss  = bool(m.get("issued_ts"))
+                    has_lnk = bool(m.get("black_activation_link") or m.get("activation_url"))
                     has_login = bool(m.get("login_ts"))
                     if list_type in ("noaddr", "hasaddr"):
-                        # Показываем только профили с успешным входом (номер + OTP + вход)
                         if not has_login:
                             continue
-                        icon = "🔵" if is_iss else "🟢"
+                        icon = "✅"
+                    elif list_type == "paid":
+                        icon = "💰" if has_lnk else "🌟"
                     else:
-                        # active: старая логика
-                        icon = "🔵" if is_iss else ("🌟" if (st in ("activated", "explore_now", "activate_now") or vt) else "🟢")
+                        icon = "📤" if is_iss else ("💰" if (has_lnk or st in ("activated", "explore_now", "activate_now") or vt) else "✅")
                     label = f"{icon} {ph}"
-                    if is_iss and vt:
+                    if vt:
                         label += f" · до {vt}"
-                    elif vt:
-                        label += f" · {vt}"
                     rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:{list_type}"}])
                 rows.append([{"text": "◀️ Назад", "callback_data": "go:profiles"}])
             except Exception:
@@ -2314,12 +2342,9 @@ def _menu_tg_bot_thread() -> None:
                 asyncio.create_task(_ggsel_handler[0].bg_template_save(cid, _tpl_name, text))
                 return
 
-            # Режим ввода новой цены GGSell
-            _price_ctx = _ggsel_handler[0].check_price_edit_mode(cid, text) if _ggsel_handler[0] else None
-            if _price_ctx is not None:
-                asyncio.create_task(_ggsel_handler[0].bg_price_save(
-                    cid, _price_ctx["product_id"], _price_ctx["variant_id"],
-                    _price_ctx["label"], text))
+            # Режим ввода порядка карт GGSell
+            if _ggsel_handler[0] and _ggsel_handler[0].check_card_order_mode(cid, text):
+                asyncio.create_task(_ggsel_handler[0].bg_card_order_save(cid, text))
                 return
 
             is_new = cid not in subs

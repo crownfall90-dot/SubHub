@@ -29,6 +29,7 @@ class GGSellAuthError(GGSellError):
 
 class GGSellClient:
     BASE_URL = "https://seller.ggsel.com/api_sellers/api"
+    V2_BASE_URL = "https://seller.ggsel.com/api_sellers/v2"
 
     def __init__(self, api_key: str, seller_id: int, http_timeout: int = 30) -> None:
         self.api_key = api_key
@@ -145,26 +146,49 @@ class GGSellClient:
         except httpx.HTTPStatusError as exc:
             raise GGSellError(f"HTTP {exc.response.status_code} for {path}") from exc
 
+    @property
+    def _v2_headers(self) -> Dict[str, str]:
+        return {"Authorization": self.api_key, "Accept": "application/json",
+                "Content-Type": "application/json"}
+
+    async def _v2_get(self, path: str, params: Optional[Dict] = None) -> Any:
+        try:
+            resp = await self._client.get(
+                f"{self.V2_BASE_URL}{path}",
+                headers=self._v2_headers,
+                params=params or {},
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            raise GGSellError(f"HTTP {exc.response.status_code} for v2{path}") from exc
+
+    async def _v2_post(self, path: str, json_body: Optional[Dict] = None) -> Any:
+        try:
+            resp = await self._client.post(
+                f"{self.V2_BASE_URL}{path}",
+                headers=self._v2_headers,
+                json=json_body or {},
+            )
+            resp.raise_for_status()
+            if not resp.content:
+                return {}
+            return resp.json()
+        except httpx.HTTPStatusError as exc:
+            raise GGSellError(f"HTTP {exc.response.status_code} for v2{path}") from exc
+
     # ── Account ──────────────────────────────────────────────────────────────
 
     async def get_balance_info(self) -> Dict[str, float]:
-        """Вернуть полную информацию о балансе: free, hold, lock, plus."""
+        """Вернуть информацию о балансе: free, lock, plus."""
         data = await self._get("/sellers/account/balance/info", {"locale": "ru"})
-        logger.debug(f"GGSell balance raw: {data}")
         content = data.get("content") if isinstance(data, dict) else {}
         if not isinstance(content, dict):
             content = data if isinstance(data, dict) else {}
-        hold = float(
-            content.get("amount_in_hold") or content.get("amount_t_hold")
-            or content.get("hold") or data.get("amount_in_hold") or 0.0
-        )
-
-
         return {
             "free": float(content.get("amount_t_free") or 0.0),
             "lock": float(content.get("amount_t_lock") or 0.0),
             "plus": float(content.get("amount_t_plus") or 0.0),
-            "hold": hold,
         }
 
     async def get_balance(self) -> float:
@@ -319,60 +343,12 @@ class GGSellClient:
                     return v
         return []
 
-    # ── Products / Prices ────────────────────────────────────────────────────
-
-    async def get_products(self) -> List[Dict[str, Any]]:
-        """Список товаров продавца с вариантами."""
-        data = await self._get("/products", {"locale": "ru"})
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for field in ("content", "items", "data", "products"):
-                v = data.get(field)
-                if isinstance(v, list):
-                    return v
-        return []
-
-    async def get_product(self, product_id: int) -> Dict[str, Any]:
-        """Информация об одном товаре (варианты, цены)."""
-        data = await self._get(f"/product/{product_id}", {"locale": "ru"})
-        if isinstance(data, dict):
-            return data.get("content") or data
-        return {}
-
-    async def update_prices(self, entries: List[Dict[str, Any]]) -> bool:
-        """Обновить цены товаров/вариантов в bulk.
-
-        entries — список dict:
-            product_id: int
-            price:      float  (опционально — цена товара)
-            variants:   list of {variant_id, rate, type}
-                type: percentplus | percentminus | priceminus | priceplus
-        """
-        try:
-            data = await self._post("/product/edit/prices", json_body=entries)
-            logger.info(f"GGSell update_prices: {data}")
-            if isinstance(data, dict):
-                if "taskId" in data:  # async task — всегда успех
-                    return True
-                return data.get("retval", -1) == 0
-            return True
-        except Exception as exc:
-            logger.error(f"GGSell update_prices error: {exc}")
-            return False
-
     async def get_offer_detail(self, offer_id: int) -> Dict[str, Any]:
-        """Детали оффера (включая status) через v1 API."""
+        """Детали оффера (включая status) через v2 API."""
         try:
-            resp = await self._client.get(
-                f"https://seller.ggsel.com/api/v1/offers/{offer_id}/",
-                headers={"Authorization": self.api_key, "Accept": "application/json"},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                item = data.get("data") or data
-                if isinstance(item, dict):
-                    return item
+            data = await self._v2_get(f"/offers/{offer_id}")
+            if isinstance(data, dict) and "id" in data:
+                return data
         except Exception as exc:
             logger.debug(f"GGSell get_offer_detail {offer_id}: {exc}")
         return {}
@@ -396,53 +372,35 @@ class GGSellClient:
             logger.debug(f"GGSell get_orders_v1: {exc}")
         return []
 
-    async def get_offers(self) -> List[Dict[str, Any]]:
-        """Список офферов (товарных объявлений) продавца."""
+    async def get_offers(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Список офферов через v2 API (включает поле status в каждом элементе).
+
+        status: 'active' | 'paused' | 'draft' | None (все)
+        Ответ: {"data": [...list_offer_object...], "pagination": {...}}
+        """
         try:
-            resp = await self._client.get(
-                "https://seller.ggsel.com/api/v1/offers/",
-                headers={"Authorization": self.api_key, "Accept": "application/json"},
-                params={"limit": 50},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                v = data.get("data") or data.get("items")
-                if isinstance(v, list):
-                    return v
-                if isinstance(data, list):
-                    return data
+            params: Dict[str, Any] = {"limit": 100}
+            if status:
+                params["status"] = status
+            data = await self._v2_get("/offers", params)
+            v = data.get("data")
+            if isinstance(v, list):
+                return v
         except Exception as exc:
-            logger.debug(f"GGSell get_offers v1: {exc}")
-        try:
-            data = await self._get("/offers", {"locale": "ru", "limit": 50})
-            if isinstance(data, list):
-                return data
-            for field in ("data", "items", "offers"):
-                v = data.get(field)
-                if isinstance(v, list):
-                    return v
-        except Exception as exc:
-            logger.debug(f"GGSell get_offers: {exc}")
+            logger.debug(f"GGSell get_offers v2: {exc}")
         return []
 
     async def set_offer_status(self, offer_id: int, status: str) -> bool:
-        """Изменить статус оффера: 'active' или 'paused'."""
+        """Изменить статус оффера через v2 batch API: 'active' или 'paused'."""
         try:
-            resp = await self._client.patch(
-                f"https://seller.ggsel.com/api/v1/offers/{offer_id}/",
-                headers={"Authorization": self.api_key, "Content-Type": "application/json",
-                         "Accept": "application/json"},
-                json={"status": status},
-            )
-            if resp.status_code in (200, 204):
-                return True
+            if status == "active":
+                path = "/offers/batch_activate"
+            else:
+                path = "/offers/batch_pause"
+            data = await self._v2_post(path, {"offer_ids": [offer_id]})
+            return bool(data.get("success", True))
         except Exception as exc:
-            logger.debug(f"GGSell set_offer_status v1: {exc}")
-        try:
-            await self._post(f"/offers/{offer_id}/status", json_body={"status": status})
-            return True
-        except Exception as exc:
-            logger.debug(f"GGSell set_offer_status: {exc}")
+            logger.debug(f"GGSell set_offer_status v2: {exc}")
         return False
 
     async def get_promo_codes(self) -> List[Dict[str, Any]]:

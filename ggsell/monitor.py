@@ -72,13 +72,21 @@ MSG_WAIT = (
     "Пожалуйста, ожидайте."
 )
 
+# Приветствие при новом заказе (авто-режим)
+MSG_GREETING = (
+    "Здравствуйте! 👋\n\n"
+    "Вижу ваш заказ, уже занимаюсь его выполнением.\n\n"
+    "🕐 Время работы: 09:00 – 02:00 (МСК)\n\n"
+    "Пожалуйста, ожидайте — скоро пришлю вам ссылку на активацию подписки."
+)
+
 
 # ── Хранение и загрузка шаблонов сообщений ───────────────────────────────────
 
 def get_template(name: str) -> str:
     """Загрузить шаблон из файла; если нет — вернуть встроенный по умолчанию."""
     defaults = {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT,
-                "msg_review_promo": MSG_REVIEW_PROMO}
+                "msg_review_promo": MSG_REVIEW_PROMO, "msg_greeting": MSG_GREETING}
     try:
         raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
         val = raw.get(name, "").strip()

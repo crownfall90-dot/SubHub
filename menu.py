@@ -3280,17 +3280,21 @@ def _random_gmail() -> str:
     return f"{user}@gmail.com"
 
 
+# Если задан — используется вместо случайного gmail при оплате (для конкретного покупателя)
+_override_email: str = ""
+
+
 async def _fill_email_input(page) -> bool:
     """
-    Находит email-input на странице (уже видимый), заполняет случайным @gmail.com,
-    нажимает Save/Submit/Continue (через Enter или JS-клик). Возвращает True если заполнен.
+    Находит email-input на странице (уже видимый), заполняет email покупателя (если задан)
+    или случайным @gmail.com, нажимает Save/Submit/Continue. Возвращает True если заполнен.
     """
     email_input = page.locator(
         "input[type='email'], input[placeholder*='email' i], input[placeholder*='Email' i]"
     )
     if await email_input.count() == 0:
         return False
-    email = _random_gmail()
+    email = _override_email if _override_email else _random_gmail()
     inp = email_input.first
     await inp.scroll_into_view_if_needed()
     await _human_click(page, inp)

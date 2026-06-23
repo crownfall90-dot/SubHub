@@ -859,7 +859,11 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 for ch in otp_code:
                     await page2.keyboard.type(ch)
                     await asyncio.sleep(_rbg.uniform(0.05, 0.10))
-                    if "login" not in page2.url.lower():
+                    try:
+                        if "login" not in page2.url.lower():
+                            _auto_submitted = True
+                            break
+                    except Exception:
                         _auto_submitted = True
                         break
                 await page2.wait_for_timeout(400)
@@ -871,7 +875,10 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                     pass
 
             # Цикл верификации OTP (до 120 секунд)
-            login_success = _auto_submitted and "login" not in page2.url.lower()
+            try:
+                login_success = _auto_submitted and "login" not in page2.url.lower()
+            except Exception:
+                login_success = _auto_submitted  # соединение потеряно, доверяем _auto_submitted
             deadline = time.time() + 120.0
             _btn_clicked = False
 
@@ -881,7 +888,13 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
 
             while time.time() < deadline:
                 # Проверяем редирект в начале каждой итерации
-                if "login" not in page2.url.lower():
+                try:
+                    _cur_url = page2.url.lower()
+                except Exception:
+                    if _auto_submitted:
+                        login_success = True
+                    break
+                if "login" not in _cur_url:
                     login_success = True
                     break
 
@@ -972,15 +985,40 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (120 секунд истекло, сайт не перенаправил)")
                 _bg_del_profile = True
         except BaseException as e:
-            if not isinstance(e, Exception):
-                print(f"  [BG] Прервано ({type(e).__name__}) для +91 {phone_10} — профиль удаляется")
+            _err_str = str(e).lower()
+            _conn_closed = any(k in _err_str for k in ("connection", "closed", "driver", "disconnected", "target closed"))
+            if _conn_closed and _auto_submitted:
+                print(f"  [BG] Соединение с браузером потеряно для +91 {phone_10}, но страница уже перешла с логина — профиль сохраняем")
+                try:
+                    _meta_path = profile_path / ".profile_meta.json"
+                    if profile_path and not _meta_path.exists():
+                        _meta_path.write_text(
+                            json.dumps({"username": phone_10, "login_ts": time.time(),
+                                        "otp_code": otp_code, "source": "bg_loser"},
+                                       ensure_ascii=False), encoding="utf-8"
+                        )
+                        _STATS["profiles_saved"] += 1
+                except Exception:
+                    pass
+                try:
+                    await client.complete(activation_id)
+                except Exception:
+                    pass
+                try:
+                    await _tg_login_ok_notify(phone_10)
+                except Exception:
+                    pass
+                _bg_del_profile = False
             else:
-                print(f"  [BG] Ошибка при фоновом входе +91 {phone_10}: {e}")
-            try:
-                await _tg_login_fail_notify(phone_10, otp_code, f"{type(e).__name__}: {e}")
-            except Exception:
-                pass
-            _bg_del_profile = True
+                if not isinstance(e, Exception):
+                    print(f"  [BG] Прервано ({type(e).__name__}) для +91 {phone_10} — профиль удаляется")
+                else:
+                    print(f"  [BG] Ошибка при фоновом входе +91 {phone_10}: {e}")
+                try:
+                    await _tg_login_fail_notify(phone_10, otp_code, f"{type(e).__name__}: {e}")
+                except Exception:
+                    pass
+                _bg_del_profile = True
         finally:
             if _bg_del_profile:
                 try:
