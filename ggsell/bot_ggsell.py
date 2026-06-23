@@ -11,7 +11,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -865,7 +865,6 @@ class GGSellBotHandler:
         bal_s = lock_s = plus_s = payment_date_s = ""
         try:
             bi = await cli.get_balance_info()
-            print(f"[DEBUG balance] bi={bi}", flush=True)
             bal_s  = f"${bi['free']:.2f}"
             lock_s = f"${bi['lock']:.2f}" if bi.get("lock") else ""
             plus_s = f"${bi['plus']:.2f}" if bi.get("plus") else ""
@@ -987,24 +986,44 @@ class GGSellBotHandler:
         yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0), reverse=True)
 
         done = self.get_done()
-        lines = ["📋 *GGSell — Заказы YouTube Premium*", ""]
         order_btns = []
 
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        total_cnt    = len(yt_orders)
+        today_cnt    = 0
+        today_done   = 0
+
+        for o in yt_orders:
+            inv_i = int(o.get("invoice_id") or o.get("id") or 0)
+            p     = self.parse_order(o)
+            dt    = p["date"]  # "YYYY-MM-DD HH:MM"
+            if dt.startswith(today):
+                today_cnt += 1
+                if inv_i in done:
+                    today_done += 1
+
+        # Шапка — только статистика
+        lines = [
+            "📋 *GGSell — Заказы YouTube Premium*",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+            f"📦 Всего: *{total_cnt}*   ·   📅 Сегодня: *{today_cnt}*   ·   ✅ Выдано сегодня: *{today_done}*",
+            "",
+        ]
+
         if yt_orders:
-            for o in yt_orders[:10]:
+            for o in yt_orders[:15]:
                 inv   = o.get("invoice_id") or o.get("id") or "?"
                 inv_i = int(inv) if str(inv).isdigit() else 0
                 p     = self.parse_order(o)
 
                 if inv_i in done:
-                    icon, status_s = "🔵", "выдано"
+                    icon = "🔵"
                 elif inv_i in self.confirm:
-                    icon, status_s = "⏳", "ждёт подтверждения"
+                    icon = "⏳"
                 else:
-                    icon, status_s = "🟢", "новый"
+                    icon = "🟢"
 
-                # Название продукта (период подписки)
-                name_line = p.get("name_short") or p.get("name") or "YouTube Premium"
+                # Период подписки
                 period = ""
                 for opt in p.get("options", []):
                     val = opt.get("value", "")
@@ -1013,11 +1032,9 @@ class GGSellBotHandler:
                         unit = "мес" if m.group(2) in ("мес", "month") else "год"
                         period = f"{m.group(1)} {unit}"
                         break
-                if period:
-                    name_line = f"YouTube Premium — {period}"
+                name_line = f"YouTube Premium — {period}" if period else "YouTube Premium"
 
-                # Дата + время
-                dt_full = p["date"]  # уже "YYYY-MM-DD HH:MM"
+                dt_full = p["date"]
                 dt_show = dt_full[5:16] if len(dt_full) >= 16 else dt_full  # "MM-DD HH:MM"
 
                 # Email
@@ -1030,7 +1047,7 @@ class GGSellBotHandler:
                 lines.append(f"{icon} *{name_line}*")
                 if email_s:
                     lines.append(f"📧 `{email_s}`")
-                meta_parts = [f"📅 {dt_show}", f"_{status_s}_"]
+                meta_parts = [f"📅 {dt_show}"]
                 if p["sum_buy"]:
                     meta_parts.append(f"💰 {p['sum_buy']}₽")
                 rv = o.get("review_score")
@@ -1046,9 +1063,9 @@ class GGSellBotHandler:
         else:
             lines.append("_Нет последних заказов YouTube Premium_")
 
-        btn_rows = [[b] for b in order_btns]  # каждая кнопка в отдельной строке
+        btn_rows = [[b] for b in order_btns]
 
-        kb_rows = btn_rows[:10] + [
+        kb_rows = btn_rows[:15] + [
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})

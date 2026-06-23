@@ -183,17 +183,39 @@ class GGSellClient:
         """Вернуть информацию о балансе: free, lock, plus."""
         raw = await self._get("/sellers/account/balance/info", {"locale": "ru"})
         c = raw if isinstance(raw, dict) else {}
-        # Поддерживаем обёртки data/content/root
-        content = (
-            c.get("data") or c.get("content") or c
+        data_node = c.get("data") or c.get("content") or c
+        if not isinstance(data_node, dict):
+            data_node = c
+
+        # Структура: data.balance.amount или data.amount или content.amount_t_free
+        bal_node = data_node.get("balance") if isinstance(data_node.get("balance"), dict) else None
+        free = float(
+            (bal_node.get("amount") if bal_node else None)
+            or data_node.get("amount")
+            or data_node.get("amount_t_free")
+            or 0.0
         )
-        if not isinstance(content, dict):
-            content = c
-        return {
-            "free": float(content.get("amount")        or content.get("amount_t_free")  or 0.0),
-            "lock": float(content.get("amount_in_hold") or content.get("amount_t_lock") or 0.0),
-            "plus": float(content.get("amount_plus")   or content.get("amount_t_plus")  or 0.0),
-        }
+        lock = float(
+            data_node.get("amount_in_hold")
+            or data_node.get("amount_t_lock")
+            or (bal_node.get("amount_in_hold") if bal_node else None)
+            or 0.0
+        )
+        plus = float(data_node.get("amount_plus") or data_node.get("amount_t_plus") or 0.0)
+
+        # Холд — пробуем отдельные эндпоинты
+        if not lock:
+            for path in ("/account/payments", "/account/balance", "/sellers/account/payments"):
+                try:
+                    pr = await self._v2_get(path)
+                    pd = (pr.get("data") or pr) if isinstance(pr, dict) else {}
+                    lock = float(pd.get("amount_in_hold") or pd.get("hold") or pd.get("lock") or 0.0)
+                    if lock:
+                        break
+                except Exception:
+                    pass
+
+        return {"free": free, "lock": lock, "plus": plus}
 
     async def get_balance(self) -> float:
         """Вернуть доступный баланс продавца."""
