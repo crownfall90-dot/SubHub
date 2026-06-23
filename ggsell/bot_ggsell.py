@@ -525,44 +525,55 @@ class GGSellBotHandler:
         confirm_lnk = self.confirm.get(invoice_id)
         done        = self.get_done()
         sent_link   = self.get_sent_link(invoice_id)
+        used_ids    = self.get_used()
 
-        lines = [f"📋 *Заказ* `#{invoice_id}`  ·  *{p['name_short']}*", ""]
-        # Суммы
-        sum_parts = []
-        if p["sum_buy"]:
-            sum_parts.append(f"💰 {p['sum_buy']}₽")
-        if p["sum_sell"]:
-            sum_parts.append(f"💼 выплата {p['sum_sell']}₽")
-        if sum_parts:
-            lines.append("  ·  ".join(sum_parts))
-        if email:
-            lines.append(f"👤 `{email}`")
-        if p["date"]:
-            lines.append(f"📅 {p['date']}")
-        # Параметры заказа
+        lines = [
+            f"📦 *Заказ* `#{invoice_id}`",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+        ]
+
+        # Название товара
+        if p["name_short"]:
+            lines.append(f"🏷 *{p['name_short']}*")
+
+        # Параметры (период подписки и т.д.)
         if p["options"]:
-            lines.append("")
             for opt in p["options"]:
-                n_s = opt["name"][:32] + "…" if len(opt["name"]) > 32 else opt["name"]
-                v_s = opt["value"][:45] + "…" if len(opt["value"]) > 45 else opt["value"]
-                p_s = f" _(+{opt['price_add']}₽)_" if opt.get("price_add") else ""
-                lines.append(f"• _{n_s}_: `{v_s}`{p_s}")
+                v_s = opt["value"][:60] + "…" if len(opt["value"]) > 60 else opt["value"]
+                lines.append(f"   ▸ {opt['name']}: `{v_s}`")
+
+        lines.append("")
+
+        # Покупатель
+        if email:
+            lines.append(f"👤 Покупатель: `{email}`")
+
+        # Суммы
+        if p["sum_buy"]:
+            lines.append(f"💰 Сумма покупки: *{p['sum_buy']}₽*")
+        if p["sum_sell"]:
+            lines.append(f"💼 Твоя выплата: *{p['sum_sell']}₽*")
+
+        # Дата
+        if p["date"]:
+            lines.append(f"🕒 {p['date']}")
+
         # Статус
         lines.append("")
-        used_ids = self.get_used()
         if invoice_id in used_ids:
-            lines.append(f"🟡 *Использована*")
+            lines.append("🟡 *Статус: в архиве*")
             if sent_link:
                 lines.append(f"🔗 `{sent_link}`")
         elif invoice_id in done:
-            lines.append(f"🔵 *Выдано*")
+            lines.append("🔵 *Статус: выдано*")
             if sent_link:
                 lines.append(f"🔗 `{sent_link}`")
         elif confirm_lnk:
-            lines.append("⏳ *Ждёт подтверждения*")
+            lines.append("⏳ *Статус: ждёт подтверждения*")
             lines.append(f"🔗 `{confirm_lnk}`")
         else:
-            lines.append("🟢 *Новый — ожидает выполнения*")
+            lines.append("🟢 *Статус: новый*")
+
         return "\n".join(lines)
 
     def order_kb(self, invoice_id: int, has_review: bool = False) -> dict:
@@ -969,6 +980,9 @@ class GGSellBotHandler:
 
         try:
             orders_v1 = await cli.get_orders_v1(limit=30)
+            if orders_v1:
+                logger.debug(f"GGSell orders_v1[0] keys: {list(orders_v1[0].keys())}")
+                logger.debug(f"GGSell orders_v1[0]: {orders_v1[0]}")
             yt_orders = [o for o in orders_v1
                          if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception:
@@ -1028,11 +1042,21 @@ class GGSellBotHandler:
             dt_full = p["date"]
             dt_show = dt_full[5:16] if len(dt_full) >= 16 else dt_full
 
-            email_s = p["email"] or ""
+            # Email: из parse_order → прямо из объекта заказа → кэш orders → done_buyer_emails
+            email_s = (
+                p["email"]
+                or o.get("buyer_email") or o.get("email")
+                or (o.get("buyer") or {}).get("email")
+                or (o.get("buyer_info") or {}).get("email")
+                or ""
+            )
             if not email_s:
                 cached = self.orders.get(inv_i, {})
                 if isinstance(cached, dict):
-                    email_s = cached.get("buyer_email") or ""
+                    email_s = (cached.get("buyer_email")
+                               or self.parse_order(cached.get("order", {})).get("email", ""))
+            if not email_s:
+                email_s = self._done_buyer_emails.get(inv_i, "")
 
             if email_s:
                 btn_label = f"{icon} {email_s[:35]}  {dt_show}"
