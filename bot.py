@@ -517,6 +517,7 @@ def _menu_tg_bot_thread() -> None:
                     [{"text": f"📱 {phone}", "callback_data": "noop"}],
                     [{"text": "📞 Показать номер", "callback_data": f"profile:shownum:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies_archived:{phone}:{rec_key}"}],
+                    [{"text": "🔓 Вынести из архива", "callback_data": f"profile:unarchive:{rec_key}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:archive"}],
                 ]}
 
@@ -1660,6 +1661,29 @@ def _menu_tg_bot_thread() -> None:
                         await _goto_main(cid, mid)
                 else:
                     await _send(cid, f"❌ Не удалось заархивировать профиль <code>{phone}</code>", parse_mode="HTML")
+                return
+
+            if data.startswith("profile:unarchive:"):
+                rec_key = data.split(":", 2)[2]
+                rec_path = USED_PROFILES_DIR / f"record_{rec_key}.json"
+                if not rec_path.exists():
+                    await _ack(qid, "❌ Запись архива не найдена", alert=True)
+                    return
+                try:
+                    import time as _time2, json as _json2
+                    rec_data = _json2.loads(rec_path.read_text(encoding="utf-8"))
+                    phone_ua = rec_data.get("username") or rec_key.rsplit("_", 1)[0]
+                    profile_dir = DONE_PROFILES_DIR / f"profile_{phone_ua}"
+                    profile_dir.mkdir(parents=True, exist_ok=True)
+                    rec_data.setdefault("issued_ts", _time2.time())
+                    meta_file = profile_dir / ".profile_meta.json"
+                    meta_file.write_text(_json2.dumps(rec_data, ensure_ascii=False, indent=2),
+                                         encoding="utf-8")
+                    rec_path.unlink()
+                    await _ack(qid, "🔓 Профиль возвращён в статус «Выдан»")
+                    await _edit(cid, mid, _archive_text(), _archive_kb())
+                except Exception as exc:
+                    await _ack(qid, f"❌ Ошибка: {exc}", alert=True)
                 return
 
             if data.startswith("profile:set_issued:"):

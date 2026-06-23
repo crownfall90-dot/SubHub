@@ -576,7 +576,7 @@ class GGSellBotHandler:
 
         return "\n".join(lines)
 
-    def order_kb(self, invoice_id: int, has_review: bool = False) -> dict:
+    def order_kb(self, invoice_id: int, review_exists: bool = False) -> dict:
         done        = self.get_done()
         used_ids    = self.get_used()
         confirm_lnk = self.confirm.get(invoice_id)
@@ -595,11 +595,11 @@ class GGSellBotHandler:
             ])
         elif invoice_id not in used_ids:
             rows.append([{"text": "🟡 Использована", "callback_data": f"ggsell:mark_used:{invoice_id}"}])
+        review_icon = "✅" if review_exists else "❌"
         chat_row = [
             {"text": "💬 Чат", "callback_data": f"ggsell:chat:{invoice_id}"},
+            {"text": f"{review_icon} Отзыв", "callback_data": f"ggsell:review_order:{invoice_id}"},
         ]
-        if has_review:
-            chat_row.append({"text": "⭐ Отзыв", "callback_data": f"ggsell:review_order:{invoice_id}"})
         rows.append(chat_row)
         rows.append([{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}])
         return {"inline_keyboard": rows}
@@ -979,14 +979,33 @@ class GGSellBotHandler:
             return
 
         try:
-            orders_v1 = await cli.get_orders_v1(limit=30)
-            if orders_v1:
-                logger.debug(f"GGSell orders_v1[0] keys: {list(orders_v1[0].keys())}")
-                logger.debug(f"GGSell orders_v1[0]: {orders_v1[0]}")
+            orders_v1_task = asyncio.ensure_future(cli.get_orders_v1(limit=30))
+            chats_task     = asyncio.ensure_future(cli.get_chats())
+            orders_v1, chats_raw = await asyncio.gather(orders_v1_task, chats_task,
+                                                        return_exceptions=True)
+            if isinstance(orders_v1, Exception):
+                orders_v1 = []
+            if isinstance(chats_raw, Exception):
+                chats_raw = []
             yt_orders = [o for o in orders_v1
                          if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception:
             yt_orders = []
+            chats_raw = []
+
+        # Карта invoice_id → email из чатов (самый надёжный источник)
+        chat_email_map: dict = {}
+        for ch in (chats_raw if isinstance(chats_raw, list) else []):
+            try:
+                inv_id = int(ch.get("id_i") or ch.get("invoice_id") or ch.get("id") or 0)
+                if not inv_id:
+                    continue
+                em = (ch.get("email") or ch.get("buyer_email") or ch.get("name")
+                      or (ch.get("buyer") or {}).get("email") or "")
+                if em and "@" in em:
+                    chat_email_map[inv_id] = em
+            except Exception:
+                pass
 
         if not yt_orders:
             try:
@@ -1042,9 +1061,19 @@ class GGSellBotHandler:
             dt_full = p["date"]
             dt_show = dt_full[5:16] if len(dt_full) >= 16 else dt_full
 
-            # Email: из parse_order → прямо из объекта заказа → кэш orders → done_buyer_emails
+            # Период подписки: "(3)" или "(12)"
+            period_prefix = ""
+            for opt in p["options"]:
+                val = opt.get("value", "")
+                m_p = re.search(r"(\d+)\s*(?:мес|год|month|year)", val.lower())
+                if m_p:
+                    period_prefix = f"({m_p.group(1)}) "
+                    break
+
+            # Email: чаты → parse_order → поля объекта → кэш → done_buyer_emails
             email_s = (
-                p["email"]
+                chat_email_map.get(inv_i)
+                or p["email"]
                 or o.get("buyer_email") or o.get("email")
                 or (o.get("buyer") or {}).get("email")
                 or (o.get("buyer_info") or {}).get("email")
@@ -1059,9 +1088,9 @@ class GGSellBotHandler:
                 email_s = self._done_buyer_emails.get(inv_i, "")
 
             if email_s:
-                btn_label = f"{icon} {email_s[:35]}  {dt_show}"
+                btn_label = f"{icon} {period_prefix}{email_s[:35]}  {dt_show}"
             else:
-                btn_label = f"{icon} #{inv}  {dt_show}"
+                btn_label = f"{icon} {period_prefix}#{inv}  {dt_show}"
             order_btns.append({"text": btn_label[:64],
                                "callback_data": f"ggsell:order:{inv_i}"})
 
@@ -1184,6 +1213,7 @@ class GGSellBotHandler:
                 pass
         # Показываем заказ; если есть отзыв — добавляем блок
         text = self.order_text(invoice_id)
+        review_raw = None
         if cli:
             try:
                 review_raw = await cli.get_order_review(invoice_id)
@@ -1199,7 +1229,7 @@ class GGSellBotHandler:
                     text = text + "\n".join(rv_lines)
             except Exception:
                 pass
-        kb = self.order_kb(invoice_id, has_review=bool(cli))
+        kb = self.order_kb(invoice_id, review_exists=bool(review_raw))
         await self._edit(cid, mid, text, kb)
 
     async def bg_chat(self, cid, mid, invoice_id: int) -> None:
