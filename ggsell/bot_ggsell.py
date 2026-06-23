@@ -1039,11 +1039,8 @@ class GGSellBotHandler:
                 lines.append("  ·  ".join(meta_parts))
                 lines.append("")
 
-                # Кнопка: email + дата
-                if email_s:
-                    btn_label = f"{icon} {email_s[:28]}  {dt_show}"
-                else:
-                    btn_label = f"{icon} #{inv}  {dt_show}"
+                # Кнопка: только email покупателя
+                btn_label = f"{icon} {email_s[:50]}" if email_s else f"{icon} #{inv}  {dt_show}"
                 order_btns.append({"text": btn_label[:64],
                                    "callback_data": f"ggsell:order:{inv_i}"})
         else:
