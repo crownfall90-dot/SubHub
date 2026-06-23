@@ -349,7 +349,7 @@ def _menu_tg_bot_thread() -> None:
         # ── Профили ───────────────────────────────────────────────────────────
         def _get_profile_categories():
             noaddr  = []  # Доступные
-            hasaddr = []  # Готов к оплате
+            hasaddr = []  # С данными
             paid    = []  # Оплаченные (есть ссылка, не выдан)
             active  = []  # Выданные
             if DONE_PROFILES_DIR.exists():
@@ -391,7 +391,7 @@ def _menu_tg_bot_thread() -> None:
                 "📁 *Профили*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"Доступные: *{len(noaddr)}*\n"
-                f"Готов к оплате: *{len(hasaddr)}*\n"
+                f"С данными: *{len(hasaddr)}*\n"
                 f"Оплаченные: *{len(paid)}*\n"
                 f"Выданные: *{len(active)}*\n"
                 f"Архив: *{archiv}*\n\n"
@@ -403,10 +403,10 @@ def _menu_tg_bot_thread() -> None:
             _, archiv = _cnt_profiles()
             return {"inline_keyboard": [
                 [{"text": f"✅ Доступные ({len(noaddr)})", "callback_data": "profiles:list:noaddr"},
-                 {"text": f"💳 Готов к оплате ({len(hasaddr)})", "callback_data": "profiles:list:hasaddr"}],
-                [{"text": f"💰 Оплаченные ({len(paid)})", "callback_data": "profiles:list:paid"},
-                 {"text": f"📤 Выданные ({len(active)})", "callback_data": "profiles:list:active"}],
-                [{"text": f"🗄 Архив ({archiv})", "callback_data": "profiles:list:archive"}],
+                 {"text": f"🟠 С данными ({len(hasaddr)})", "callback_data": "profiles:list:hasaddr"}],
+                [{"text": f"🟣 Оплаченные ({len(paid)})", "callback_data": "profiles:list:paid"},
+                 {"text": f"🔵 Выданные ({len(active)})", "callback_data": "profiles:list:active"}],
+                [{"text": f"🟡 Архив ({archiv})", "callback_data": "profiles:list:archive"}],
                 [{"text": "✅ Проверить все доступные", "callback_data": "profiles:checkall"}],
                 [{"text": "🍪 Восстановить из куков", "callback_data": "profiles:cookies_info"}],
                 [{"text": "◀️ Назад", "callback_data": "go:main"}],
@@ -427,13 +427,13 @@ def _menu_tg_bot_thread() -> None:
                     title = f"✅ *Доступные профили* ({len(noaddr)} шт.)"
                     pairs = noaddr
                 elif list_type == "hasaddr":
-                    title = f"💳 *Готов к оплате* ({len(hasaddr)} шт.)"
+                    title = f"🟠 *С данными* ({len(hasaddr)} шт.)"
                     pairs = hasaddr
                 elif list_type == "paid":
-                    title = f"💰 *Оплаченные профили* ({len(paid)} шт.)"
+                    title = f"🟣 *Оплаченные профили* ({len(paid)} шт.)"
                     pairs = paid
                 elif list_type == "active":
-                    title = f"📤 *Выданные профили* ({len(active)} шт.)"
+                    title = f"🔵 *Выданные профили* ({len(active)} шт.)"
                     pairs = active
                 elif list_type == "archive":
                     return _archive_text()
@@ -451,11 +451,11 @@ def _menu_tg_bot_thread() -> None:
                     has_lnk = bool(m.get("black_activation_link") or m.get("activation_url"))
                     is_rdy  = bool(m.get("prepared_ts") or m.get("buyer_email") or st == "email_completed")
                     if is_iss:
-                        icon = "📤"
+                        icon = "🔵"
                     elif has_lnk or (st in ("activated", "explore_now", "activate_now") or vt):
-                        icon = "💰"
+                        icon = "🟣"
                     elif is_rdy:
-                        icon = "💳"
+                        icon = "🟠"
                     else:
                         icon = "✅"
                     line = f"{icon} `{ph}`"
@@ -499,9 +499,9 @@ def _menu_tg_bot_thread() -> None:
                             continue
                         icon = "✅"
                     elif list_type == "paid":
-                        icon = "💰" if has_lnk else "🌟"
+                        icon = "🟣" if has_lnk else "🌟"
                     else:
-                        icon = "📤" if is_iss else ("💰" if (has_lnk or st in ("activated", "explore_now", "activate_now") or vt) else "✅")
+                        icon = "🔵" if is_iss else ("🟣" if (has_lnk or st in ("activated", "explore_now", "activate_now") or vt) else "✅")
                     label = f"{icon} {ph}"
                     if vt:
                         label += f" · до {vt}"
@@ -568,11 +568,11 @@ def _menu_tg_bot_thread() -> None:
 
         def _archive_text():
             if not USED_PROFILES_DIR or not USED_PROFILES_DIR.exists():
-                return "📦 *Архив*\n\n_Архив пуст_"
+                return "🟡 *Архив*\n\n_Архив пуст_"
             records = sorted(USED_PROFILES_DIR.glob("record_*.json"), reverse=True)
             if not records:
-                return "📦 *Архив*\n\n_Архив пуст_"
-            lines = [f"📦 *Архив* ({len(records)} шт.)", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+                return "🟡 *Архив*\n\n_Архив пуст_"
+            lines = [f"🟡 *Архив* ({len(records)} шт.)", "━━━━━━━━━━━━━━━━━━━━━━", ""]
             for rec in records[:20]:
                 try:
                     d  = json.loads(rec.read_text(encoding="utf-8"))
@@ -586,9 +586,9 @@ def _menu_tg_bot_thread() -> None:
                         except Exception:
                             ts = ""
                     suffix = (f"  ·  до {vt}" if vt else (f"  ·  {ts}" if ts else ""))
-                    lines.append(f"{'🌟' if vt else '✅'} `{ph}`" + suffix)
+                    lines.append(f"🟡 `{ph}`" + suffix)
                 except Exception:
-                    lines.append(f"  • {rec.name}")
+                    lines.append(f"🟡 {rec.name}")
             if len(records) > 20:
                 lines.append(f"\n_...и ещё {len(records) - 20}_")
             return "\n".join(lines)

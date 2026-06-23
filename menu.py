@@ -2075,10 +2075,13 @@ def screen_profiles():
             elif p.get("black_valid_till") or p.get("paid_ready"):
                 _ln = (f"{DIM}{p['login_str']}{RST}"
                        + (f"  {DIM}|{RST}  {G}до: {_vt_disp}{RST}" if _vt_disp else ""))
-                status_pre = f"  {G}✅{RST}"
+                status_pre = f"  {M}🟣{RST}"
+            elif p.get("prepared_ts") or p.get("buyer_email"):
+                _ln = f"{DIM}{p['login_str']}{RST}"
+                status_pre = f"  \033[38;5;208m🟠{RST}"
             else:
                 _ln = f"{DIM}{p['login_str']}{RST}"
-                status_pre = f"  {G}●{RST}"
+                status_pre = f"  {G}✅{RST}"
             login_col = R if no_meta else DIM
             print(
                 f"  {BLD}{Y}[{i:>2}]{RST}{status_pre}  "
@@ -8460,7 +8463,7 @@ def screen_main():
         opt("3", "Открыть сохранённый профиль Chrome", C)
         opt("П", "Проверить активацию всех выданных", G)
         opt("К", "Восстановить профиль из JSON куков (cookies_backup/)", C)
-        opt("6", "Архив использованных профилей", M)
+        opt("6", "🟡 Архив профилей", M)
 
         section("НАСТРОЙКИ", B)
         opt("0", "Карты для оплаты (добавить / удалить)", C)
