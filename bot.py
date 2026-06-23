@@ -610,7 +610,10 @@ def _menu_tg_bot_thread() -> None:
                         label = f"{icon} {ph}"
                         if vt:
                             label += f" · {vt}"
-                        rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:archive:{rec_key}"}])
+                        rows.append([
+                            {"text": label, "callback_data": f"profile:menu:{ph}:archive:{rec_key}"},
+                            {"text": "🔓", "callback_data": f"profile:unarchive:{rec_key}"},
+                        ])
                     except Exception:
                         rows.append([{"text": rec.name, "callback_data": f"profile:menu:{rec_key}:archive:{rec_key}"}])
                 rows.append([{"text": "◀️ Назад", "callback_data": "go:profiles"}])
