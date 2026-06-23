@@ -2081,7 +2081,7 @@ def screen_profiles():
                 status_pre = f"  \033[38;5;208m🟠{RST}"
             else:
                 _ln = f"{DIM}{p['login_str']}{RST}"
-                status_pre = f"  {G}✅{RST}"
+                status_pre = f"  {G}🟢{RST}"
             login_col = R if no_meta else DIM
             print(
                 f"  {BLD}{Y}[{i:>2}]{RST}{status_pre}  "

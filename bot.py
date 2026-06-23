@@ -390,11 +390,11 @@ def _menu_tg_bot_thread() -> None:
             return (
                 "📁 *Профили*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"Доступные: *{len(noaddr)}*\n"
-                f"С данными: *{len(hasaddr)}*\n"
-                f"Оплаченные: *{len(paid)}*\n"
-                f"Выданные: *{len(active)}*\n"
-                f"Архив: *{archiv}*\n\n"
+                f"🟢 Доступные: *{len(noaddr)}*\n"
+                f"🟠 С данными: *{len(hasaddr)}*\n"
+                f"🟣 Оплаченные: *{len(paid)}*\n"
+                f"🔵 Выданные: *{len(active)}*\n"
+                f"🟡 Архив: *{archiv}*\n\n"
                 "Выберите действие:"
             )
 
@@ -402,12 +402,12 @@ def _menu_tg_bot_thread() -> None:
             noaddr, hasaddr, paid, active = _get_profile_categories()
             _, archiv = _cnt_profiles()
             return {"inline_keyboard": [
-                [{"text": f"✅ Доступные ({len(noaddr)})", "callback_data": "profiles:list:noaddr"},
+                [{"text": f"🟢 Доступные ({len(noaddr)})", "callback_data": "profiles:list:noaddr"},
                  {"text": f"🟠 С данными ({len(hasaddr)})", "callback_data": "profiles:list:hasaddr"}],
                 [{"text": f"🟣 Оплаченные ({len(paid)})", "callback_data": "profiles:list:paid"},
                  {"text": f"🔵 Выданные ({len(active)})", "callback_data": "profiles:list:active"}],
-                [{"text": f"🟡 Архив ({archiv})", "callback_data": "profiles:list:archive"}],
-                [{"text": "✅ Проверить все доступные", "callback_data": "profiles:checkall"}],
+                [{"text": f"🟡 Архив ({archiv})", "callback_data": "profiles:list:archive"},
+                 {"text": "Проверить 🟢", "callback_data": "profiles:checkall"}],
                 [{"text": "🍪 Восстановить из куков", "callback_data": "profiles:cookies_info"}],
                 [{"text": "◀️ Назад", "callback_data": "go:main"}],
             ]}
@@ -424,7 +424,7 @@ def _menu_tg_bot_thread() -> None:
             try:
                 noaddr, hasaddr, paid, active = _get_profile_categories()
                 if list_type == "noaddr":
-                    title = f"✅ *Доступные профили* ({len(noaddr)} шт.)"
+                    title = f"🟢 *Доступные профили* ({len(noaddr)} шт.)"
                     pairs = noaddr
                 elif list_type == "hasaddr":
                     title = f"🟠 *С данными* ({len(hasaddr)} шт.)"
@@ -457,7 +457,7 @@ def _menu_tg_bot_thread() -> None:
                     elif is_rdy:
                         icon = "🟠"
                     else:
-                        icon = "✅"
+                        icon = "🟢"
                     line = f"{icon} `{ph}`"
                     if vt:
                         line += f"  до {vt}"
@@ -497,11 +497,11 @@ def _menu_tg_bot_thread() -> None:
                     if list_type in ("noaddr", "hasaddr"):
                         if not has_login:
                             continue
-                        icon = "✅"
+                        icon = "🟢"
                     elif list_type == "paid":
                         icon = "🟣" if has_lnk else "🌟"
                     else:
-                        icon = "🔵" if is_iss else ("🟣" if (has_lnk or st in ("activated", "explore_now", "activate_now") or vt) else "✅")
+                        icon = "🔵" if is_iss else ("🟣" if (has_lnk or st in ("activated", "explore_now", "activate_now") or vt) else "🟢")
                     label = f"{icon} {ph}"
                     if vt:
                         label += f" · до {vt}"
