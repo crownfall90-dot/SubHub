@@ -181,43 +181,14 @@ class GGSellClient:
 
     async def get_balance_info(self) -> Dict[str, float]:
         """Вернуть информацию о балансе: free, lock, plus.
-        Пробует несколько эндпоинтов, берёт первый который даёт amount_in_hold."""
-        free = lock = plus = 0.0
-
-        # Сначала пробуем v2-эндпоинты — они возвращают {"data":{"amount":...,"amount_in_hold":...}}
-        for v2_path in ("/balance", "/account/balance", "/account"):
-            try:
-                raw = await self._v2_get(v2_path)
-                d = (raw.get("data") or raw) if isinstance(raw, dict) else {}
-                if not isinstance(d, dict):
-                    continue
-                _free = float(d.get("amount") or d.get("free") or 0.0)
-                _lock = float(d.get("amount_in_hold") or d.get("hold") or d.get("lock") or 0.0)
-                if _free or _lock:
-                    free, lock = _free, _lock
-                    plus = float(d.get("amount_plus") or 0.0)
-                    if lock:
-                        return {"free": free, "lock": lock, "plus": plus}
-                    break
-            except Exception:
-                continue
-
-        # Запасной вариант: v1 /sellers/account/balance/info
-        try:
-            raw = await self._get("/sellers/account/balance/info", {"locale": "ru"})
-            c = raw if isinstance(raw, dict) else {}
-            d = c.get("data") or c.get("content") or c
-            if not isinstance(d, dict):
-                d = c
-            bal = d.get("balance") if isinstance(d.get("balance"), dict) else None
-            if not free:
-                free = float((bal.get("amount") if bal else None) or d.get("amount") or d.get("amount_t_free") or 0.0)
-            if not lock:
-                lock = float(d.get("amount_in_hold") or d.get("amount_t_lock") or 0.0)
-        except Exception:
-            pass
-
-        return {"free": free, "lock": lock, "plus": plus}
+        Официальная схема: content.amount_t_free / amount_t_lock / amount_t_plus"""
+        raw = await self._get("/sellers/account/balance/info", {"locale": "ru"})
+        c = (raw.get("content") if isinstance(raw, dict) else {}) or {}
+        return {
+            "free": float(c.get("amount_t_free") or 0.0),
+            "lock": float(c.get("amount_t_lock") or 0.0),
+            "plus": float(c.get("amount_t_plus") or 0.0),
+        }
 
     async def get_balance(self) -> float:
         """Вернуть доступный баланс продавца."""
