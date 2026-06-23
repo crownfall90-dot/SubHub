@@ -283,7 +283,11 @@ class GGSellMonitor:
                     _last_review_check = time.monotonic()
 
             except GGSellError as exc:
-                logger.warning(f"GGSell API: {exc}")
+                _emsg = str(exc)
+                if any(c in _emsg for c in ("502", "503", "504", "429")):
+                    logger.debug(f"GGSell API: {_emsg} (временная ошибка сервера)")
+                else:
+                    logger.warning(f"GGSell API: {_emsg}")
             except asyncio.CancelledError:
                 break
             except RuntimeError as exc:
