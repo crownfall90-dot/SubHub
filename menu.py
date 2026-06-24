@@ -2658,8 +2658,10 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
 async def _do_fill_address(profile_path: Path, addr: dict,
                            _skip_proxies: set | None = None,
                            _retry_n: int = 0,
-                           _use_proxy: bool = True) -> tuple[bool, str]:
+                           _use_proxy: bool | None = None) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
+    if _use_proxy is None:
+        _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
     _MAX_PROXY_RETRIES = 3
     if _skip_proxies is None:
         _skip_proxies = set()
@@ -2712,7 +2714,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             if not await _fill_address_form(page, addr):
                 return False
             try:
-                await page.wait_for_url("**/viewcheckout**", timeout=20_000)
+                await page.wait_for_url("**/viewcheckout**", timeout=10_000)
             except Exception:
                 pass
             await page.wait_for_timeout(1_000)
@@ -2756,7 +2758,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 # ждём ещё и пробуем нажать Confirm + go_back
                 print(f"  Всё ещё на address-map — жду возврата...")
                 try:
-                    await page.wait_for_url("**/viewcheckout**", timeout=20_000)
+                    await page.wait_for_url("**/viewcheckout**", timeout=10_000)
                     reached = await _viewcheckout_to_payments(page)
                 except Exception:
                     if "address-map" in page.url:
@@ -2969,7 +2971,7 @@ async def _fill_address_form(page, addr: dict) -> bool:
 
     # Ждём загрузки формы
     try:
-        await page.wait_for_selector("input", state="visible", timeout=30_000)
+        await page.wait_for_selector("input", state="visible", timeout=10_000)
     except Exception:
         pass
     await page.wait_for_timeout(800)
@@ -4076,9 +4078,9 @@ async def _handle_paytm_currency_page(page) -> bool:
                 pass
             return False
 
-        # Шаг 3: ждём навигации после клика Pay INR (до 15 сек)
+        # Шаг 3: ждём навигации после клика Pay INR (до 3 сек)
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=15_000)
+            await page.wait_for_load_state("domcontentloaded", timeout=3_000)
         except Exception:
             pass
 
@@ -4141,7 +4143,7 @@ async def _handle_paytm_currency_page(page) -> bool:
 
         for _3ds_try in range(12):
             try:
-                await page.wait_for_load_state("domcontentloaded", timeout=5_000)
+                await page.wait_for_load_state("domcontentloaded", timeout=3_000)
             except Exception:
                 pass
             cur_url_3ds = page.url
@@ -4373,6 +4375,10 @@ async def _handle_paytm_currency_page(page) -> bool:
                 "      location.pathname.includes('/challenge') || "
                 "      location.pathname.includes('/error') || "
                 "      location.hostname.includes('flipkart.com') || "
+                "      location.hostname.includes('cardinalcommerce.com') || "
+                "      location.pathname.includes('StepUp') || "
+                "      location.pathname.includes('stepup') || "
+                "      location.hostname.includes('3dsecure') || "
                 "      (document.body && document.body.innerText.toLowerCase().includes('declined'))",
                 timeout=45_000,
             )
@@ -4511,7 +4517,12 @@ async def _handle_3ds_verification(page) -> bool:
     if not _on_3ds:
         # Ждём 3DS страницы (hitrust, visa, mastercard ACS) — до 15 сек
         try:
-            await page.wait_for_url("**/challenge/**", timeout=15_000)
+            _3ds_patterns = ("cardinalcommerce", "3dsecure", "verify.visa", "mastercard",
+                             "hitrust", "acs-auth", "challenge", "threeDSecure", "threedsecure", "StepUp", "stepup")
+            await page.wait_for_url(
+                lambda u: any(pat in u for pat in _3ds_patterns) or "3ds" in u.lower(),
+                timeout=15_000
+            )
         except Exception:
             try:
                 await page.wait_for_function(
@@ -5953,6 +5964,9 @@ async def _viewcheckout_to_payments(page) -> bool:
     import random as _r
 
     if "viewcheckout" not in page.url:
+        if "changeShippingAddress" in page.url or "add/form" in page.url:
+            print(f"  {DIM}Обнаружена страница адреса, ждём 5 секунд для прогрузки...{RST}")
+            await page.wait_for_timeout(5_000)
         return "payments" in page.url
 
     # Ждём пока viewcheckout прогрузит контент — Continue на Flipkart это <DIV>, не <button>
@@ -5960,9 +5974,17 @@ async def _viewcheckout_to_payments(page) -> bool:
     print(f"  {DIM}Ждём загрузки viewcheckout...{RST}")
     try:
         await page.wait_for_function("""() => {
+            if (location.href.includes('changeShippingAddress') || location.href.includes('add/form')) return true;
             const body = (document.body?.textContent || '').toLowerCase();
             if (body.includes('currently out of stock') || body.includes('out of stock for') ||
                 body.includes('not deliverable') || body.includes('try another address')) return true;
+            
+            // Если видна кнопка "Set Location" - выходим мгновенно, чтобы не ждать Continue
+            for (const el of document.querySelectorAll('button, div, a, span, [role="button"]')) {
+                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (t === 'set location') return true;
+            }
+            
             const kw = ['continue', 'place order'];
             for (const el of document.querySelectorAll('div, button, a, span, [role="button"]')) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
@@ -6092,6 +6114,11 @@ async def _viewcheckout_to_payments(page) -> bool:
         # Ещё на viewcheckout — подождём и повторим
         await page.wait_for_timeout(_r.uniform(600, 1_000))
 
+    if "payments" not in page.url and ("changeShippingAddress" in page.url or "add/form" in page.url):
+        print(f"  {DIM}Перешли на страницу адреса, ждём 5 секунд для прогрузки...{RST}")
+        await page.wait_for_timeout(5_000)
+        return False
+
     # Финальное ожидание
     try:
         await page.wait_for_url("**/payments**", timeout=15_000)
@@ -6164,12 +6191,14 @@ async def _navigate_search_buy(page, months: int) -> str | None:
 async def _do_buy_membership(profile_path: Path, months: int, card: dict | None = None,
                              _skip_proxies: set | None = None,
                              _retry_n: int = 0,
-                             _use_proxy: bool = True,
+                             _use_proxy: bool | None = None,
                              _forced_proxy: dict | None = None,
                              _skip_proxy_loop: bool = False) -> tuple[bool, str]:
     """Buy Now → адрес (если нужен) → viewcheckout → Continue → оплата.
     Прокси используется для всего (навигация + оплата) через встроенный Playwright
     Chromium — CDP Fetch.authRequired обрабатывает авторизацию без диалога."""
+    if _use_proxy is None:
+        _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
     _MAX_PROXY_RETRIES = 3
     _auto_close = _forced_proxy is not None   # proxy-попытки всегда закрывают браузер
     if _skip_proxies is None:
@@ -6361,6 +6390,26 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 _all_cards = _jj.loads(CARDS_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
+
+        # Сортируем карты в соответствии с установленным порядком (data/card_order.json)
+        try:
+            _order_file = _DATA / "card_order.json"
+            if _order_file.exists():
+                _order = _jj.loads(_order_file.read_text(encoding="utf-8"))
+                if _order and isinstance(_order, list):
+                    _sorted = []
+                    for _idx in _order:
+                        if 0 <= _idx < len(_all_cards):
+                            _sorted.append(_all_cards[_idx])
+                    # Добавляем карты, которые не были упомянуты в порядке
+                    for _c in _all_cards:
+                        if _c not in _sorted:
+                            _sorted.append(_c)
+                    if _sorted:
+                        _all_cards = _sorted
+        except Exception as _ex:
+            print(f"  Ошибка применения порядка карт: {_ex}")
+
         if card:
             _rest = [c for c in _all_cards if c.get("number") != card.get("number")]
             _cards_seq = [card] + _rest
@@ -7711,7 +7760,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     addr_msg = f"{addr_oi['name']} | {addr_oi['pincode']} {addr_oi['city']}"
                     print(f"  {G}✔ Адрес сохранён: {addr_msg}{RST}")
                     try:
-                        await page.wait_for_url("**/viewcheckout**", timeout=20_000)
+                        await page.wait_for_url("**/viewcheckout**", timeout=10_000)
                     except Exception:
                         pass
                     await page.wait_for_timeout(1_500)
