@@ -2096,15 +2096,60 @@ def screen_profiles():
             )
         # Кнопка удаления профилей без данных (если есть)
         no_data_count = sum(1 for p in profiles if p.get("login_ts") is None)
+        noaddr_profiles = [p for p in profiles
+                           if not p.get("issued_ts")
+                           and not p.get("black_valid_till") and not p.get("paid_ready")
+                           and p.get("status") not in ("activated", "explore_now", "activate_now")
+                           and not p.get("prepared_ts") and not p.get("buyer_email")
+                           and p.get("status") != "email_completed"
+                           and p.get("login_ts")]
+        if noaddr_profiles:
+            opt("А", f"Заполнить все доступные [{len(noaddr_profiles)} шт.]  (адрес → чекаут → до оплаты)", G)
         if no_data_count:
             opt("9", f"Удалить все {no_data_count} профиля без данных (нет мета-файла)", R)
         print()
         opt("0", "Назад", R)
         print()
 
-        choice = input(f"  {BLD}Выберите профиль [1-{len(profiles)}], 9 или 0: {RST}").strip()
+        choice = input(f"  {BLD}Выберите профиль [1-{len(profiles)}], А, 9 или 0: {RST}").strip().upper()
         if choice == "0" or choice == "":
             return
+
+        if choice == "А" and noaddr_profiles:
+            print(f"\n  {G}⚡ Заполняю все доступные профили ({len(noaddr_profiles)} шт.)...{RST}")
+            print(f"  {DIM}Адрес → чекаут → страница оплаты → закрыть{RST}\n")
+            _fa_ok = _fa_oos = _fa_oos2 = _fa_err = 0
+            for _fa_p in noaddr_profiles:
+                _fa_addr = _gen_indian_address()
+                print(f"  {DIM}▶ {_fa_p['username']} ...{RST}", end="", flush=True)
+                try:
+                    _fa_ok_r, _fa_msg = asyncio.run(
+                        _do_fill_address(_fa_p["path"], _fa_addr, stop_at_payment=True))
+                    if _fa_ok_r:
+                        _fa_ok += 1
+                        print(f"  {G}✔ готов{RST}")
+                    elif _fa_msg == "OUT_OF_STOCK_2":
+                        _fa_oos2 += 1
+                        print(f"  {R}✘ OOS (2 адреса) — удалён{RST}")
+                    elif _fa_msg == "OUT_OF_STOCK":
+                        _fa_oos += 1
+                        print(f"  {R}✘ OOS — удалён{RST}")
+                    else:
+                        _fa_err += 1
+                        print(f"  {Y}⚠ ошибка: {_fa_msg[:60]}{RST}")
+                except Exception as _fa_exc:
+                    _fa_err += 1
+                    print(f"  {R}✘ {_fa_exc}{RST}")
+            print(f"\n  ━━━━━━━━━━━━━━━━━━━━━━")
+            print(f"  {G}✅ Готово: {_fa_ok}{RST}")
+            if _fa_oos2:
+                print(f"  {R}🚫 OOS (2 адреса): {_fa_oos2}{RST}")
+            if _fa_oos:
+                print(f"  {R}🚫 OOS: {_fa_oos}{RST}")
+            if _fa_err:
+                print(f"  {Y}❌ Ошибки: {_fa_err}{RST}")
+            pause()
+            continue
 
         if choice == "9" and no_data_count:
             import shutil as _sh, os as _os, stat as _stat
