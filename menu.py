@@ -2064,29 +2064,35 @@ def screen_profiles():
             no_meta = p.get("login_ts") is None
             _vt_disp = p.get("black_valid_till") or p.get("subscription_expires_str") or ""
             _slink_disp = p.get("black_short_link") or ""
+            _st = p.get("status") or ""
             if p.get("issued_ts"):
                 _ln = (f"{DIM}{p['login_str']}{RST}"
                        f"  {DIM}|{RST}  {B}выдан: {p['issued_str']}{RST}"
                        + (f"  {DIM}|{RST}  {M}до: {_vt_disp}{RST}" if _vt_disp else ""))
                 status_pre = f"  {B}🔵{RST}"
+                status_lbl = f"{B}Выданные{RST}"
             elif no_meta:
                 _ln = f"{R}⚠ Нет данных{RST}"
                 status_pre = f"  {R}⚠{RST}"
-            elif p.get("black_valid_till") or p.get("paid_ready"):
+                status_lbl = f"{R}Нет данных{RST}"
+            elif p.get("black_valid_till") or p.get("paid_ready") or _st in ("activated", "explore_now", "activate_now"):
                 _ln = (f"{DIM}{p['login_str']}{RST}"
                        + (f"  {DIM}|{RST}  {G}до: {_vt_disp}{RST}" if _vt_disp else ""))
                 status_pre = f"  {M}🟣{RST}"
-            elif p.get("prepared_ts") or p.get("buyer_email"):
+                status_lbl = f"{M}Оплаченные{RST}"
+            elif p.get("prepared_ts") or p.get("buyer_email") or _st == "email_completed":
                 _ln = f"{DIM}{p['login_str']}{RST}"
                 status_pre = f"  \033[38;5;208m🟠{RST}"
+                status_lbl = f"\033[38;5;208mС данными{RST}"
             else:
                 _ln = f"{DIM}{p['login_str']}{RST}"
                 status_pre = f"  {G}🟢{RST}"
+                status_lbl = f"{G}Доступные{RST}"
             login_col = R if no_meta else DIM
             print(
                 f"  {BLD}{Y}[{i:>2}]{RST}{status_pre}  "
                 f"{W}+91 {p['username']:<15}{RST}  "
-                f"{_ln}"
+                f"{_ln}  {DIM}│{RST}  {status_lbl}"
             )
         # Кнопка удаления профилей без данных (если есть)
         no_data_count = sum(1 for p in profiles if p.get("login_ts") is None)
