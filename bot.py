@@ -568,12 +568,13 @@ def _menu_tg_bot_thread() -> None:
             else:
                 back_callback = f"profiles:list:{list_type}" if list_type in ("noaddr", "hasaddr") else "profiles:list:noaddr"
                 has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
-                rows = [
-                    [{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
-                     {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}],
-                    [{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}],
-                    [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
-                ]
+                rows = []
+                # Кнопки покупки нужны только пока ссылка не получена и профиль не выдан
+                if not has_link and not is_issued:
+                    rows.append([{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
+                                 {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}])
+                    rows.append([{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}])
+                rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
                     if not is_issued:
