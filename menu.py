@@ -3087,6 +3087,32 @@ async def _fill_address_form(page, addr: dict) -> bool:
         except Exception:
             pass
 
+        # Диалог "Incorrect address" — выбираем первый вариант и нажимаем CONFIRM
+        if not _confirmed:
+            try:
+                _incorr = page.locator("text=Incorrect address")
+                if await _incorr.count() > 0 and await _incorr.first.is_visible():
+                    # Если ни один вариант не выбран — выбираем первый
+                    _radios = page.locator('input[type="radio"]')
+                    if await _radios.count() > 0:
+                        _checked = page.locator('input[type="radio"]:checked')
+                        if await _checked.count() == 0:
+                            await _radios.first.click()
+                            await page.wait_for_timeout(300)
+                    _confirm2 = page.get_by_text("CONFIRM", exact=True).first
+                    if await _confirm2.count() > 0 and await _confirm2.is_visible():
+                        await _human_click(page, _confirm2, before=0.3)
+                        print(f"  {G}✔ CONFIRM нажат (диалог Incorrect address){RST}")
+                        _confirmed = True
+                        for _ in range(4):
+                            await page.wait_for_timeout(1_000)
+                            if await save_loc.count() == 0 or not await save_loc.is_visible():
+                                break
+                            if any(s in page.url for s in ("viewcheckout", "payments", "changeShipping")):
+                                break
+            except Exception:
+                pass
+
         # Если кнопка исчезла или ушли со страницы формы — адрес принят
         if await save_loc.count() == 0 or not await save_loc.is_visible():
             break
