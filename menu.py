@@ -4960,11 +4960,8 @@ async def _handle_3ds_verification(page) -> bool:
             import re as _re3d
             import json as _json3d
             _OTP_FILE_3D = Path(__file__).parent / "data" / "tg_otp_3ds.json"
-            # Очищаем старые коды
-            try:
-                _OTP_FILE_3D.write_text("[]", encoding="utf-8")
-            except Exception:
-                pass
+            # Файл НЕ очищаем — код мог прийти до появления поля 3DS (сброс старых
+            # кодов делается один раз в начале оплаты в _enter_card_on_payments).
             _otp_submitted = False
             while asyncio.get_event_loop().time() < _otp_tgt:
                 if "flipkart.com" in page.url:
@@ -5054,11 +5051,8 @@ async def _get_3ds_otp_from_telegram() -> str | None:
     wait_sec = int(_cfg.get("telegram_otp", {}).get("wait_timeout", 1200))
     print(f"  {Y}Жду OTP из Telegram (до {wait_sec // 60} мин)...{RST}")
 
-    # Очищаем старые коды перед ожиданием
-    try:
-        _OTP_FILE.write_text("[]", encoding="utf-8")
-    except Exception:
-        pass
+    # Файл НЕ очищаем — код мог прийти ещё до появления поля 3DS. Старые коды
+    # сбрасываются один раз в начале оплаты (_enter_card_on_payments).
 
     deadline = asyncio.get_running_loop().time() + wait_sec
 
@@ -5089,6 +5083,16 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
     Возвращает True если карта была введена.
     """
     import random as _r
+
+    # Сбрасываем старые 3DS-OTP коды ОДИН раз в начале оплаты (не на ретраях).
+    # Дальше файл НЕ очищаем — иначе теряется код, который пользователь прислал
+    # ещё до появления поля 3DS (именно из-за этого оплата ложно «не проходила»).
+    if _decline_attempt == 0:
+        try:
+            (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text(
+                "[]", encoding="utf-8")
+        except Exception:
+            pass
 
     # ── 1. Кликаем «Credit / Debit / ATM Card» в левой панели ────────────────
     # Ждём загрузки списка способов оплаты через wait_for_function
