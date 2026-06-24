@@ -5556,13 +5556,17 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     except Exception:
         pass
 
-    # Проверяем "Welcome to BLACK" баннер на orderresponse странице = оплата подтверждена
-    # Надёжный признак: ссылка на flipkart-black-store присутствует в HTML
+    # Успех ТОЛЬКО если Flipkart перебросил на страницу подтверждения заказа
+    # («Welcome to BLACK» / orderresponse). Просто нахождение на flipkart-black-store
+    # успехом НЕ считается: туда 3DS-хендлер переходит и при неудаче (например, не
+    # хватило денег) — иначе ранее это давало ложный «оплата прошла».
     _black_banner_link = ""
+    _banner_confirmed = False
     try:
         _order_html = (await page.evaluate("() => document.documentElement.innerHTML")) or ""
         _order_body = (await page.evaluate("() => (document.body.innerText||'')")).lower()
-        if "flipkart-black-store" in _order_html or "welcome to black" in _order_body or "orderresponse" in cur_url:
+        if "orderresponse" in cur_url or "welcome to black" in _order_body:
+            _banner_confirmed = True
             print(f"  {G}✅ «Welcome to BLACK» — оплата подтверждена{RST}")
             result["paid"] = True
             # Ищем точную ссылку на Black Store в HTML
@@ -5575,6 +5579,14 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                 print(f"  {G}🔗 Ссылка на Black Store из баннера: {_black_banner_link[:80]}{RST}")
     except Exception:
         pass
+
+    # Нет баннера успешной оплаты — транзакция НЕ успешна (например, не хватило денег).
+    # Не идём на black-store, чтобы не принять существующую подписку за новую оплату.
+    if not _banner_confirmed:
+        print(f"  {Y}⚠ Нет баннера успешной оплаты — транзакция не подтверждена{RST}")
+        result["error"] = "no_success_banner"
+        _send_tg_error(phone_number, "Нет баннера успешной оплаты — оплата не прошла")
+        return result
 
     # ── 1. Открываем flipkart-black-store (или используем текущую страницу) ──
     _black_url = _black_banner_link or "https://www.flipkart.com/flipkart-black-store"
