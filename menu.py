@@ -3313,10 +3313,10 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     _SUCCESS_PARTS = ("viewcheckout", "changeShippingAddress", "add/form", "payments")
 
     if not skip_goto:
-        # Страница товара тяжёлая (через прокси) — даём больше времени и не падаем
-        # по таймауту: даже частично загруженной страницы хватает для клика Buy Now
+        # Страница товара тяжёлая — не падаем по таймауту: даже частично
+        # загруженной страницы хватает для клика Buy Now
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=10_000)
         except Exception:
             pass
         # Ждём networkidle чтобы ov_redirect=true редиректы успели завершиться
