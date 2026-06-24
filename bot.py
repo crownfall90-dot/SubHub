@@ -1021,6 +1021,9 @@ def _menu_tg_bot_thread() -> None:
                 if ok:
                     await _send(cid, f"✅ <b>{phone}</b> — адрес заполнен\n"
                                      f"<code>{addr_str}</code>", parse_mode="HTML")
+                elif msg2 == "OUT_OF_STOCK":
+                    await _send(cid, f"🚫 <b>{phone}</b> — Currently out of stock\n"
+                                     f"<i>Профиль удалён</i>", parse_mode="HTML")
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {msg2_safe}", parse_mode="HTML")
             except Exception as e:
@@ -1302,8 +1305,9 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, "✅ _Нет профилей в категории «Доступные»_")
                 return
             await _send(cid, f"⚡ *Заполняю все доступные профили* ({len(need)} шт.)\n_Адрес → чекаут → страница оплаты → закрыть_")
-            ok_cnt = fail_cnt = 0
+            ok_cnt = fail_cnt = oos_cnt = 0
             fail_phones = []
+            oos_phones = []
             for ph, pp in need:
                 try:
                     addr = _m("_gen_indian_address")()
@@ -1313,6 +1317,9 @@ def _menu_tg_bot_thread() -> None:
                     ok, msg_r = _unpack(raw)
                     if ok:
                         ok_cnt += 1
+                    elif msg_r == "OUT_OF_STOCK":
+                        oos_cnt += 1
+                        oos_phones.append(ph)
                     else:
                         fail_cnt += 1
                         fail_phones.append(ph)
@@ -1323,9 +1330,13 @@ def _menu_tg_bot_thread() -> None:
                 f"⚡ *Готово* ({len(need)} профилей)",
                 "━━━━━━━━━━━━━━━━━━━━━━",
                 f"✅ Успешно: *{ok_cnt}*",
-                f"❌ Ошибки: *{fail_cnt}*",
             ]
-            if fail_phones:
+            if oos_cnt:
+                lines.append(f"🚫 Currently out of stock: *{oos_cnt}* _(профили удалены)_")
+                for fp in oos_phones[:5]:
+                    lines.append(f"  • `{fp}`")
+            if fail_cnt:
+                lines.append(f"❌ Ошибки: *{fail_cnt}*")
                 for fp in fail_phones[:5]:
                     lines.append(f"  • `{fp}`")
             await _send(cid, "\n".join(lines))
