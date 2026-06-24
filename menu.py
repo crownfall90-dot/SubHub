@@ -2739,22 +2739,62 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 return False, "Кнопка Save Address не найдена в форме адреса"
 
         # ── Шаг B: viewcheckout → email → Continue → payments ───────────────
-        async def _oos_delete_return():
+        async def _oos_delete_return(retry_done: bool = False):
             """Удаляет профиль при OOS и возвращает стандартный код."""
             nonlocal _keep_open
             _keep_open = True
             shutil.rmtree(profile_path, ignore_errors=True)
-            return False, "OUT_OF_STOCK"
+            return False, "OUT_OF_STOCK_2" if retry_done else "OUT_OF_STOCK"
+
+        async def _oos_try_new_addr() -> bool:
+            """Пробует нажать Change и заполнить новый адрес при OOS.
+            Возвращает True если после смены OOS исчез."""
+            try:
+                _change_btn = page.locator(
+                    "button:has-text('Change'), [role='button']:has-text('Change'), "
+                    "button:has-text('Try Another Address'), a:has-text('Try Another Address')"
+                ).first
+                if await _change_btn.count() > 0:
+                    await _change_btn.click()
+                    await page.wait_for_timeout(1_500)
+            except Exception:
+                pass
+            if "changeShippingAddress" not in page.url and "add/form" not in page.url:
+                return False
+            _new_addr = _gen_indian_address()
+            _lat2, _lon2 = _CITY_COORDS.get(_new_addr.get("city", ""), (20.5937, 78.9629))
+            await ctx.set_geolocation({"latitude": _lat2, "longitude": _lon2})
+            if not await _fill_address_form(page, _new_addr):
+                return False
+            try:
+                await page.wait_for_url("**/viewcheckout**", timeout=10_000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1_000)
+            try:
+                _b2 = (await page.evaluate("() => (document.body?.textContent || '').toLowerCase()"))
+                return not any(p in _b2 for p in _OOS_PHRASES)
+            except Exception:
+                return False
 
         if "viewcheckout" in page.url:
             body = (await page.evaluate(
                 "() => (document.body && document.body.textContent) || ''")).lower()
             if any(p in body for p in _OOS_PHRASES):
-                return await _oos_delete_return()
+                print(f"  {Y}⚠ OOS — пробую сменить адрес...{RST}")
+                if not await _oos_try_new_addr():
+                    return await _oos_delete_return(retry_done=True)
+                print(f"  {G}✔ Новый адрес принят, OOS исчез{RST}")
 
             reached = await _viewcheckout_to_payments(page)
             if reached == "OUT_OF_STOCK":
-                return await _oos_delete_return()
+                print(f"  {Y}⚠ OOS после Continue — пробую сменить адрес...{RST}")
+                if not await _oos_try_new_addr():
+                    return await _oos_delete_return(retry_done=True)
+                print(f"  {G}✔ Новый адрес принят, OOS исчез{RST}")
+                reached = await _viewcheckout_to_payments(page)
+                if reached == "OUT_OF_STOCK":
+                    return await _oos_delete_return(retry_done=True)
 
             if not reached and "address-map" in page.url:
                 # Set Location привёл на карту, но навигация назад не завершилась —
@@ -2770,7 +2810,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                         await page.wait_for_timeout(3_000)
                         reached = await _viewcheckout_to_payments(page)
             if reached == "OUT_OF_STOCK":
-                return await _oos_delete_return()
+                return await _oos_delete_return(retry_done=True)
 
             if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url) \
                     and "address-map" not in page.url:
@@ -2779,7 +2819,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                     return False, "Кнопка Save Address не найдена (после Continue)"
                 reached = await _viewcheckout_to_payments(page)
             if reached == "OUT_OF_STOCK":
-                return await _oos_delete_return()
+                return await _oos_delete_return(retry_done=True)
 
         # ── Шаг C: проверяем payments ────────────────────────────────────────
         if "payments" not in page.url:
