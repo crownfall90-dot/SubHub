@@ -2684,8 +2684,13 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 await asyncio.gather(*active_bg, return_exceptions=True)
                 logger.info("✅ Фоновые мониторинги завершены")
 
-            # Если остались открытые успешные браузеры — ждём Enter
-            if getattr(automation, "_kept_contexts", None):
+            # Если остались открытые успешные браузеры — ждём Enter.
+            # Только в интерактивном консольном запуске с окном: при запуске из
+            # Telegram или в фоновом (headless) режиме у консоли нет оператора,
+            # который нажмёт Enter — иначе процесс зависает и плашка статуса в TG
+            # не обновляется до ручного нажатия Enter.
+            _interactive = tg_mode == "none" and not force_headless
+            if getattr(automation, "_kept_contexts", None) and _interactive:
                 logger.info("=" * 52)
                 logger.info(
                     f"Открытых браузеров: {len(automation._kept_contexts)}. "
