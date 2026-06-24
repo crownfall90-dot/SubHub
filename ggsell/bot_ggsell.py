@@ -389,12 +389,15 @@ class GGSellBotHandler:
 
         # Статус
         lines.append("")
+        issued_dt = done.get(invoice_id, "")
         if invoice_id in used_ids:
             lines.append("🟡 *Статус: в архиве*")
             if sent_link:
                 lines.append(f"🔗 `{sent_link}`")
         elif invoice_id in done:
             lines.append("🔵 *Статус: выдано*")
+            if issued_dt:
+                lines.append(f"📅 Выдано: `{issued_dt}`")
             if sent_link:
                 lines.append(f"🔗 `{sent_link}`")
         elif confirm_lnk:

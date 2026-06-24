@@ -523,10 +523,9 @@ def _menu_tg_bot_thread() -> None:
         def _profile_menu_kb(phone, list_type="noaddr", rec_key=""):
             if list_type == "archive":
                 return {"inline_keyboard": [
-                    [{"text": f"📱 {_disp_phone(phone)}", "callback_data": "noop"}],
                     [{"text": "📞 Показать номер", "callback_data": f"profile:shownum:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies_archived:{phone}:{rec_key}"}],
-                    [{"text": "🔓 Вынести из архива", "callback_data": f"profile:unarchive:{rec_key}"}],
+                    [{"text": "🔓 Восстановить профиль", "callback_data": f"profile:unarchive:{rec_key}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:archive"}],
                 ]}
 
@@ -558,8 +557,10 @@ def _menu_tg_bot_thread() -> None:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
                 if has_link and not is_issued:
                     rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
+                # Кнопка архива — только для уже выданных профилей
+                if is_issued:
+                    rows.append([{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}])
                 rows += [
-                    [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:active"}],
                 ]
@@ -590,24 +591,28 @@ def _menu_tg_bot_thread() -> None:
             if not records:
                 return "🟡 *Архив*\n\n_Архив пуст_"
             lines = [f"🟡 *Архив* ({len(records)} шт.)", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-            for rec in records[:20]:
+            for rec in records[:15]:
                 try:
                     d  = json.loads(rec.read_text(encoding="utf-8"))
                     ph = d.get("username") or rec.stem.replace("record_", "")
                     vt = d.get("black_valid_till") or ""
-                    ts = d.get("archived_str") or d.get("login_str") or ""
-                    if not ts and d.get("login_ts"):
-                        import datetime as _dt
-                        try:
-                            ts = _dt.datetime.fromtimestamp(float(d["login_ts"])).strftime("%d.%m.%Y")
-                        except Exception:
-                            ts = ""
-                    suffix = (f"  ·  до {vt}" if vt else (f"  ·  {ts}" if ts else ""))
-                    lines.append(f"🟡 `{_disp_phone(ph)}`" + suffix)
+                    inv = d.get("issued_invoice_id") or ""
+                    email = d.get("buyer_email") or ""
+                    link = d.get("issued_link") or d.get("black_short_link") or d.get("black_activation_link") or ""
+                    lines.append(f"🟡 *{_disp_phone(ph)}*" + (f"  ·  до {vt}" if vt else ""))
+                    if inv:
+                        _o = f"   📦 Заказ #{inv}"
+                        if email:
+                            _o += f"  ·  `{email}`"
+                        lines.append(_o)
+                    if link:
+                        _sl = link[8:46] + "…" if len(link[8:]) > 38 else link[8:]
+                        lines.append(f"   🔗 `{_sl}`")
+                    lines.append("")
                 except Exception:
                     lines.append(f"🟡 {rec.name}")
-            if len(records) > 20:
-                lines.append(f"\n_...и ещё {len(records) - 20}_")
+            if len(records) > 15:
+                lines.append(f"_...и ещё {len(records) - 15}_")
             return "\n".join(lines)
 
         def _archive_kb():
@@ -616,20 +621,21 @@ def _menu_tg_bot_thread() -> None:
                     return {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:profiles"}]]}
                 records = sorted(USED_PROFILES_DIR.glob("record_*.json"), reverse=True)
                 rows = []
-                for rec in records[:20]:
+                for rec in records[:15]:
                     rec_key = rec.stem.replace("record_", "")
                     try:
                         d  = json.loads(rec.read_text(encoding="utf-8"))
                         ph = d.get("username") or rec.stem.replace("record_", "")
                         vt = d.get("black_valid_till") or ""
+                        email = d.get("buyer_email") or ""
                         icon = "🌟" if vt else "✅"
                         label = f"{icon} {_disp_phone(ph)}"
-                        if vt:
+                        if email:
+                            label += f" · {email[:24]}"
+                        elif vt:
                             label += f" · {vt}"
-                        rows.append([
-                            {"text": label, "callback_data": f"profile:menu:{ph}:archive:{rec_key}"},
-                            {"text": "🔓", "callback_data": f"profile:unarchive:{rec_key}"},
-                        ])
+                        rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:archive:{rec_key}"}])
+                        rows.append([{"text": "🔓 Восстановить профиль", "callback_data": f"profile:unarchive:{rec_key}"}])
                     except Exception:
                         rows.append([{"text": rec.name, "callback_data": f"profile:menu:{rec_key}:archive:{rec_key}"}])
                 rows.append([{"text": "◀️ Назад", "callback_data": "go:profiles"}])
@@ -995,9 +1001,20 @@ def _menu_tg_bot_thread() -> None:
                                     [{"text": "📤 Отправить покупателю",
                                       "callback_data": f"profile:send_to_buyer:{phone}:0"}],
                                 ]})
+                elif st == "activated":
+                    # Ссылка активирована покупателем — предлагаем перенести в архив (с подтверждением)
+                    await _send(cid,
+                        f"✨ <b>{phone}</b> — АКТИВИРОВАН\nДо: {vt}\n\n"
+                        f"<i>Ссылка активирована — можно перенести профиль в архив.</i>",
+                        parse_mode="HTML",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "📦 Перенести в архив",
+                              "callback_data": f"profile:archive_one:{phone}"}],
+                            [{"text": "👤 Перейти в профиль",
+                              "callback_data": f"profile:menu:{phone}:active"}],
+                        ]})
                 else:
                     msgs = {
-                        "activated":    f"✨ <b>{phone}</b> — АКТИВИРОВАН\nДо: {vt}",
                         "explore_now":  f"✅ <b>{phone}</b> — Explore Now",
                         "not_logged_in":f"🔒 <b>{phone}</b> — не авторизован",
                     }
@@ -1785,22 +1802,45 @@ def _menu_tg_bot_thread() -> None:
                 busy = _bg_ops.get(phone) == "running"
                 # Загружаем мета для отображения дат и ссылки
                 _pm = {}
-                try:
-                    _pp = _find_profile(phone)
-                    if _pp:
-                        _pm = _m("_read_profile_meta")(_pp)
-                except Exception:
-                    pass
+                if list_type == "archive" and rec_file:
+                    # Архивный профиль: читаем запись из chrome_profiles_used
+                    try:
+                        _rec = USED_PROFILES_DIR / f"record_{rec_file}.json"
+                        if _rec.exists():
+                            _pm = json.loads(_rec.read_text(encoding="utf-8"))
+                            for _k_ts, _k_str in (("login_ts", "login_str"),
+                                                  ("issued_ts", "issued_str")):
+                                if _pm.get(_k_ts) and not _pm.get(_k_str):
+                                    try:
+                                        _pm[_k_str] = _m("_fmt_msk")(float(_pm[_k_ts]))
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        _pp = _find_profile(phone)
+                        if _pp:
+                            _pm = _m("_read_profile_meta")(_pp)
+                    except Exception:
+                        pass
                 _pm_login   = _pm.get("login_str") or ""
                 _pm_issued  = _pm.get("issued_str") or ""
                 _pm_vt      = (_pm.get("black_valid_till")
                                or _pm.get("subscription_expires_str") or "")
-                _pm_slink   = _pm.get("black_short_link") or ""
+                _pm_slink   = _pm.get("black_short_link") or _pm.get("issued_link") or ""
+                _pm_inv     = _pm.get("issued_invoice_id") or ""
+                _pm_email   = _pm.get("buyer_email") or ""
                 _info = f"📱 <code>{_disp_phone(phone)}</code>"
                 if _pm_login:
                     _info += f"\n📆 Создан:  <code>{_pm_login}</code>"
                 if _pm_issued:
-                    _info += f"\n📋 Выдан:   <code>{_pm_issued}</code>"
+                    _info += f"\n✅ Выдан:   <code>{_pm_issued}</code>"
+                if _pm_inv:
+                    _ord_line = f"\n📦 Заказ:   <code>#{_pm_inv}</code>"
+                    if _pm_email:
+                        _ord_line += f"  ·  <code>{_pm_email}</code>"
+                    _info += _ord_line
                 if _pm_vt:
                     _info += f"\n⏳ До:       <b>{_pm_vt}</b>"
                 if _pm_slink:
