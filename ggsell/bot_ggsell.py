@@ -203,47 +203,9 @@ class GGSellBotHandler:
             msg += f"\n📁 Профиль `{profile_name}`: {status}"
 
         await self._edit(cid, mid, msg, {"inline_keyboard": [
-            [{"text": "🟡 Архив", "callback_data": "ggsell:used"},
-             {"text": "◀️ Заказ", "callback_data": f"ggsell:order:{invoice_id}"}],
+            [{"text": "◀️ Заказ",  "callback_data": f"ggsell:order:{invoice_id}"},
+             {"text": "◀️ Заказы", "callback_data": "ggsell:orders"}],
         ]})
-
-    def used_text(self) -> str:
-        """Текст страницы архива использованных ссылок."""
-        try:
-            raw  = json.loads((_DATA_DIR / "ggsel_done.json").read_text(encoding="utf-8"))
-            used  = raw.get("used", {})
-            links = raw.get("links", {})
-        except Exception:
-            used = {}; links = {}
-
-        if not used:
-            return "🟡 *Архив*\n\n_Пусто_"
-
-        lines = [
-            "🟡 *Архив*",
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            f"Всего использовано: *{len(used)}*", "",
-        ]
-        for inv_id, dt_str in sorted(used.items(), key=lambda x: -int(x[0]))[:15]:
-            lnk   = links.get(str(inv_id), "")
-            short = (lnk[8:38] + "…" if len(lnk[8:]) > 30 else lnk[8:]) if lnk else "—"
-            cached    = self.orders.get(int(inv_id), {})
-            order_obj = cached.get("order", {}) if isinstance(cached, dict) else {}
-            email     = (cached.get("buyer_email") if isinstance(cached, dict) else "") or ""
-            if not email and order_obj:
-                email = self.parse_order(order_obj).get("email", "")
-            who = (email[:28] + "…" if len(email) > 28 else email) if email else f"#{inv_id}"
-            lines.append(f"🟡 *{who}* · _{dt_str}_")
-            if short != "—":
-                lines.append(f"   `{short}`")
-        if len(used) > 15:
-            lines.append(f"\n_...ещё {len(used) - 15}_")
-        return "\n".join(lines)
-
-    def used_kb(self) -> dict:
-        return {"inline_keyboard": [[
-            {"text": "◀️ GGSell", "callback_data": "go:ggsell"},
-        ]]}
 
     def _bind_profile_to_order(self, profile_path_str: str, invoice_id: int, link: str = "") -> None:
         """Привязывает заказ GGSell к профилю: пишет issued_ts/issued_link/issued_invoice_id
@@ -822,8 +784,7 @@ class GGSellBotHandler:
         lines += ["", "─────────────────────"]
 
         # Краткая статистика
-        used_cnt   = len(self.get_used())
-        stat_parts = [f"✅ Выдано: *{done_cnt}*", f"🟡 Использовано: *{used_cnt}*"]
+        stat_parts = [f"✅ Выдано: *{done_cnt}*"]
         if pending_cnt:
             stat_parts.append(f"⏳ В работе: *{pending_cnt}*")
         lines.append("   ·   ".join(stat_parts))
@@ -833,7 +794,6 @@ class GGSellBotHandler:
             [{"text": auto_label, "callback_data": "ggsell:toggle:auto_fulfill"}],
             [{"text": "📋 Заказы",    "callback_data": "ggsell:orders"},
              {"text": "📦 Офферы",    "callback_data": "ggsell:offers"}],
-            [{"text": "🟡 Архив выданных", "callback_data": "ggsell:used"}],
             [{"text": "⚙️ Настройки", "callback_data": "ggsell:settings"}],
             [{"text": "◀️ Назад",     "callback_data": "go:other"}],
         ]
@@ -2504,11 +2464,6 @@ class GGSellBotHandler:
             invoice_id = int(data.split(":")[2])
             await self._ack(qid, "⏳ Архивирую...")
             asyncio.create_task(self.bg_mark_used(cid, mid, invoice_id))
-            return
-
-        if data == "ggsell:used":
-            await self._ack(qid)
-            await self._edit(cid, mid, self.used_text(), self.used_kb())
             return
 
         if data == "ggsell:offers":
