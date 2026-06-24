@@ -2599,6 +2599,8 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     kb_stop = _start_kb_monitor(asyncio.get_running_loop(), pause_event)
 
     automation = None  # определяем до try чтобы finally мог безопасно обратиться
+    # Финальное уведомление о выполнении шлём в finally — ПОСЛЕ отмены всех номеров
+    _completion = {"reached": False, "ok": 0, "target": 0}
     try:
         async with async_playwright() as pw:
             automation = LoginAutomation(
@@ -2673,24 +2675,13 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
 
                     _fill_slots()
 
-                # Цель достигнута — финальное сообщение
+                # Цель достигнута. Уведомление в TG отправим в finally — ПОСЛЕ
+                # того как отменим все оставшиеся номера (фон + страховка),
+                # чтобы «Задача выполнена» приходило в самом конце.
                 logger.success("=" * 52)
                 logger.success(f"  🎯 ЦЕЛЬ ДОСТИГНУТА: {success_count}/{target} аккаунтов!")
                 logger.success("=" * 52)
-
-                if tg_manager:
-                    final_bal_str = "—"
-                    if sms_client:
-                        try:
-                            fb = await sms_client.get_balance()
-                            final_bal_str = f"${fb:.4f}"
-                        except Exception:
-                            pass
-                    await tg_manager.notify_all(
-                        f"🎯 Задача выполнена!\n"
-                        f"✅ Создано аккаунтов: {success_count}/{target}\n"
-                        f"💰 Итоговый баланс: {final_bal_str}"
-                    )
+                _completion = {"reached": True, "ok": success_count, "target": target}
             else:
                 # ── Ручной режим: список аккаунтов из конфига ──────────────────
                 for idx, account in enumerate(manual_accounts):
@@ -2758,6 +2749,25 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
             try:
                 bal = await sms_client.get_balance()
                 logger.info(f"  💰 Баланс после возвратов: ${bal:.4f}")
+            except Exception:
+                pass
+
+        # Финальное уведомление «Задача выполнена» — строго ПОСЛЕ отмены всех номеров
+        if _completion["reached"] and tg_manager:
+            _fb = "—"
+            if sms_client:
+                try:
+                    _b = await sms_client.get_balance()
+                    _fb = f"${_b:.4f}"
+                except Exception:
+                    pass
+            try:
+                await tg_manager.notify_all(
+                    f"🎯 Задача выполнена!\n"
+                    f"✅ Создано аккаунтов: {_completion['ok']}/{_completion['target']}\n"
+                    f"💰 Итоговый баланс: {_fb}\n"
+                    f"♻️ Все оставшиеся номера отменены."
+                )
             except Exception:
                 pass
 
