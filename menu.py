@@ -4885,6 +4885,14 @@ async def _handle_3ds_verification(page) -> bool:
     if _next_clicked:
         await page.wait_for_timeout(1_200)
 
+    # Код запрошен у банка именно сейчас (нажали Next). С этого момента ждём
+    # СВЕЖИЙ OTP: один раз сбрасываем старые коды, чтобы не подхватить код от
+    # прошлой операции, и дальше уже не очищаем.
+    try:
+        (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text("[]", encoding="utf-8")
+    except Exception:
+        pass
+
     # Ждём поле ввода OTP — ищем во всех фреймах (может быть в cross-origin iframe)
     otp_inp = None
     _otp_frame_found = None
@@ -5083,16 +5091,6 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
     Возвращает True если карта была введена.
     """
     import random as _r
-
-    # Сбрасываем старые 3DS-OTP коды ОДИН раз в начале оплаты (не на ретраях).
-    # Дальше файл НЕ очищаем — иначе теряется код, который пользователь прислал
-    # ещё до появления поля 3DS (именно из-за этого оплата ложно «не проходила»).
-    if _decline_attempt == 0:
-        try:
-            (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text(
-                "[]", encoding="utf-8")
-        except Exception:
-            pass
 
     # ── 1. Кликаем «Credit / Debit / ATM Card» в левой панели ────────────────
     # Ждём загрузки списка способов оплаты через wait_for_function
