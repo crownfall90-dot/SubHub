@@ -1477,7 +1477,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             await _maximize_window(ctx, page)
 
         await page.goto("https://www.flipkart.com/flipkart-black-store",
-                        wait_until="domcontentloaded", timeout=25_000)
+                        wait_until="domcontentloaded", timeout=7_000)
         try:
             await page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:
@@ -3136,7 +3136,7 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     _SUCCESS_PARTS = ("viewcheckout", "changeShippingAddress", "add/form", "payments")
 
     if not skip_goto:
-        await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=7_000)
         # Ждём networkidle чтобы ov_redirect=true редиректы успели завершиться
         try:
             await page.wait_for_load_state("networkidle", timeout=8_000)
@@ -6674,7 +6674,7 @@ async def _flipkart_phase1(page, login_url: str, phone_10: str) -> str:
     Returns: "ok" | "blocked" | "error:<msg>"
     """
     try:
-        await page.goto(login_url, wait_until="domcontentloaded", timeout=25_000)
+        await page.goto(login_url, wait_until="domcontentloaded", timeout=7_000)
     except Exception as exc:
         return f"error:goto failed: {exc}"
 
