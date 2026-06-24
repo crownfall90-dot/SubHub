@@ -3303,6 +3303,27 @@ async def _fill_address_form(page, addr: dict) -> bool:
     return True
 
 
+async def _page_logged_out(page) -> bool:
+    """Проверяет ТЕКУЩУЮ открытую страницу Flipkart: виден ли элемент «Login»
+    (т.е. в профиле НЕТ входа в аккаунт). Лёгкая проверка без запуска браузера."""
+    try:
+        return bool(await page.evaluate("""() => {
+            for (const el of document.querySelectorAll(
+                    'button,a,div,span,[role="button"]')) {
+                const t = (el.innerText || '').trim();
+                if (t !== 'Login') continue;
+                const r = el.getBoundingClientRect();
+                if (r.width > 20 && r.height > 8) return true;
+            }
+            return false;
+        }"""))
+    except Exception:
+        return False
+
+
+_NOT_LOGGED_IN_MSG = "Профиль не залогинен — в аккаунт нет входа (Buy Now недоступен)"
+
+
 async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     """
     Переходит на страницу товара и нажимает Buy Now.
@@ -3415,6 +3436,9 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
                 pass
 
         if el is None:
+            # Кнопки нет — частая причина: в профиле вообще нет входа в аккаунт.
+            if await _page_logged_out(page):
+                return _NOT_LOGGED_IN_MSG
             return "Кнопка 'Buy now' не найдена на странице"
         try:
             await el.scroll_into_view_if_needed()
@@ -3434,6 +3458,8 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     # Успех: страница изменилась ИЛИ уже на checkout/payments
     if page.url != landed or any(s in page.url for s in _SUCCESS_PARTS):
         return None
+    if await _page_logged_out(page):
+        return _NOT_LOGGED_IN_MSG
     return "Клик по 'Buy now' не дал навигации"
 
 

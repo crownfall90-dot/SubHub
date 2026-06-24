@@ -1858,6 +1858,35 @@ class LoginAutomation:
                 lambda url: "login" not in url,
                 timeout=self.config.timeout,
             )
+            # URL сменился — но это НЕ гарантия входа: Flipkart мог увести с login
+            # без установки сессии. Подтверждаем вход отсутствием кнопки «Login»
+            # (с ретраями против переходных состояний). Иначе профиль сохранять нельзя.
+            _logged_in = False
+            for _vchk in range(3):
+                await page.wait_for_timeout(1000)
+                try:
+                    _has_login_btn = await page.evaluate("""() => {
+                        for (const el of document.querySelectorAll(
+                                'button,a,div,span,[role="button"]')) {
+                            const t = (el.innerText || '').trim();
+                            if (t !== 'Login') continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 20 && r.height > 8) return true;
+                        }
+                        return false;
+                    }""")
+                except Exception:
+                    _has_login_btn = False
+                if not _has_login_btn:
+                    _logged_in = True
+                    break
+            if not _logged_in:
+                logger.error(
+                    f"[{index}] URL сменился, но кнопка «Login» осталась — "
+                    f"вход НЕ выполнен для +{phone} (профиль не сохраняется)"
+                )
+                await self._save_screenshot(page, index, "phase2", "login_btn_present")
+                return False
             logger.success(f"[{index}] Вход выполнен! URL: {page.url}")
             return True
         except Exception:
