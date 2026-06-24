@@ -198,6 +198,7 @@ def _menu_tg_bot_thread() -> None:
         _ggsel_reply_mode: dict  = {} # {cid: invoice_id} — ждём текст ответа от пользователя
         _pool_pick_pending: dict = {} # {cid: link}      — ссылка из пула ждёт выбора покупателя
         _ggsel_done_links: dict  = {} # {invoice_id: link} — какая ссылка была выдана
+        _card_order_waiting: dict = {} # {cid: True} — ждём ввода порядка карт для основного бота
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -699,24 +700,76 @@ def _menu_tg_bot_thread() -> None:
         _ggsel_handler = [None]  # [GGSellBotHandler]
 
 
-        # ── Карты ─────────────────────────────────────────────────────────────
-        def _cards_text():
+        # ── Порядок карт ──────────────────────────────────────────────────────
+        _CARD_ORDER_FILE = Path(__file__).parent / "data" / "card_order.json"
+
+        def _load_card_order():
+            try:
+                if _CARD_ORDER_FILE.exists():
+                    v = json.loads(_CARD_ORDER_FILE.read_text(encoding="utf-8"))
+                    if isinstance(v, list):
+                        return v
+            except Exception:
+                pass
+            return []
+
+        def _save_card_order(order):
+            try:
+                _CARD_ORDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _CARD_ORDER_FILE.write_text(
+                    json.dumps(order, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
+        def _card_label(c: dict, n: int) -> str:
+            name = (c.get("nickname") or c.get("name") or "Карта")[:20]
+            num  = str(c.get("number", "")).replace(" ", "").replace("-", "")
+            mask = f"*{num[-4:]}" if len(num) >= 4 else "****"
+            exp  = c.get("expiry") or c.get("exp") or ""
+            exp_s = f" {exp}" if exp else ""
+            return f"[{n}] {name}  {mask}{exp_s}"
+
+        def _cards_order_page(cid):
             try:
                 if not CARDS_FILE.exists():
-                    return "💳 *Карты*\n\n_Файл cards.json не найден_"
+                    return "💳 *Порядок карт для авто-оплаты*\n\n_Файл cards.json не найден_", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
                 cards = json.loads(CARDS_FILE.read_text(encoding="utf-8"))
                 if not cards:
-                    return "💳 *Карты*\n\n_Список пуст_"
-                lines = ["💳 *Платёжные карты*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-                for i, c in enumerate(cards, 1):
-                    num  = str(c.get("number", "")).replace(" ", "").replace("-", "")
-                    mask = f"**** {num[-4:]}" if len(num) >= 4 else "????"
-                    exp  = c.get("expiry") or c.get("exp") or "—"
-                    name = c.get("name", "")
-                    lines.append(f"*{i}.* `{mask}`  {exp}  _{name}_")
-                return "\n".join(lines)
+                    return "💳 *Порядок карт для авто-оплаты*\n\n_Список пуст_", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
+                
+                order = _load_card_order()
+                lines = ["💳 *Порядок карт для авто-оплаты*", "", "*Доступные карты:*"]
+                for i, c in enumerate(cards):
+                    lines.append(f"  `{_card_label(c, i + 1)}`")
+                lines.append("")
+
+                if order:
+                    order_labels = []
+                    for idx in order:
+                        if 0 <= idx < len(cards):
+                            num = str(cards[idx].get("number", "")).replace(" ", "")[-4:]
+                            name = cards[idx].get("nickname") or cards[idx].get("name") or "Карта"
+                            order_labels.append(f"*{idx + 1}*  _{name}_ (*{num})")
+                    if order_labels:
+                        lines.append("*Текущий порядок попытки:*")
+                        for pos, lbl in enumerate(order_labels, 1):
+                            lines.append(f"  {pos}. {lbl}")
+                        lines.append("")
+                else:
+                    lines.append("_Порядок не задан — карты берутся по умолчанию_")
+                    lines.append("")
+
+                lines.append("_Нажми кнопку ниже и отправь порядок числами через пробел._")
+                lines.append("_Например:_ `1 3 2`  _(попробует 1-ю, затем 3-ю, затем 2-ю)_")
+
+                kb_rows = []
+                if order:
+                    kb_rows.append([{"text": "🔄 Сбросить к умолчанию", "callback_data": "cards:order_reset"}])
+                kb_rows.append([{"text": "✏️ Изменить порядок", "callback_data": "cards:order_edit"}])
+                kb_rows.append([{"text": "◀️ Назад", "callback_data": "go:other"}])
+                return "\n".join(lines), {"inline_keyboard": kb_rows}
             except Exception as e:
-                return f"💳 *Карты*\n\n❌ Ошибка: {e}"
+                return f"💳 *Порядок карт*\n\n❌ Ошибка: {e}", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
 
         # ── Логи ──────────────────────────────────────────────────────────────
         def _logs_text(n=40):
@@ -1963,9 +2016,27 @@ def _menu_tg_bot_thread() -> None:
             # Карты ────────────────────────────────────────────────────────────
             if data == "show:cards":
                 await _ack(qid)
-                await _edit(cid, mid, _cards_text(),
-                            {"inline_keyboard": [[{"text": "◀️ Назад",
-                                                    "callback_data": "go:other"}]]})
+                _card_order_waiting.pop(cid, None)
+                txt, kb = _cards_order_page(cid)
+                await _edit(cid, mid, txt, kb)
+                return
+
+            if data == "cards:order_reset":
+                await _ack(qid, "🔄 Сброшено к умолчанию")
+                _save_card_order([])
+                txt, kb = _cards_order_page(cid)
+                await _edit(cid, mid, txt, kb)
+                return
+
+            if data == "cards:order_edit":
+                await _ack(qid)
+                _card_order_waiting[cid] = True
+                await _edit(cid, mid,
+                            "✏️ *Введи новый порядок карт*\n\n"
+                            "Отправь числа через пробел (например: `1 3 2`).\n"
+                            "Это определит, в какой последовательности бот будет пробовать карты при оплате.\n\n"
+                            "Чтобы отменить, нажми кнопку ниже.",
+                            {"inline_keyboard": [[{"text": "❌ Отмена", "callback_data": "show:cards"}]]})
                 return
 
             # Статистика ───────────────────────────────────────────────────────
@@ -2373,6 +2444,77 @@ def _menu_tg_bot_thread() -> None:
                 asyncio.create_task(_ggsel_handler[0].bg_card_order_save(cid, text))
                 return
 
+            # Режим ввода порядка карт для основного бота
+            if _card_order_waiting.get(cid):
+                _card_order_waiting.pop(cid, None)
+                try:
+                    if not CARDS_FILE.exists():
+                        await client.post(f"{api}/sendMessage",
+                                          json={"chat_id": cid, "text": "❌ Нет карт для настройки порядка.",
+                                                "reply_markup": {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "show:cards"}]]}})
+                        return
+                    cards = json.loads(CARDS_FILE.read_text(encoding="utf-8"))
+                    if not cards:
+                        await client.post(f"{api}/sendMessage",
+                                          json={"chat_id": cid, "text": "❌ Нет карт для настройки порядка.",
+                                                "reply_markup": {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "show:cards"}]]}})
+                        return
+
+                    # Парсим числа
+                    import re as _re
+                    tokens = _re.split(r"[\s,;]+", text.strip())
+                    order = []
+                    errors = []
+                    for t in tokens:
+                        t = t.strip()
+                        if not t:
+                            continue
+                        try:
+                            n = int(t)
+                            idx = n - 1
+                            if not (0 <= idx < len(cards)):
+                                errors.append(f"`{t}` — нет такой карты")
+                            elif idx in order:
+                                errors.append(f"`{t}` — повторяется")
+                            else:
+                                order.append(idx)
+                        except ValueError:
+                            errors.append(f"`{t}` — не число")
+
+                    if errors:
+                        err_list = "\n".join(f"  • {e}" for e in errors)
+                        _card_order_waiting[cid] = True  # возвращаем в режим ввода
+                        await client.post(f"{api}/sendMessage",
+                                          json={"chat_id": cid,
+                                                "text": f"⚠️ Ошибки в порядке:\n{err_list}\n\n_Попробуй ещё раз: отправь числа через пробел, например_ `1 3 2`",
+                                                "parse_mode": "Markdown",
+                                                "reply_markup": {"inline_keyboard": [[{"text": "💳 Порядок карт", "callback_data": "show:cards"}]]}})
+                        return
+
+                    if not order:
+                        _card_order_waiting[cid] = True
+                        await client.post(f"{api}/sendMessage",
+                                          json={"chat_id": cid, "text": "❌ Не удалось прочитать порядок. Отправь числа через пробел: `1 3 2`",
+                                                "reply_markup": {"inline_keyboard": [[{"text": "💳 Порядок карт", "callback_data": "show:cards"}]]}})
+                        return
+
+                    _save_card_order(order)
+                    order_str = " → ".join(
+                        f"*{idx + 1}*  _{cards[idx].get('nickname') or 'Карта'}_"
+                        for idx in order if idx < len(cards)
+                    )
+                    await client.post(f"{api}/sendMessage",
+                                      json={"chat_id": cid,
+                                            "text": f"✅ *Порядок карт сохранён!*\n\n{order_str}",
+                                            "parse_mode": "Markdown",
+                                            "reply_markup": {"inline_keyboard": [
+                                                [{"text": "💳 Порядок карт", "callback_data": "show:cards"}],
+                                                [{"text": "◀️ Настройки",   "callback_data": "go:other"}],
+                                            ]}})
+                except Exception as ex:
+                    await client.post(f"{api}/sendMessage", json={"chat_id": cid, "text": f"❌ Ошибка: {ex}"})
+                return
+
             is_new = cid not in subs
             if is_new:
                 subs.add(cid)
@@ -2426,12 +2568,11 @@ def _menu_tg_bot_thread() -> None:
                     pass
             elif tl in ("/cards", "/карты"):
                 try:
+                    _txt, _kb = _cards_order_page(cid)
                     await client.post(f"{api}/sendMessage",
-                                      json={"chat_id": cid, "text": _cards_text(),
+                                      json={"chat_id": cid, "text": _txt,
                                             "parse_mode": "Markdown",
-                                            "reply_markup": {"inline_keyboard": [[
-                                                {"text": "◀️ Меню", "callback_data": "go:main"},
-                                            ]]}})
+                                            "reply_markup": _kb})
                 except Exception:
                     pass
             elif tl in ("/profiles", "/профили"):
