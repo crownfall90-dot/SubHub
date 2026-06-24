@@ -8641,28 +8641,6 @@ def _ask_card_fields() -> dict | None:
     }
 
 
-def _select_card_prompt() -> dict | None:
-    """Показывает список карт и просит выбрать. None = без карты."""
-    cards = _load_cards()
-    if not cards:
-        return None
-    print()
-    section("Выбор карты для оплаты")
-    print()
-    for i, c in enumerate(cards, 1):
-        print(f"  {_format_card_line(c, i)}")
-    print(f"  {DIM}[0]  Без карты (оплатить вручную){RST}")
-    print()
-    try:
-        ch = input(f"  {BLD}Карта [0-{len(cards)}]: {RST}").strip()
-        idx = int(ch)
-        if 1 <= idx <= len(cards):
-            return cards[idx - 1]
-    except (ValueError, KeyboardInterrupt, EOFError):
-        pass
-    return None
-
-
 def _load_card_order() -> list:
     """Единый порядок карт (0-based индексы) — применяется для всех покупок."""
     f = _DATA / "card_order.json"
