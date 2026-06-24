@@ -507,6 +507,8 @@ def _menu_tg_bot_thread() -> None:
                     if vt:
                         label += f" · до {vt}"
                     rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:{list_type}"}])
+                if list_type == "noaddr" and pairs:
+                    rows.append([{"text": "⚡ Заполнить все", "callback_data": "profiles:fill_all"}])
                 rows.append([{"text": "◀️ Назад", "callback_data": "go:profiles"}])
             except Exception:
                 rows = [[{"text": "◀️ Назад", "callback_data": "go:profiles"}]]
@@ -1292,6 +1294,42 @@ def _menu_tg_bot_thread() -> None:
                 f"✅ Успешно: *{ok_cnt}*\n"
                 f"❌ Ошибки: *{fail_cnt}*")
 
+        async def _bg_fill_all(cid):
+            """Заполняет адрес + доходит до страницы оплаты для всех Доступных профилей."""
+            noaddr, _, _, _ = _get_profile_categories()
+            need = [(ph, pp) for ph, pp, m in noaddr if m.get("login_ts")]
+            if not need:
+                await _send(cid, "✅ _Нет профилей в категории «Доступные»_")
+                return
+            await _send(cid, f"⚡ *Заполняю все доступные профили* ({len(need)} шт.)\n_Адрес → чекаут → страница оплаты → закрыть_")
+            ok_cnt = fail_cnt = 0
+            fail_phones = []
+            for ph, pp in need:
+                try:
+                    addr = _m("_gen_indian_address")()
+                    loop = asyncio.get_running_loop()
+                    raw  = await loop.run_in_executor(None, lambda pp=pp, a=addr: asyncio.run(
+                        _m("_do_fill_address")(pp, a, stop_at_payment=True)))
+                    ok, msg_r = _unpack(raw)
+                    if ok:
+                        ok_cnt += 1
+                    else:
+                        fail_cnt += 1
+                        fail_phones.append(ph)
+                except Exception as _fe:
+                    fail_cnt += 1
+                    fail_phones.append(ph)
+            lines = [
+                f"⚡ *Готово* ({len(need)} профилей)",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                f"✅ Успешно: *{ok_cnt}*",
+                f"❌ Ошибки: *{fail_cnt}*",
+            ]
+            if fail_phones:
+                for fp in fail_phones[:5]:
+                    lines.append(f"  • `{fp}`")
+            await _send(cid, "\n".join(lines))
+
         async def _bg_install(cid):
             """Устанавливает зависимости."""
             await _send(cid, "⏳ *Устанавливаю зависимости...*\n`pip install -r requirements.txt`")
@@ -1823,6 +1861,11 @@ def _menu_tg_bot_thread() -> None:
             if data == "profiles:addrall":
                 await _ack(qid, "⏳ Запускаю заполнение адресов...")
                 asyncio.create_task(_bg_address_all(cid))
+                return
+
+            if data == "profiles:fill_all":
+                await _ack(qid, "⏳ Запускаю заполнение всех доступных...")
+                asyncio.create_task(_bg_fill_all(cid))
                 return
 
             if data == "profiles:archive":

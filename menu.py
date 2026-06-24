@@ -2658,7 +2658,8 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
 async def _do_fill_address(profile_path: Path, addr: dict,
                            _skip_proxies: set | None = None,
                            _retry_n: int = 0,
-                           _use_proxy: bool | None = None) -> tuple[bool, str]:
+                           _use_proxy: bool | None = None,
+                           stop_at_payment: bool = False) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
     if _use_proxy is None:
         _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
@@ -2778,6 +2779,18 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         if "payments" not in page.url:
             return False, f"Не удалось перейти на оплату (URL: {page.url.split('?')[0]})"
 
+        if stop_at_payment:
+            import time as _t_sap
+            _save_meta_field(
+                profile_path,
+                prepared_ts=_t_sap.time(),
+                address_pincode=addr.get("pincode", ""),
+                address_city=addr.get("city", ""),
+                status="email_completed",
+            )
+            _keep_open = False
+            return True, f"{addr.get('name', '')} | {addr.get('pincode', '')} {addr.get('city', '')} → ✅ готов"
+
         _pp_phone = ""
         try:
             _parts = profile_path.name.split("_")
@@ -2823,10 +2836,10 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 _skip_proxies.add(_proxy_server_bare(svr))
             print(f"  {Y}⚠ Прокси недоступен — пробую следующий "
                   f"({_retry_n + 1}/{_MAX_PROXY_RETRIES})...{RST}")
-            return await _do_fill_address(profile_path, addr, _skip_proxies, _retry_n + 1, _use_proxy)
+            return await _do_fill_address(profile_path, addr, _skip_proxies, _retry_n + 1, _use_proxy, stop_at_payment)
         if _use_proxy and _is_proxy_error(exc) and not _keep_open:
             print(f"  {Y}⚠ Все прокси недоступны — пробую без прокси...{RST}")
-            return await _do_fill_address(profile_path, addr, set(), 1, _use_proxy=False)
+            return await _do_fill_address(profile_path, addr, set(), 1, _use_proxy=False, stop_at_payment=stop_at_payment)
         _keep_open = True
         return False, msg
     finally:
