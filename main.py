@@ -884,38 +884,24 @@ class LoginAutomation:
             pass
         await asyncio.sleep(0.3)
 
-        # Отменяем и возвращаем деньги за все остальные номера.
-        # Если отмена недоступна (кулдаун) — запускаем фоновый мониторинг:
-        # если за это время придёт OTP, выполним вход и сохраним профиль.
+        # Остальные номера НЕ отменяем сразу. Если на «лишний» номер пришёл (или
+        # вот-вот придёт) OTP — приоритет у входа: иначе код истечёт, пока идёт
+        # последовательная отмена. Поэтому для каждого номера сразу (параллельно)
+        # запускаем фоновый мониторинг: он первым делом проверяет OTP и при наличии
+        # выполняет вход, а при отсутствии кода — отменяет номер (возврат средств),
+        # как только отмена станет доступна.
         for aid, inf in list(active.items()):
             if aid != act_id:
                 inf["task"].cancel()   # стоп существующего мониторинга OTP
                 ph = inf.get("phone", "")
-                try:
-                    await self.sms_client.cancel(aid)
-                    # Отмена прошла — закрываем браузер и удаляем временный профиль
-                    self._all_pending.pop(aid, None)
-                    _update_stat("refunds", delta=1)
-                    logger.info(f"[{index}] Возврат номера +{ph}")
-                    try:
-                        await inf["context"].close()
-                    except Exception:
-                        pass
-                    self.profile_manager.delete_profile(inf["temp_path"])
-                except Exception:
-                    # Кулдаун — номер ещё нельзя отменить.
-                    # Запускаем фоновый мониторинг: ждём OTP или истечения кулдауна.
-                    logger.info(
-                        f"[{index}] +{ph} нельзя отменить (кулдаун) "
-                        "→ фоновый мониторинг OTP"
+                t = asyncio.create_task(
+                    self._background_login_monitor(
+                        aid, ph, inf["tab"], inf["context"],
+                        inf["temp_path"], index,
                     )
-                    t = asyncio.create_task(
-                        self._background_login_monitor(
-                            aid, ph, inf["tab"], inf["context"],
-                            inf["temp_path"], index,
-                        )
-                    )
-                    self._background_tasks.append(t)
+                )
+                self._background_tasks.append(t)
+                logger.info(f"[{index}] +{ph} → фоновый мониторинг (вход при OTP, иначе возврат)")
                 del active[aid]  # убираем из active — _run_auto.finally не тронет повторно
 
         if self.tg_mode == "intercept":
