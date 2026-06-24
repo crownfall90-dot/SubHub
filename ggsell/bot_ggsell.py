@@ -551,9 +551,17 @@ class GGSellBotHandler:
 
         # Суммы
         if p["sum_buy"]:
-            lines.append(f"💰 Сумма покупки: *{p['sum_buy']}₽*")
+            try:
+                buy_s = f"{float(p['sum_buy']):.2f}".rstrip("0").rstrip(".")
+            except Exception:
+                buy_s = str(p["sum_buy"])
+            lines.append(f"💰 Сумма покупки: *{buy_s}₽*")
         if p["sum_sell"]:
-            lines.append(f"💼 Твоя выплата: *{p['sum_sell']}₽*")
+            try:
+                sell_s = f"{float(p['sum_sell']):.2f}".rstrip("0").rstrip(".")
+            except Exception:
+                sell_s = str(p["sum_sell"])
+            lines.append(f"💼 Твоя выплата: *{sell_s}₽*")
 
         # Дата
         if p["date"]:
@@ -1245,18 +1253,20 @@ class GGSellBotHandler:
                             em = buyer.get("email") or ""
                             if em:
                                 order["buyer_email"] = em
-                        # Суммы
+                        # Суммы (profit = выплата продавцу в v1)
                         if not order.get("sum_t"):
                             order["sum_t"] = c.get("sum_t") or c.get("amount") or ""
                         if not order.get("sum_seller"):
-                            order["sum_seller"] = c.get("sum_seller") or c.get("seller_reward_amount") or ""
+                            order["sum_seller"] = (c.get("profit") or c.get("sum_seller")
+                                                   or c.get("seller_reward_amount") or "")
                         # Опции для отображения
                         if not order.get("options") and not order.get("selected_options"):
                             order["options"] = c.get("options") or []
-                        # Дата
+                        # Дата (v1 использует purchase_date)
                         if not order.get("date"):
-                            order["date"] = c.get("date") or c.get("created_at") or ""
-                        # Название
+                            order["date"] = (c.get("purchase_date") or c.get("date")
+                                             or c.get("created_at") or "")
+                        # Название (c["name"] — UUID, берём из product)
                         if not order.get("name"):
                             prod = c.get("product") or {}
                             order["name"] = prod.get("name") or prod.get("product_name") or ""
@@ -1284,9 +1294,11 @@ class GGSellBotHandler:
                     if r["rating"]:
                         rv_lines.append(self._stars(r["rating"]))
                     if r["text"]:
-                        rv_lines.append(f"_{r['text'][:300]}_")
+                        # Не используем italic (_..._) — ломает Markdown если текст содержит _
+                        safe_text = r["text"][:300].replace("_", " ").replace("*", "").replace("`", "")
+                        rv_lines.append(safe_text)
                     if r["date"]:
-                        rv_lines.append(f"📅 _{r['date']}_")
+                        rv_lines.append(f"📅 {r['date']}")
                     text = text + "\n".join(rv_lines)
             except Exception:
                 pass
@@ -2132,9 +2144,9 @@ class GGSellBotHandler:
         rating = int(r.get("rating") or r.get("score") or r.get("stars") or 0)
         if not rating:
             ft = str(r.get("type") or r.get("feedback_type") or "").lower()
-            if "positive" in ft:
+            if any(w in ft for w in ("positive", "good", "great", "excellent")):
                 rating = 5
-            elif "negative" in ft:
+            elif any(w in ft for w in ("negative", "bad")):
                 rating = 1
         # Текст отзыва: "info" в старом API, "text" в других
         # "comment" = ответ продавца — не берём
