@@ -1296,12 +1296,28 @@ class LoginAutomation:
                             "otp_code",
                         ))
 
-                    # ── 2. Phase 2: вводим код ───────────────────────────────
-                    try:
-                        phase2 = await self._login_phase2(tab, code, index, phone=short_phone)
-                    except Exception as exc:
-                        logger.warning(f"[{index}] [фон] Ошибка phase2 +{short_phone}: {exc}")
-                        phase2 = False
+                    # ── 2. Phase 2: вводим код (до 2 попыток) ────────────────
+                    phase2 = False
+                    for _p2_try in range(2):
+                        try:
+                            phase2 = await self._login_phase2(tab, code, index, phone=short_phone)
+                        except Exception as exc:
+                            logger.warning(
+                                f"[{index}] [фон] Ошибка phase2 +{short_phone} "
+                                f"(попытка {_p2_try + 1}/2): {exc}"
+                            )
+                            phase2 = False
+                        if phase2:
+                            break
+                        if _p2_try == 0:
+                            logger.info(
+                                f"[{index}] [фон] Вход не удался +{short_phone} — повтор (2/2)..."
+                            )
+                            try:
+                                await tab.reload(wait_until="domcontentloaded", timeout=15_000)
+                                await tab.wait_for_timeout(1500)
+                            except Exception:
+                                pass
 
                     if phase2:
                         # ── 3. Сохраняем профиль ────────────────────────────
@@ -1348,9 +1364,18 @@ class LoginAutomation:
                             ))
                         logged_in = True
                     else:
+                        # Не вошли за 2 попытки — пропускаем лишний аккаунт, считаем
+                        # неудачным и больше не пробуем. Сообщаем пользователю.
                         logger.warning(
-                            f"[{index}] [фон] Phase2 не прошла для +{short_phone} — профиль не сохранён"
+                            f"[{index}] [фон] Вход НЕ выполнен за 2 попытки для +{short_phone} — "
+                            f"пропускаю лишний аккаунт"
                         )
+                        if self.tg_client:
+                            asyncio.create_task(self.tg_client.notify_filtered(
+                                f"⚠️ Не удалось войти в лишний аккаунт `+91{short_phone}` "
+                                f"за 2 попытки — пропущен.",
+                                "otp_code",
+                            ))
                     return  # OTP был один — больше ничего не ждём
 
                 elif status["type"] == "CANCEL":
