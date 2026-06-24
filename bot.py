@@ -555,8 +555,10 @@ def _menu_tg_bot_thread() -> None:
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
                     [_issued_btn],
                 ]
+                if has_link:
+                    rows.append([{"text": "🔄 Обновить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
                 if has_link and not is_issued:
-                    rows.append([{"text": "📦 В пул ссылок", "callback_data": f"profile:topool:{phone}"}])
+                    rows.append([{"text": "📤 Отправить покупателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
                 rows += [
                     [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
@@ -985,8 +987,6 @@ def _menu_tg_bot_thread() -> None:
                         msg += f"\n🔗 {short}"
                     await _send(cid, msg, parse_mode="HTML", disable_web_page_preview=True,
                                 reply_markup={"inline_keyboard": [
-                                    [{"text": "🔗 Добавить в ссылки",
-                                      "callback_data": f"profile:topool:{phone}"}],
                                     [{"text": "📤 Отправить покупателю",
                                       "callback_data": f"profile:send_to_buyer:{phone}:0"}],
                                 ]})
@@ -1002,6 +1002,49 @@ def _menu_tg_bot_thread() -> None:
                 def escape_html(t: str) -> str:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка проверки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
+            finally:
+                _bg_ops.pop(phone, None)
+
+        async def _bg_refresh_link(cid, phone):
+            """Проверяет активацию Black и обновляет короткую ссылку в профиле."""
+            import time as _time_rl
+            _bg_ops[phone] = "running"
+            await _send(cid, f"🔄 Обновляю ссылку для <code>{phone}</code>...", parse_mode="HTML")
+            try:
+                pp = _find_profile(phone)
+                if not pp:
+                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    return
+                loop   = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, lambda: asyncio.run(
+                    _m("_check_black_store_activation")(pp, username=phone, headless=True)))
+                st    = result.get("status", "?")       if isinstance(result, dict) else "?"
+                short = (result.get("short_link") or "") if isinstance(result, dict) else ""
+                aurl  = (result.get("activation_url") or "") if isinstance(result, dict) else ""
+                link  = short or aurl
+
+                def escape_html(t: str) -> str:
+                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                if link:
+                    _m("_save_meta_field")(pp, link_received_ts=_time_rl.time())
+                    msg = (f"🔄 <b>{phone}</b> — ссылка обновлена\n\n"
+                           f"🔗 {escape_html(link)}")
+                    await _send(cid, msg, parse_mode="HTML", disable_web_page_preview=True,
+                                reply_markup={"inline_keyboard": [
+                                    [{"text": "👤 Перейти в профиль",
+                                      "callback_data": f"profile:menu:{phone}:active"}],
+                                    [{"text": "📤 Отправить покупателю",
+                                      "callback_data": f"profile:send_to_buyer:{phone}:0"}],
+                                ]})
+                else:
+                    await _send(cid,
+                        f"⚠️ <b>{phone}</b>: свежая ссылка недоступна (статус: {escape_html(str(st))})",
+                        parse_mode="HTML")
+            except Exception as e:
+                def escape_html(t: str) -> str:
+                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                await _send(cid, f"❌ Ошибка обновления <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
 
@@ -2393,23 +2436,13 @@ def _menu_tg_bot_thread() -> None:
                 await _ggsel_handler[0].handle_callback(cid, mid, qid, data)
                 return
 
-            if data.startswith("profile:topool:"):
+            if data.startswith("profile:refresh_link:"):
                 phone = data.split(":", 2)[2]
-                pp = _find_profile(phone)
-                if not pp:
-                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                if _bg_ops.get(phone) == "running":
+                    await _ack(qid, "⚠️ Уже выполняется", alert=True)
                     return
-                try:
-                    m = _m("_read_profile_meta")(pp)
-                    link = m.get("black_activation_link") or m.get("black_short_link") or ""
-                except Exception:
-                    link = ""
-                if not link:
-                    await _ack(qid, "⚠️ Ссылка не найдена в профиле", alert=True)
-                    return
-                from ggsell.monitor import add_link_to_pool
-                add_link_to_pool(link, profile_path=str(pp))
-                await _ack(qid, f"🔗 Ссылка добавлена!")
+                await _ack(qid, "🔄 Обновляю ссылку...")
+                asyncio.create_task(_bg_refresh_link(cid, phone))
                 return
 
             if data.startswith("profile:send_to_buyer:"):

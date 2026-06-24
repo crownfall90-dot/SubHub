@@ -57,6 +57,7 @@ class GGSellBotHandler:
         self.pool_pick_pending = pool_pick_pending
         self._done_links        = done_links
         self._done_buyer_emails: dict = {}  # {invoice_id: buyer_email}
+        self._confirm_profile: dict   = {}  # {invoice_id: profile_path} — какой профиль выдаётся
         self._cli = cli_holder
         self.subs = subs
 
@@ -91,147 +92,6 @@ class GGSellBotHandler:
             pass
         return self._cli[0]
 
-    # ── Пул ссылок ───────────────────────────────────────────────────────────
-
-    _STALE_HOURS = 2  # ссылка считается устаревшей через N часов
-
-    @staticmethod
-    def _parse_pool_entry(entry) -> dict:
-        if isinstance(entry, str):
-            return {"url": entry, "added_at": "", "profile_path": ""}
-        return {
-            "url":          entry.get("url", ""),
-            "added_at":     entry.get("added_at", ""),
-            "profile_path": entry.get("profile_path", ""),
-        }
-
-    def read_pool(self) -> list:
-        """Список URL-строк (backward compat)."""
-        try:
-            f = _DATA_DIR / "ggsel_links.json"
-            raw = json.loads(f.read_text(encoding="utf-8")).get("links", [])
-            return [self._parse_pool_entry(e)["url"] for e in raw]
-        except Exception:
-            return []
-
-    def read_pool_full(self) -> list:
-        """Список словарей {url, added_at, profile_path}."""
-        try:
-            f = _DATA_DIR / "ggsel_links.json"
-            raw_data = json.loads(f.read_text(encoding="utf-8"))
-            profile_map = raw_data.get("profile_map", {})
-            result = []
-            for e in raw_data.get("links", []):
-                entry = self._parse_pool_entry(e)
-                if not entry["profile_path"] and entry["url"] in profile_map:
-                    entry["profile_path"] = profile_map[entry["url"]]
-                result.append(entry)
-            return result
-        except Exception:
-            return []
-
-    def remove_link(self, link: str) -> None:
-        try:
-            f = _DATA_DIR / "ggsel_links.json"
-            raw = json.loads(f.read_text(encoding="utf-8"))
-            raw["links"] = [e for e in raw.get("links", [])
-                            if self._parse_pool_entry(e)["url"] != link]
-            raw.get("profile_map", {}).pop(link, None)
-            f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    @staticmethod
-    def _pool_age(added_at: str):
-        """Возвращает (возраст в секундах, строка времени) или (-1, '')."""
-        if not added_at:
-            return -1, ""
-        try:
-            from datetime import datetime
-            dt = datetime.fromisoformat(added_at)
-            age = (datetime.now() - dt).total_seconds()
-            time_str = dt.strftime("%d %b %H:%M")
-            return age, time_str
-        except Exception:
-            return -1, ""
-
-    def pool_text(self) -> str:
-        avail = self.read_pool_full()
-        done_links = self._done_links
-        self.get_done()
-
-        avail_cnt = len(avail)
-        done_cnt  = len(done_links)
-        used_cnt  = len(self.get_used())
-        stale_sec = self._STALE_HOURS * 3600
-
-        lines = [
-            "🔗 *Ссылки GGSell*",
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            f"🟢 Невыдано: *{avail_cnt}*  ·  🔵 Выдано: *{done_cnt}*  ·  🟡 Использовано: *{used_cnt}*",
-            "",
-        ]
-
-        if avail:
-            lines.append("*Невыданные ссылки:*")
-            for i, entry in enumerate(avail[:10]):
-                lnk = entry["url"]
-                short = lnk[8:50] + "…" if len(lnk[8:]) > 42 else lnk[8:]
-                age, time_str = self._pool_age(entry["added_at"])
-                if age >= stale_sec:
-                    h, m = int(age // 3600), int((age % 3600) // 60)
-                    age_s = f"{h}ч {m}м" if m else f"{h}ч"
-                    lines.append(f"⚠️ `{i + 1}. {short}` _{time_str} · {age_s} — устарела_")
-                elif time_str:
-                    lines.append(f"🟢 `{i + 1}. {short}` _({time_str})_")
-                else:
-                    lines.append(f"🟢 `{i + 1}. {short}`")
-            if avail_cnt > 10:
-                lines.append(f"_...ещё {avail_cnt - 10}_")
-        else:
-            lines.append("_Невыданных ссылок нет_")
-
-        if done_links:
-            lines.append("")
-            lines.append("*Выданные:*")
-            done_sorted = sorted(done_links.items(), key=lambda x: -int(x[0]))[:6]
-            for inv_id, lnk in done_sorted:
-                short = lnk[8:38] + "…" if len(lnk[8:]) > 30 else lnk[8:]
-                # Email: сначала из постоянного хранилища, потом из кэша
-                email = self._done_buyer_emails.get(int(inv_id), "")
-                if not email:
-                    cached = self.orders.get(int(inv_id), {})
-                    if isinstance(cached, dict):
-                        email = (cached.get("buyer_email") or
-                                 self.parse_order(cached.get("order", {})).get("email", "")) or ""
-                who = (email[:30] + "…" if len(email) > 30 else email) if email else f"#{inv_id}"
-                lines.append(f"🔵 {who} → `{short}`")
-
-        return "\n".join(lines)
-
-    def _pool_kb(self, avail: list) -> dict:
-        """Клавиатура страницы пула. avail — список dict из read_pool_full()."""
-        stale_sec = self._STALE_HOURS * 3600
-        link_btns = []
-        for idx, entry in enumerate(avail[:8]):
-            lnk = entry["url"] if isinstance(entry, dict) else entry
-            pp  = entry.get("profile_path", "") if isinstance(entry, dict) else ""
-            added_at = entry.get("added_at", "") if isinstance(entry, dict) else ""
-            preview = lnk[8:28] + "…" if len(lnk[8:]) > 20 else lnk[8:]
-            age, time_str = self._pool_age(added_at)
-            t_label = f" · {time_str}" if time_str else ""
-            if age >= stale_sec and pp:
-                link_btns.append([{"text": f"⚠️ №{idx + 1} · {preview}{t_label} — Обновить",
-                                    "callback_data": f"ggsell:pool_refresh:{idx}"}])
-            else:
-                icon = "⚠️" if age >= stale_sec else "🟢"
-                link_btns.append([{"text": f"{icon} №{idx + 1} · {preview}{t_label} — Выдать",
-                                    "callback_data": f"ggsell:pool_pick:{idx}"}])
-        return {"inline_keyboard": link_btns + [
-            [{"text": "🟡 Архив", "callback_data": "ggsell:used"}],
-            [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
-        ]}
-
     # ── Выполненные заказы ───────────────────────────────────────────────────
 
     def get_done(self) -> dict:
@@ -250,7 +110,7 @@ class GGSellBotHandler:
             self._done_loaded[0] = True
         return self._done
 
-    def mark_done(self, invoice_id: int, link: str = "") -> None:
+    def mark_done(self, invoice_id: int, link: str = "", profile_path: str = "") -> None:
         dt_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         self.get_done()[invoice_id] = dt_str
         if link:
@@ -267,17 +127,8 @@ class GGSellBotHandler:
         if buyer_email:
             self._done_buyer_emails[invoice_id] = buyer_email
 
-        # Читаем profile_path ДО того как _mark_profile_issued его удалит из profile_map
-        profile_path_str = ""
-        if link:
-            try:
-                lf = _DATA_DIR / "ggsel_links.json"
-                profile_path_str = (
-                    json.loads(lf.read_text(encoding="utf-8"))
-                    .get("profile_map", {}).get(link, "")
-                )
-            except Exception:
-                pass
+        # Путь профиля: явно переданный, либо запомненный при подготовке к выдаче
+        profile_path_str = str(profile_path or self._confirm_profile.get(invoice_id, "") or "")
 
         try:
             f = _DATA_DIR / "ggsel_done.json"
@@ -288,6 +139,9 @@ class GGSellBotHandler:
             raw.setdefault("done", {})[str(invoice_id)] = dt_str
             if link:
                 raw.setdefault("links", {})[str(invoice_id)] = link
+            if not profile_path_str:
+                # Если путь не передан — берём ранее сохранённый (не затираем пустым)
+                profile_path_str = raw.get("profile_paths", {}).get(str(invoice_id), "")
             if profile_path_str:
                 raw.setdefault("profile_paths", {})[str(invoice_id)] = profile_path_str
             if buyer_email:
@@ -295,8 +149,11 @@ class GGSellBotHandler:
             f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
-        if link:
-            self._mark_profile_issued(link)
+
+        # Привязываем заказ к профилю в его .profile_meta.json — ссылка не потеряется
+        if profile_path_str:
+            self._bind_profile_to_order(profile_path_str, invoice_id, link)
+        self._confirm_profile.pop(invoice_id, None)
 
     def get_used(self) -> set:
         """Множество invoice_id помеченных как «использованные»."""
@@ -385,41 +242,42 @@ class GGSellBotHandler:
 
     def used_kb(self) -> dict:
         return {"inline_keyboard": [[
-            {"text": "◀️ Ссылки", "callback_data": "ggsell:pool"},
+            {"text": "◀️ GGSell", "callback_data": "go:ggsell"},
         ]]}
 
-    def _mark_profile_issued(self, link: str) -> None:
-        """По ссылке находит Chrome-профиль в profile_map и ставит issued_ts."""
+    def _bind_profile_to_order(self, profile_path_str: str, invoice_id: int, link: str = "") -> None:
+        """Привязывает заказ GGSell к профилю: пишет issued_ts/issued_link/issued_invoice_id
+        в .profile_meta.json. Так ссылка, выданная в профиле, никогда не теряется."""
         try:
             import time as _time
-            links_file = _DATA_DIR / "ggsel_links.json"
-            try:
-                raw = json.loads(links_file.read_text(encoding="utf-8"))
-            except Exception:
-                return
-            profile_map: dict = raw.get("profile_map", {})
-            profile_path_str = profile_map.pop(link, "")
-            if link in raw.get("profile_map", {}):
-                raw["profile_map"] = profile_map
-                links_file.write_text(
-                    json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
             if not profile_path_str:
                 return
             meta_file = Path(profile_path_str) / ".profile_meta.json"
             if not meta_file.exists():
                 return
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            meta["issued_ts"]   = _time.time()
-            meta["issued_link"] = link
+            meta["issued_ts"]         = _time.time()
+            meta["issued_invoice_id"] = invoice_id
+            if link:
+                meta["issued_link"] = link
             meta_file.write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"GGSell: профиль {Path(profile_path_str).name} помечен как выданный")
+            logger.info(
+                f"GGSell: профиль {Path(profile_path_str).name} привязан к заказу #{invoice_id}")
         except Exception as exc:
-            logger.debug(f"GGSell: _mark_profile_issued: {exc}")
+            logger.debug(f"GGSell: _bind_profile_to_order: {exc}")
 
     def get_sent_link(self, invoice_id: int) -> str:
         self.get_done()
         return self._done_links.get(invoice_id, "")
+
+    def get_bound_profile(self, invoice_id: int) -> str:
+        """Путь Chrome-профиля, привязанного к заказу (из ggsel_done.json)."""
+        try:
+            raw = json.loads((_DATA_DIR / "ggsel_done.json").read_text(encoding="utf-8"))
+            return raw.get("profile_paths", {}).get(str(invoice_id), "")
+        except Exception:
+            return ""
 
     # ── Метка заказа для кнопок ─────────────────────────────────────────────
 
@@ -583,7 +441,20 @@ class GGSellBotHandler:
         else:
             lines.append("🟢 *Статус: новый*")
 
+        # Привязанный профиль (номер) — чтобы знать откуда выдана ссылка
+        bound = self.get_bound_profile(invoice_id)
+        if bound:
+            ph_raw = Path(bound).name.replace("profile_", "")
+            lines.append(f"📱 Профиль: `{self._disp_phone(ph_raw)}`")
+
         return "\n".join(lines)
+
+    @staticmethod
+    def _disp_phone(username: str) -> str:
+        u = str(username).strip()
+        if len(u) == 12 and u.startswith("91") and u.isdigit():
+            return f"+91 {u[2:]}"
+        return f"+91 {u}"
 
     def order_kb(self, invoice_id: int, review_exists: bool = False) -> dict:
         done        = self.get_done()
@@ -592,14 +463,12 @@ class GGSellBotHandler:
         rows = []
         if confirm_lnk:
             rows.append([
-                {"text": "📤 Отправить",      "callback_data": f"ggsell:send:{invoice_id}"},
-                {"text": "📦 В пул",           "callback_data": f"ggsell:topool:{invoice_id}"},
+                {"text": "📤 Отправить покупателю", "callback_data": f"ggsell:send:{invoice_id}"},
             ])
             rows.append([{"text": "❌ Не отправлять", "callback_data": f"ggsell:nosend:{invoice_id}"}])
         elif invoice_id not in done:
             rows.append([{"text": "▶️ Выполнить",      "callback_data": f"ggsell:run:{invoice_id}"}])
             rows.append([
-                {"text": "📦 Из пула",         "callback_data": f"ggsell:pool_for:{invoice_id}"},
                 {"text": "✅ Отметить выдано",  "callback_data": f"ggsell:mark_done:{invoice_id}"},
             ])
         elif invoice_id not in used_ids:
@@ -933,7 +802,6 @@ class GGSellBotHandler:
             return
 
         auto_on     = self._get(cid, "ggsel_auto_fulfill")
-        pool        = len(self.read_pool())
         done_cnt    = len(self.get_done())
         pending_cnt = len(self._auto_pending)
 
@@ -954,7 +822,8 @@ class GGSellBotHandler:
         lines += ["", "─────────────────────"]
 
         # Краткая статистика
-        stat_parts = [f"🔗 Пул: *{pool}*", f"✅ Выдано: *{done_cnt}*"]
+        used_cnt   = len(self.get_used())
+        stat_parts = [f"✅ Выдано: *{done_cnt}*", f"🟡 Использовано: *{used_cnt}*"]
         if pending_cnt:
             stat_parts.append(f"⏳ В работе: *{pending_cnt}*")
         lines.append("   ·   ".join(stat_parts))
@@ -962,9 +831,9 @@ class GGSellBotHandler:
         auto_label = "🤖 Автоматизация:  ВКЛ ✅" if auto_on else "🤖 Автоматизация:  ВЫКЛ ❌"
         kb_rows = [
             [{"text": auto_label, "callback_data": "ggsell:toggle:auto_fulfill"}],
-            [{"text": "🔗 Ссылки",    "callback_data": "ggsell:pool"},
-             {"text": "📋 Заказы",    "callback_data": "ggsell:orders"},
+            [{"text": "📋 Заказы",    "callback_data": "ggsell:orders"},
              {"text": "📦 Офферы",    "callback_data": "ggsell:offers"}],
+            [{"text": "🟡 Архив выданных", "callback_data": "ggsell:used"}],
             [{"text": "⚙️ Настройки", "callback_data": "ggsell:settings"}],
             [{"text": "◀️ Назад",     "callback_data": "go:other"}],
         ]
@@ -1349,176 +1218,13 @@ class GGSellBotHandler:
         ]}
         await self._edit(cid, mid, "\n".join(lines), kb)
 
-    async def bg_pool_pick(self, cid, mid, link: str) -> None:
-        cli = self.get_client()
-        try:
-            orders_v1 = await cli.get_orders_v1(limit=30) if cli else []
-            yt_orders = [o for o in orders_v1
-                         if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
-            if not yt_orders:
-                orders = await cli.get_last_orders() if cli else []
-                yt_orders = [o for o in orders
-                             if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
-        except Exception:
-            yt_orders = []
-
-        done = self.get_done()
-        lp = link[8:55] + "…" if len(link[8:]) > 47 else link[8:]
-        lines = [
-            "📦 *Выдать ссылку покупателю*",
-            "━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"🟢 `{lp}`", "",
-            "Кому отправить? (от старых к новым):",
-        ]
-        # Сортировка: от самого старого заказа к самому новому
-        yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0))
-        order_rows = []
-        for o in yt_orders:
-            inv_i = int(o.get("invoice_id") or o.get("id") or 0)
-            if inv_i in done:
-                continue
-            p = self.parse_order(o)
-            email = p["email"]
-            if not email:
-                cached = self.orders.get(inv_i, {})
-                if isinstance(cached, dict):
-                    email = (cached.get("buyer_email") or
-                             self.parse_order(cached.get("order", {})).get("email", "")) or ""
-            label = email[:48] if email else f"#{inv_i}"
-            order_rows.append([{"text": label[:64],
-                                 "callback_data": f"ggsell:pool_order:{inv_i}"}])
-        if not order_rows:
-            lines.append("\n_Все заказы уже выполнены_")
-        kb_rows = order_rows[:8] + [
-            [{"text": "◀️ Ссылки", "callback_data": "ggsell:pool"}],
-        ]
-        await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
-
-    async def bg_pool_for(self, cid, mid, invoice_id: int) -> None:
-        links = self.read_pool()
-        # Email покупателя для отображения
-        _cached = self.orders.get(invoice_id, {})
-        _buyer_email = ""
-        if isinstance(_cached, dict):
-            _buyer_email = (_cached.get("buyer_email") or
-                            self.parse_order(_cached.get("order", {})).get("email", "")) or ""
-        _who = _buyer_email[:40] if _buyer_email else f"#{invoice_id}"
-
-        if not links:
-            await self._edit(cid, mid,
-                f"🔗 *Ссылок нет*\n\nНет доступных ссылок для покупателя `{_who}`.",
-                {"inline_keyboard": [[{"text": "◀️ Заказ",
-                                        "callback_data": f"ggsell:order:{invoice_id}"}]]})
-            return
-        lines = [
-            "📦 *Выбрать ссылку из пула*",
-            "━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"Покупатель: `{_who}`",
-            f"Доступно ссылок: *{len(links)}*", "",
-            "Нажмите на ссылку чтобы отправить покупателю:",
-        ]
-        link_rows = []
-        for idx, lnk in enumerate(links[:8]):
-            preview = lnk[8:52] + "…" if len(lnk) > 52 else lnk
-            link_rows.append([{"text": f"🔗 {idx+1}. {preview}",
-                               "callback_data": f"ggsell:pool_for_pick:{invoice_id}:{idx}"}])
-        kb_rows = link_rows + [[{"text": "◀️ Назад",
-                                  "callback_data": f"ggsell:order:{invoice_id}"}]]
-        await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
-
-    async def bg_pool_send(self, cid, mid, invoice_id: int, link: str) -> None:
-        cli = self.get_client()
-        if not cli:
-            await self._edit(cid, mid, "❌ GGSell не настроен.",
-                {"inline_keyboard": [[{"text": "◀️ GGSell", "callback_data": "go:ggsell"}]]})
-            return
-        # Email покупателя для отображения
-        _cached = self.orders.get(invoice_id, {})
-        _buyer_email = ""
-        if isinstance(_cached, dict):
-            _buyer_email = (_cached.get("buyer_email") or
-                            self.parse_order(_cached.get("order", {})).get("email", "")) or ""
-        _who = _buyer_email[:40] if _buyer_email else f"#{invoice_id}"
-
-        from ggsell.monitor import get_template
-        ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
-        self.remove_link(link)
-        if ok:
-            self.mark_done(invoice_id, link)
-            await self._edit(cid, mid,
-                f"✅ *Ссылка отправлена покупателю!*\n\n"
-                f"Покупатель: `{_who}`\n🔗 `{link}`",
-                {"inline_keyboard": [
-                    [{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"},
-                     {"text": "◀️ GGSell",     "callback_data": "go:ggsell"}],
-                ]})
-        else:
-            await self._edit(cid, mid,
-                f"❌ Не удалось отправить ссылку покупателю `{_who}`.\n\nСсылка возвращена в пул.",
-                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
-            from ggsell.monitor import add_link_to_pool
-            add_link_to_pool(link)
-
-    async def bg_refresh_link(self, cid: int, mid: int, link_idx: int) -> None:
-        """Обновить устаревшую ссылку в пуле: зайти в профиль Flipkart и взять новую."""
-        from pathlib import Path as _Path
-        pool = self.read_pool_full()
-        if link_idx >= len(pool):
-            await self._edit(cid, mid, "❌ Ссылка не найдена (пул изменился).",
-                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
-            return
-        entry = pool[link_idx]
-        old_url = entry["url"]
-        profile_path = entry.get("profile_path", "")
-        if not profile_path or not _Path(profile_path).exists():
-            await self._edit(cid, mid,
-                "❌ Профиль Flipkart не привязан к этой ссылке — обновите вручную.",
-                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
-            return
-
-        await self._edit(cid, mid, "⏳ Захожу в Flipkart и обновляю ссылку…",
-            {"inline_keyboard": []})
-
-        try:
-            pp = _Path(profile_path)
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: asyncio.run(
-                self._m("_check_black_store_activation")(pp, headless=True)))
-        except Exception as exc:
-            await self._edit(cid, mid, f"❌ Ошибка при обновлении ссылки: {exc}",
-                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
-            return
-
-        if not isinstance(result, dict):
-            await self._edit(cid, mid, "❌ Не удалось получить ссылку из профиля.",
-                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
-            return
-
-        new_url = result.get("short_link") or result.get("activation_url") or ""
-        if not new_url:
-            st = result.get("status", "?")
-            await self._edit(cid, mid,
-                f"❌ Статус профиля: *{st}* — свежая ссылка недоступна.",
-                {"inline_keyboard": [[{"text": "🔗 Ссылки", "callback_data": "ggsell:pool"}]]})
-            return
-
-        self.remove_link(old_url)
-        from ggsell.monitor import add_link_to_pool
-        add_link_to_pool(new_url, profile_path=str(profile_path))
-
-        short_p = new_url[8:44] + "…" if len(new_url) > 52 else new_url
-        avail = self.read_pool_full()
-        await self._edit(cid, mid,
-            f"✅ *Ссылка обновлена!*\n\n🔗 `{short_p}`",
-            self._pool_kb(avail))
-
     async def bg_link_to_buyer_page(self, cid: int, mid: int, phone: str, link: str, offset: int = 0) -> None:
         """Показать список заказов для отправки ссылки покупателю (пагинация по 5)."""
         cli = self.get_client()
         if not cli:
             await self._edit(cid, mid, "❌ GGSell не настроен.",
-                {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
-                                       "callback_data": f"profile:topool:{phone}"}]]})
+                {"inline_keyboard": [[{"text": "◀️ Профиль",
+                                       "callback_data": f"profile:menu:{phone}:active"}]]})
             return
 
         try:
@@ -1531,8 +1237,8 @@ class GGSellBotHandler:
                              if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception as exc:
             await self._edit(cid, mid, f"❌ Ошибка загрузки заказов: {exc}",
-                {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
-                                       "callback_data": f"profile:topool:{phone}"}]]})
+                {"inline_keyboard": [[{"text": "◀️ Профиль",
+                                       "callback_data": f"profile:menu:{phone}:active"}]]})
             return
 
         done = self.get_done()
@@ -1571,35 +1277,43 @@ class GGSellBotHandler:
         kb_rows = order_rows
         if nav_row:
             kb_rows.append(nav_row)
-        kb_rows.append([{"text": "🔗 Добавить в ссылки",
-                         "callback_data": f"profile:topool:{phone}"}])
+        kb_rows.append([{"text": "◀️ Профиль",
+                         "callback_data": f"profile:menu:{phone}:active"}])
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
 
     async def bg_link_to_order(self, cid: int, mid: int, phone: str, link: str, invoice_id: int) -> None:
-        """Отправить ссылку конкретному покупателю через GGSell и обновить сообщение."""
+        """Отправить ссылку конкретному покупателю через GGSell и привязать профиль к заказу."""
         cli = self.get_client()
         if not cli:
             await self._edit(cid, mid, "❌ GGSell не настроен.",
-                {"inline_keyboard": [[{"text": "🔗 Добавить в ссылки",
-                                       "callback_data": f"profile:topool:{phone}"}]]})
+                {"inline_keyboard": [[{"text": "◀️ Профиль",
+                                       "callback_data": f"profile:menu:{phone}:active"}]]})
             return
         from ggsell.monitor import get_template
         ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
         if ok:
-            self.mark_done(invoice_id, link)
+            # Привязываем заказ к профилю по номеру телефона — ссылка не потеряется
+            profile_path = ""
+            try:
+                for _p in (self._m("_load_done_profiles")() or []):
+                    _name = _p["path"].name
+                    if str(_p.get("username", "")).endswith(phone) or phone in _name:
+                        profile_path = str(_p["path"]); break
+            except Exception:
+                profile_path = ""
+            self.mark_done(invoice_id, link, profile_path=profile_path)
             await self._edit(cid, mid,
                 f"✅ *Ссылка отправлена покупателю!*\n\n"
-                f"Заказ: `#{invoice_id}`\n🔗 `{link}`",
+                f"Заказ: `#{invoice_id}`\n🔗 `{link}`\n\n"
+                f"_Профиль привязан к этому заказу._",
                 {"inline_keyboard": [
-                    [{"text": "🔗 Добавить в ссылки", "callback_data": f"profile:topool:{phone}"},
-                     {"text": "◀️ GGSell",            "callback_data": "go:ggsell"}],
+                    [{"text": "◀️ GGSell", "callback_data": "go:ggsell"}],
                 ]})
         else:
             await self._edit(cid, mid,
                 f"❌ Не удалось отправить ссылку заказу `#{invoice_id}`.",
                 {"inline_keyboard": [
-                    [{"text": "🔗 Добавить в ссылки",    "callback_data": f"profile:topool:{phone}"}],
-                    [{"text": "📤 Другой заказ",          "callback_data": f"profile:send_to_buyer:{phone}:0"}],
+                    [{"text": "📤 Другой заказ", "callback_data": f"profile:send_to_buyer:{phone}:0"}],
                 ]})
 
     async def bg_prepare_for_order(self, invoice_id: int, order: dict) -> None:
@@ -1878,7 +1592,21 @@ class GGSellBotHandler:
             "_Это займёт несколько минут._",
             {"inline_keyboard": []})
 
-        before_links = set(self.read_pool())
+        def _profiles_with_link() -> list:
+            """Профили (dict из _load_done_profiles) с готовой ссылкой, не выданные."""
+            try:
+                res = []
+                for p in (self._m("_load_done_profiles")() or []):
+                    if p.get("issued_ts"):
+                        continue
+                    lnk = p.get("black_activation_link") or p.get("black_short_link") or ""
+                    if lnk:
+                        res.append(p)
+                return res
+            except Exception:
+                return []
+
+        before_paths = {str(p["path"]) for p in _profiles_with_link()}
 
         args = [
             sys.executable,
@@ -1903,13 +1631,19 @@ class GGSellBotHandler:
                 "Проверьте /logs")
             return
 
-        after_links = self.read_pool()
-        new_links   = [l for l in after_links if l not in before_links]
+        # Ищем профиль, появившийся со ссылкой после запуска (самый свежий)
+        after = _profiles_with_link()
+        new_profiles = [p for p in after if str(p["path"]) not in before_paths]
+        target = None
+        if new_profiles:
+            target = max(new_profiles, key=lambda p: p.get("login_ts") or 0)
+        elif after:
+            target = max(after, key=lambda p: p.get("login_ts") or 0)
 
-        if new_links:
-            link = new_links[0]
-            self.remove_link(link)
+        if target:
+            link = target.get("black_activation_link") or target.get("black_short_link") or ""
             self.confirm[invoice_id] = link
+            self._confirm_profile[invoice_id] = str(target["path"])
             await self._send(cid,
                 f"✅ *Ссылка для заказа* `#{invoice_id}` *готова!*\n\n"
                 f"🔗 `{link}`\n\n"
@@ -1918,15 +1652,13 @@ class GGSellBotHandler:
                 reply_markup={"inline_keyboard": [
                     [{"text": "📤 Отправить покупателю",
                       "callback_data": f"ggsell:send:{invoice_id}"}],
-                    [{"text": "📦 В пул ссылок",
-                      "callback_data": f"ggsell:topool:{invoice_id}"},
-                     {"text": "❌ Не отправлять",
+                    [{"text": "❌ Не отправлять",
                       "callback_data": f"ggsell:nosend:{invoice_id}"}],
                 ]})
         else:
             await self._send(cid,
-                f"⚠️ Заказ `#{invoice_id}`: автоматизация завершена, но новая ссылка не найдена.\n\n"
-                "_Добавьте ссылку вручную или повторите запуск._")
+                f"⚠️ Заказ `#{invoice_id}`: автоматизация завершена, но ссылка в профиле не найдена.\n\n"
+                "_Проверьте профиль и отправьте ссылку вручную._")
 
     async def bg_reply(self, cid, invoice_id: int, text: str) -> None:
         cli = self.get_client()
@@ -2066,9 +1798,7 @@ class GGSellBotHandler:
             [{"text": "▶️ Выполнить заказ",
               "callback_data": f"ggsell:run:{invoice_id}"}],
             [{"text": f"📋 Детали #{invoice_id}",
-              "callback_data": f"ggsell:order:{invoice_id}"},
-             {"text": "📦 Из пула",
-              "callback_data": f"ggsell:pool_for:{invoice_id}"}],
+              "callback_data": f"ggsell:order:{invoice_id}"}],
         ]}
         for _cid in list(self.subs):
             if not self._get(_cid, "ggsel_notify_orders"):
@@ -2598,12 +2328,6 @@ class GGSellBotHandler:
             asyncio.create_task(self.bg_order_review(cid, mid, invoice_id))
             return
 
-        if data == "ggsell:pool":
-            await self._ack(qid)
-            avail = self.read_pool_full()
-            await self._edit(cid, mid, self.pool_text(), self._pool_kb(avail))
-            return
-
         if data.startswith("ggsell:chat:"):
             invoice_id = int(data.split(":")[2])
             await self._ack(qid)
@@ -2676,29 +2400,6 @@ class GGSellBotHandler:
             asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
             return
 
-        if data.startswith("ggsell:pool_for:"):
-            invoice_id = int(data.split(":")[2])
-            await self._ack(qid)
-            await self._edit(cid, mid, "⏳ Загружаю пул ссылок...",
-                             {"inline_keyboard": [[{"text": "◀️ Назад",
-                                                     "callback_data": f"ggsell:order:{invoice_id}"}]]})
-            asyncio.create_task(self.bg_pool_for(cid, mid, invoice_id))
-            return
-
-        if data.startswith("ggsell:pool_for_pick:"):
-            parts      = data.split(":")
-            invoice_id = int(parts[2])
-            idx        = int(parts[3])
-            links      = self.read_pool()
-            if idx >= len(links):
-                await self._ack(qid, "❌ Пул изменился, обновите список", alert=True)
-                return
-            link = links[idx]
-            self.pool_pick_pending[cid] = link
-            await self._ack(qid, "⏳ Отправляю...")
-            asyncio.create_task(self.bg_pool_send(cid, mid, invoice_id, link))
-            return
-
         if data.startswith("ggsell:toggle:"):
             kind = data.split(":")[2]
             if kind == "auto_fulfill":
@@ -2717,50 +2418,6 @@ class GGSellBotHandler:
                 await self._edit(cid, mid, txt, kb)
             else:
                 await self._ack(qid)
-            return
-
-        if data.startswith("ggsell:topool:"):
-            invoice_id = int(data.split(":")[2])
-            link = self.confirm.pop(invoice_id, None)
-            if not link:
-                await self._ack(qid, "❌ Ссылка не найдена", alert=True)
-                return
-            from ggsell.monitor import add_link_to_pool
-            add_link_to_pool(link)
-            await self._ack(qid, "📦 Добавлено в пул!")
-            avail = self.read_pool_full()
-            await self._edit(cid, mid, self.pool_text(), self._pool_kb(avail))
-            return
-
-        if data.startswith("ggsell:pool_pick:"):
-            idx   = int(data.split(":")[2])
-            links = self.read_pool()
-            if idx >= len(links):
-                await self._ack(qid, "❌ Пул изменился, обновите список", alert=True)
-                return
-            link = links[idx]
-            self.pool_pick_pending[cid] = link
-            await self._ack(qid)
-            await self._edit(cid, mid, "⏳ Загружаю заказы...",
-                             {"inline_keyboard": [[{"text": "❌ Отмена",
-                                                     "callback_data": "ggsell:pool"}]]})
-            asyncio.create_task(self.bg_pool_pick(cid, mid, link))
-            return
-
-        if data.startswith("ggsell:pool_refresh:"):
-            idx = int(data.split(":")[2])
-            await self._ack(qid)
-            asyncio.create_task(self.bg_refresh_link(cid, mid, idx))
-            return
-
-        if data.startswith("ggsell:pool_order:"):
-            invoice_id = int(data.split(":")[2])
-            link = self.pool_pick_pending.pop(cid, None)
-            if not link:
-                await self._ack(qid, "❌ Сессия истекла, выберите ссылку снова", alert=True)
-                return
-            await self._ack(qid, "⏳ Отправляю...")
-            asyncio.create_task(self.bg_pool_send(cid, mid, invoice_id, link))
             return
 
         # ── Порядок карт ──────────────────────────────────────────────────────

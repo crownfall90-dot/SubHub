@@ -174,32 +174,62 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             return
 
         _has_short = short_url and short_url != act_url
+        _link = short_url or act_url
+
+        # Автоматически сохраняем ссылку и время её получения в профиль
+        _recv_str = ""
+        try:
+            import time as _t_rl
+            _pp = None
+            for _cand in DONE_PROFILES_DIR.glob(f"profile_*{phone}*"):
+                if _cand.is_dir():
+                    _pp = _cand
+                    break
+            if _pp and _link:
+                _now_ts = _t_rl.time()
+                _save_meta_field(
+                    _pp,
+                    black_activation_link=act_url or _link,
+                    black_short_link=short_url if _has_short else "",
+                    link_received_ts=_now_ts,
+                )
+                _recv_str = _fmt_msk(_now_ts)
+        except Exception:
+            pass
+
+        _disp = _disp_phone(phone)
         _dates_line = ""
         if login_str:
             _dates_line += f"\n📆 Создан:  <code>{login_str}</code>"
         if issued_str:
             _dates_line += f"\n📋 Выдан:   <code>{issued_str}</code>"
+        if _recv_str:
+            _dates_line += f"\n🕒 Ссылка получена:  <code>{_recv_str}</code>"
         _till_line = f"\n⏳ Действует до: <b>{valid_till}</b>" if valid_till else ""
         _url_lines = ""
         if act_url:
             _url_lines += f"\n🔗 <a href=\"{act_url}\">{act_url}</a>"
         if _has_short:
             _url_lines += f"\n🔗 {short_url}"
-        if not act_url:
+        if not act_url and short_url:
+            _url_lines += f"\n🔗 {short_url}"
+        if not _link:
             _url_lines = "\n⚠️ Ссылка активации не получена"
         msg = (
             f"🎉 <b>Activate Now — YouTube Premium</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📱 Профиль: <code>+91 {phone}</code>"
+            f"📱 Профиль: <code>{_disp}</code>"
             f"{_dates_line}"
             f"{_till_line}"
             f"{_url_lines}"
         )
         reply_markup = _j.dumps({
-            "inline_keyboard": [[
-                {"text": f"👤 +91 {phone}  |  Перейти к профилю",
-                 "callback_data": f"profile:menu:{phone}:active"}
-            ]]
+            "inline_keyboard": [
+                [{"text": "👤 Перейти в профиль",
+                  "callback_data": f"profile:menu:{phone}:active"}],
+                [{"text": "📤 Отправить получателю",
+                  "callback_data": f"profile:send_to_buyer:{phone}:0"}],
+            ]
         })
 
         for cid in chat_ids:
@@ -5756,15 +5786,34 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     except Exception:
         tg_token = ""
 
+    # Автоматически сохраняем ссылку и время её получения в профиль
+    _recv_str = ""
+    try:
+        if _link:
+            import time as _t_bl
+            _now_ts = _t_bl.time()
+            _save_meta_field(
+                profile_path,
+                black_activation_link=_full_url or _link,
+                black_short_link=short_link if _has_short else "",
+                link_received_ts=_now_ts,
+            )
+            _recv_str = _fmt_msk(_now_ts)
+    except Exception:
+        pass
+
     _till_line  = f"\n📅 Действует до: <b>{valid_till}</b>" if valid_till else ""
-    _url_line   = (f"\n\n🔗 <a href=\"{_full_url}\">{_full_url}</a>" if _full_url else "\n\n⚠️ Ссылка активации не получена")
+    _recv_line  = f"\n🕒 Ссылка получена: <code>{_recv_str}</code>" if _recv_str else ""
+    _url_line   = (f"\n\n🔗 <a href=\"{_full_url}\">{_full_url}</a>" if _full_url else
+                   (f"\n\n🔗 {short_link}" if short_link else "\n\n⚠️ Ссылка активации не получена"))
     _short_line = (f"\n🔗 {short_link}" if _has_short else "")
     msg = (
         f"🎉 <b>Flipkart Black Membership</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📱 Номер: <code>+91 {phone_number}</code>\n"
+        f"📱 Номер: <code>{_disp_phone(phone_number)}</code>\n"
         f"💳 Тариф: {_tariff}"
         f"{_till_line}"
+        f"{_recv_line}"
         f"{_url_line}"
         f"{_short_line}"
     )
@@ -5781,11 +5830,11 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
                 elif isinstance(d, list):
                     chat_ids = [int(c) for c in d]
             _reply_markup_black = _json.dumps({"inline_keyboard": [
-                [{"text": "🔗 Добавить в ссылки",
-                  "callback_data": f"profile:topool:{phone_number}"}],
-                [{"text": "📤 Отправить покупателю",
+                [{"text": "👤 Перейти в профиль",
+                  "callback_data": f"profile:menu:{phone_number}:active"}],
+                [{"text": "📤 Отправить получателю",
                   "callback_data": f"profile:send_to_buyer:{phone_number}:0"}],
-            ]}) if _full_url else None
+            ]}) if _link else None
             async with _httpx.AsyncClient(timeout=10, trust_env=False) as _sess:
                 for cid in chat_ids:
                     try:
