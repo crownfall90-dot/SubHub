@@ -539,51 +539,40 @@ def _menu_tg_bot_thread() -> None:
 
             vt = m.get("black_valid_till") or ""
             st = m.get("status") or ""
-            is_active = (st in ("activated", "explore_now", "activate_now")) or bool(vt)
             is_issued = bool(m.get("issued_ts"))
+            has_link  = bool(m.get("black_activation_link") or m.get("black_short_link"))
+            is_subact = (st in ("activated", "explore_now", "activate_now")) or bool(vt)
+            is_paid   = (has_link or is_subact) and not is_issued
 
-            if is_active:
-                _issued_btn = (
-                    {"text": "🟢 Выдан", "callback_data": "noop"}
-                    if is_issued else
-                    {"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}
-                )
-                has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
-                rows = [
-                    [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
-                    [_issued_btn],
-                ]
-                if has_link:
-                    rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
-                if has_link and not is_issued:
-                    rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
-                # Кнопка архива — только для уже выданных профилей
-                if is_issued:
-                    rows.append([{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}])
-                rows += [
-                    [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
-                    [{"text": "◀️ Назад", "callback_data": "profiles:list:active"}],
-                ]
-                return {"inline_keyboard": rows}
-            else:
-                back_callback = f"profiles:list:{list_type}" if list_type in ("noaddr", "hasaddr") else "profiles:list:noaddr"
-                has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
-                rows = []
-                # Кнопки покупки нужны только пока ссылка не получена и профиль не выдан
-                if not has_link and not is_issued:
-                    rows.append([{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
-                                 {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}])
-                    rows.append([{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}])
+            # «Назад» — всегда на вкладку, из которой открыли профиль
+            _known_lt = ("noaddr", "hasaddr", "paid", "active")
+            back_callback = f"profiles:list:{list_type if list_type in _known_lt else 'noaddr'}"
+
+            rows = []
+            if is_issued:
+                # Выданные
                 rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
+                rows.append([{"text": "🟢 Выдан", "callback_data": "noop"}])
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
-                    if not is_issued:
-                        rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
-                rows += [
-                    [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
-                    [{"text": "◀️ Назад", "callback_data": back_callback}],
-                ]
-                return {"inline_keyboard": rows}
+                rows.append([{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}])
+            elif is_paid:
+                # Оплаченные — покупка не нужна, есть ссылка/активация
+                rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
+                rows.append([{"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}])
+                if has_link:
+                    rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
+                    rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
+            else:
+                # Доступные / С данными — ссылки ещё нет, нужно купить
+                rows.append([{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
+                             {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}])
+                rows.append([{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}])
+                rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
+
+            rows.append([{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}])
+            rows.append([{"text": "◀️ Назад", "callback_data": back_callback}])
+            return {"inline_keyboard": rows}
 
         def _archive_text():
             if not USED_PROFILES_DIR or not USED_PROFILES_DIR.exists():
