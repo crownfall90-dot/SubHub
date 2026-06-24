@@ -551,14 +551,13 @@ def _menu_tg_bot_thread() -> None:
                 )
                 has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
                 rows = [
-                    [{"text": f"📱 {_disp_phone(phone)}", "callback_data": "noop"}],
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
                     [_issued_btn],
                 ]
                 if has_link:
-                    rows.append([{"text": "🔄 Обновить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
+                    rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
                 if has_link and not is_issued:
-                    rows.append([{"text": "📤 Отправить покупателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
+                    rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
                 rows += [
                     [{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
@@ -567,16 +566,22 @@ def _menu_tg_bot_thread() -> None:
                 return {"inline_keyboard": rows}
             else:
                 back_callback = f"profiles:list:{list_type}" if list_type in ("noaddr", "hasaddr") else "profiles:list:noaddr"
-                return {"inline_keyboard": [
-                    [{"text": f"📱 {_disp_phone(phone)}", "callback_data": "noop"}],
+                has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
+                rows = [
                     [{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
                      {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}],
-                    [{"text": "📍 Заполнить адрес доставки", "callback_data": f"profile:address:{phone}"}],
+                    [{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}],
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
-                    [{"text": "🟢 Перенести в актив", "callback_data": f"profile:set_active:{phone}"}],
+                ]
+                if has_link:
+                    rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
+                    if not is_issued:
+                        rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
+                rows += [
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}],
                     [{"text": "◀️ Назад", "callback_data": back_callback}],
-                ]}
+                ]
+                return {"inline_keyboard": rows}
 
         def _archive_text():
             if not USED_PROFILES_DIR or not USED_PROFILES_DIR.exists():
@@ -1080,6 +1085,43 @@ def _menu_tg_bot_thread() -> None:
                 def escape_html(t: str) -> str:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка адреса <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
+            finally:
+                _bg_ops.pop(phone, None)
+
+        async def _bg_fill_data(cid, phone):
+            """Заполняет все данные до оплаты и переносит профиль в «С данными»."""
+            _bg_ops[phone] = "running"
+            await _send(cid, f"⚡ Заполняю данные для <code>{phone}</code>...\n"
+                             f"<i>Адрес → чекаут → страница оплаты → закрыть</i>", parse_mode="HTML")
+            try:
+                pp = _find_profile(phone)
+                if not pp:
+                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    return
+                addr = _m("_gen_indian_address")()
+                loop = asyncio.get_running_loop()
+                raw  = await loop.run_in_executor(None, lambda: asyncio.run(
+                    _m("_do_fill_address")(pp, addr, stop_at_payment=True)))
+                ok, msg2 = _unpack(raw)
+
+                def escape_html(t: str) -> str:
+                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+                if ok:
+                    addr_str = escape_html(f"{addr.get('pincode','')} {addr.get('city','')}")
+                    await _send(cid, f"✅ <b>{phone}</b> — данные заполнены\n"
+                                     f"<code>{addr_str}</code>\n"
+                                     f"<i>Профиль перенесён в «С данными»</i>", parse_mode="HTML")
+                elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
+                    _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
+                    await _send(cid, f"🚫 <b>{phone}</b> — Currently out of stock{_retry_note}\n"
+                                     f"<i>Профиль удалён</i>", parse_mode="HTML")
+                else:
+                    await _send(cid, f"⚠️ <b>{phone}</b>: {escape_html(msg2)}", parse_mode="HTML")
+            except Exception as e:
+                def escape_html(t: str) -> str:
+                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                await _send(cid, f"❌ Ошибка <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
 
@@ -1754,7 +1796,7 @@ def _menu_tg_bot_thread() -> None:
                 _pm_vt      = (_pm.get("black_valid_till")
                                or _pm.get("subscription_expires_str") or "")
                 _pm_slink   = _pm.get("black_short_link") or ""
-                _info = f"📱 <code>+91 {phone}</code>"
+                _info = f"📱 <code>{_disp_phone(phone)}</code>"
                 if _pm_login:
                     _info += f"\n📆 Создан:  <code>{_pm_login}</code>"
                 if _pm_issued:
@@ -1899,6 +1941,15 @@ def _menu_tg_bot_thread() -> None:
                     return
                 await _ack(qid, "⏳ Заполняю адрес...")
                 asyncio.create_task(_bg_address(cid, phone))
+                return
+
+            if data.startswith("profile:fill_data:"):
+                phone = data.split(":", 2)[2]
+                if _bg_ops.get(phone) == "running":
+                    await _ack(qid, "⚠️ Уже выполняется", alert=True)
+                    return
+                await _ack(qid, "⚡ Заполняю данные...")
+                asyncio.create_task(_bg_fill_data(cid, phone))
                 return
 
             if data.startswith("profile:buy:"):
