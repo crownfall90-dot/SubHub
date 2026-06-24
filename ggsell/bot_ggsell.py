@@ -567,7 +567,8 @@ class GGSellBotHandler:
 
     # ── Порядок карт ─────────────────────────────────────────────────────────
 
-    _CARD_ORDER_FILE = _DATA_DIR / "ggsel_card_order.json"
+    # Единый порядок карт для всех покупок (тот же, что в основных настройках/консоли)
+    _CARD_ORDER_FILE = _DATA_DIR / "card_order.json"
 
     def _load_cards(self) -> list:
         """Прочитать cards.json. Возвращает список card-dict."""
@@ -1396,33 +1397,9 @@ class GGSellBotHandler:
                     f"Выполните заказ вручную через кнопку ▶️")
             return
 
-        # 3. Загрузить и упорядочить карты (один раз для всего цикла профилей)
-        cards_file     = self._root / "data" / "cards.json"
-        original_cards_raw: Optional[str] = None
+        # 3. Порядок карт применяется внутри _do_buy_membership (единый card_order.json)
         months = 3
         do_buy = self._m("_do_buy_membership")
-
-        try:
-            if cards_file.exists():
-                original_cards_raw = cards_file.read_text(encoding="utf-8")
-                all_cards: list = json.loads(original_cards_raw) or []
-                card_order = self._load_card_order()
-                if card_order and all_cards:
-                    ordered: list = []
-                    used: set = set()
-                    for idx in card_order:
-                        if 0 <= idx < len(all_cards):
-                            ordered.append(all_cards[idx])
-                            used.add(idx)
-                    for i, c in enumerate(all_cards):
-                        if i not in used:
-                            ordered.append(c)
-                    cards_file.write_text(
-                        json.dumps(ordered, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"GGSell auto #{invoice_id}: порядок карт {[i+1 for i in card_order]}")
-        except Exception as exc:
-            logger.debug(f"GGSell auto #{invoice_id}: ошибка применения порядка карт: {exc}")
-            original_cards_raw = None
 
         def _run_purchase_for(p_path):
             import asyncio as _aio
@@ -1443,7 +1420,7 @@ class GGSellBotHandler:
         import importlib as _iml
         _menu_mod = _iml.import_module("menu")
 
-        try:
+        if True:
             for _profile in available:
                 profile_path = _profile["path"]
                 phone = _profile.get("username", profile_path.name)
@@ -1474,13 +1451,6 @@ class GGSellBotHandler:
                         await self._send(_cid,
                             f"⚠️ *Профиль +91 {phone} не сработал* — пробую следующий...\n"
                             f"`{str(msg)[:200]}`")
-        finally:
-            # Восстанавливаем оригинальный cards.json
-            if original_cards_raw is not None:
-                try:
-                    cards_file.write_text(original_cards_raw, encoding="utf-8")
-                except Exception:
-                    pass
 
         # 4. Обработать результат
         if ok:

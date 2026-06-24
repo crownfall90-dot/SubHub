@@ -8648,24 +8648,56 @@ def _select_card_prompt() -> dict | None:
     return None
 
 
+def _load_card_order() -> list:
+    """Единый порядок карт (0-based индексы) — применяется для всех покупок."""
+    f = _DATA / "card_order.json"
+    try:
+        if f.exists():
+            v = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(v, list):
+                return v
+    except Exception:
+        pass
+    return []
+
+
+def _save_card_order(order: list) -> None:
+    f = _DATA / "card_order.json"
+    try:
+        _DATA.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(order, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def screen_cards():
     """Управление картами для оплаты."""
     while True:
         cls()
         header("КАРТЫ ДЛЯ ОПЛАТЫ", C)
         cards = _load_cards()
+        order = _load_card_order()
         print()
         if cards:
             section(f"Сохранённые карты ({len(cards)} шт.)")
             print()
             for i, c in enumerate(cards, 1):
                 print(f"  {_format_card_line(c, i)}")
+            print()
+            if order:
+                _seq = " → ".join(str(i + 1) for i in order if 0 <= i < len(cards))
+                print(f"  {G}Порядок попытки оплаты: {_seq}{RST}  {DIM}(для всех покупок){RST}")
+            else:
+                print(f"  {DIM}Порядок не задан — карты берутся по списку{RST}")
         else:
             print(f"  {DIM}Карт нет — добавьте через [1]{RST}")
         print()
         opt("1", "Добавить карту", G)
         if cards:
             opt("2", "Удалить карту", R)
+            opt("3", "Изменить порядок карт (для всех покупок)", Y)
+            if order:
+                opt("4", "Сбросить порядок к умолчанию", DIM)
         print()
         opt("0", "Назад", R)
         print()
@@ -8690,6 +8722,33 @@ def screen_cards():
                     time.sleep(1.0)
             except ValueError:
                 pass
+        elif choice == "3" and cards:
+            print(f"\n  {DIM}Введите порядок карт числами через пробел (напр. 1 3 2).{RST}")
+            print(f"  {DIM}Сначала пробуется первая указанная, затем следующие.{RST}")
+            raw = input(f"  {BLD}Порядок: {RST}").strip()
+            import re as _re_co
+            tokens = [t for t in _re_co.split(r"[\s,;]+", raw) if t]
+            new_order, seen, bad = [], set(), False
+            for t in tokens:
+                try:
+                    n = int(t) - 1
+                except ValueError:
+                    bad = True; break
+                if not (0 <= n < len(cards)) or n in seen:
+                    bad = True; break
+                new_order.append(n); seen.add(n)
+            if bad or not new_order:
+                print(f"\n  {R}Неверный ввод. Пример: 1 3 2{RST}")
+                time.sleep(1.5)
+            else:
+                _save_card_order(new_order)
+                _seq = " → ".join(str(i + 1) for i in new_order)
+                print(f"\n  {G}✅ Порядок сохранён: {_seq}{RST}")
+                time.sleep(1.2)
+        elif choice == "4" and order:
+            _save_card_order([])
+            print(f"\n  {Y}Порядок сброшен к умолчанию.{RST}")
+            time.sleep(1.0)
 
 
 def screen_main():

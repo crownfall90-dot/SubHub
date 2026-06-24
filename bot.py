@@ -670,7 +670,7 @@ def _menu_tg_bot_thread() -> None:
             upd_b  = (f"⬆️ Обновить ({len(_update_commits)})"
                       if _update_available else "✅ Обновление")
             return {"inline_keyboard": [
-                [{"text": "💳 Карты",       "callback_data": "show:cards"},
+                [{"text": "💳 Порядок карт", "callback_data": "show:cards"},
                  {"text": "🌐 Прокси",      "callback_data": "show:proxy"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
                  {"text": "📊 Статистика",  "callback_data": "show:stats"}],
