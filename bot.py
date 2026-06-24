@@ -1299,8 +1299,9 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, "❌ Карты не настроены")
                     return
                 loop = asyncio.get_running_loop()
+                # card=None — применяется единый порядок карт (data/card_order.json)
                 raw  = await loop.run_in_executor(None, lambda: asyncio.run(
-                    _m("_do_buy_membership")(pp, months, cards[0])))
+                    _m("_do_buy_membership")(pp, months, None)))
                 ok, msg_r = _unpack(raw)
 
                 def escape_html(t: str) -> str:

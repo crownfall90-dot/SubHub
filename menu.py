@@ -6611,6 +6611,9 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                             _sorted.append(_c)
                     if _sorted:
                         _all_cards = _sorted
+                        _seq_dbg = " → ".join(str(i + 1) for i in _order
+                                              if isinstance(i, int) and 0 <= i < len(_all_cards))
+                        print(f"  {G}💳 Порядок карт применён: {_seq_dbg}{RST}")
         except Exception as _ex:
             print(f"  Ошибка применения порядка карт: {_ex}")
 
