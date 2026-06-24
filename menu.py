@@ -2355,13 +2355,11 @@ def screen_profiles():
                 elif tariff6 in ("1", "2"):
                     months6  = 3  if tariff6 == "1" else 12
                     label6   = "3 месяца / ₹399" if tariff6 == "1" else "12 месяцев / ₹1,499"
-                    card6 = _select_card_prompt()
-                    if card6:
-                        print(f"  {C}Карта: {card6['nickname']} {_mask_card(card6['number'])}{RST}")
                     print(f"\n  {DIM}Запускаю браузер — {label6}...{RST}")
-                    print(f"  {DIM}Цепочка: вход → адрес → email → оплата → ссылка{RST}\n")
+                    print(f"  {DIM}Цепочка: вход → адрес → email → оплата → ссылка{RST}")
+                    print(f"  {DIM}Карты берутся по установленному порядку (data/card_order.json){RST}\n")
                     ok6, msg6 = asyncio.run(
-                        _do_buy_membership(selected["path"], months6, card=card6)
+                        _do_buy_membership(selected["path"], months6, card=None)
                     )
                     if ok6:
                         print(f"\n  {G}{BLD}✅ {msg6}{RST}")
@@ -6815,12 +6813,10 @@ def screen_buy_membership():
             time.sleep(3)
             continue
 
-        selected_card = _select_card_prompt()
-        if selected_card:
-            print(f"  {C}Карта: {selected_card['nickname']} {_mask_card(selected_card['number'])}{RST}")
         print(f"\n  {DIM}Запускаю браузер — {label}...{RST}")
+        print(f"  {DIM}Карты берутся по установленному порядку (data/card_order.json){RST}")
         print(f"  {DIM}(если понадобится адрес — заполнится автоматически){RST}\n")
-        ok, msg = asyncio.run(_do_buy_membership(selected["path"], months, card=selected_card))
+        ok, msg = asyncio.run(_do_buy_membership(selected["path"], months, card=None))
         if ok:
             print(f"  {G}{msg}{RST}")
         elif msg.startswith("PROXY_DEAD:"):
@@ -8059,6 +8055,20 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                 # ── 8. Payments: Continue → жёлтая кнопка → email → Continue ─
                 print(f"  {DIM}Страница оплаты — заполняю...{RST}")
+                # Карта берётся по единому порядку (data/card_order.json), если не задана
+                if card is None:
+                    _cards_av = _load_cards()
+                    _ord = _load_card_order()
+                    if _cards_av:
+                        if _ord and isinstance(_ord, list):
+                            for _i in _ord:
+                                if isinstance(_i, int) and 0 <= _i < len(_cards_av):
+                                    card = _cards_av[_i]
+                                    break
+                        if card is None:
+                            card = _cards_av[0]
+                    if card:
+                        print(f"  {G}💳 Карта по порядку: {card.get('nickname') or _mask_card(card.get('number',''))}{RST}")
                 await _do_payments_page(page, card=card)
                 try:
                     await _handle_post_payment(page, ctx, profile_path, phone_number=phone_10)
@@ -8207,12 +8217,10 @@ def screen_all_in_one():
     print(f"\n  {DIM}Режим: {mode_lbl}{RST}")
 
     # ── Карта ─────────────────────────────────────────────────────────────────
+    # Карта не запрашивается — оплата идёт по единому порядку (data/card_order.json)
+    selected_card = None
     print()
-    selected_card = _select_card_prompt()
-    if selected_card:
-        print(f"  {C}Карта: {selected_card['nickname']} {_mask_card(selected_card['number'])}{RST}")
-
-    print()
+    print(f"  {DIM}Карты берутся по установленному порядку (data/card_order.json){RST}")
     print(f"  {DIM}Для остановки нажмите  {RST}{BLD}{Y}Ctrl+C{RST}")
     print()
 
