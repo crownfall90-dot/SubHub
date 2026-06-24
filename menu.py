@@ -1514,8 +1514,11 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         if not headless:
             await _maximize_window(ctx, page)
 
-        await page.goto("https://www.flipkart.com/flipkart-black-store",
-                        wait_until="domcontentloaded", timeout=7_000)
+        try:
+            await page.goto("https://www.flipkart.com/flipkart-black-store",
+                            wait_until="domcontentloaded", timeout=12_000)
+        except Exception:
+            pass
         try:
             await page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:
@@ -3310,7 +3313,12 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     _SUCCESS_PARTS = ("viewcheckout", "changeShippingAddress", "add/form", "payments")
 
     if not skip_goto:
-        await page.goto(url, wait_until="domcontentloaded", timeout=7_000)
+        # Страница товара тяжёлая (через прокси) — даём больше времени и не падаем
+        # по таймауту: даже частично загруженной страницы хватает для клика Buy Now
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+        except Exception:
+            pass
         # Ждём networkidle чтобы ov_redirect=true редиректы успели завершиться
         try:
             await page.wait_for_load_state("networkidle", timeout=8_000)
