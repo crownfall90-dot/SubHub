@@ -555,6 +555,24 @@ def _disp_phone(username: str) -> str:
     return f"+91 {u}"
 
 
+def _ask_delete_profile_console(profile_path, username: str, error_text: str) -> bool:
+    """Печатает текст ошибки и спрашивает подтверждение на удаление СОХРАНённого
+    профиля (Д/Н). Удаляет только при «Д». Возвращает True если удалён."""
+    if error_text:
+        print(f"\n  {R}✘ {error_text}{RST}")
+    try:
+        ans = input(f"  {BLD}Удалить профиль {_disp_phone(username)}? [Д/Н]: {RST}").strip().upper()
+    except (EOFError, KeyboardInterrupt):
+        ans = "Н"
+    if ans in ("Д", "ДА", "Y", "YES"):
+        import shutil as _shd
+        _shd.rmtree(str(profile_path), ignore_errors=True)
+        print(f"  {Y}🗑 Профиль {_disp_phone(username)} удалён.{RST}")
+        return True
+    print(f"  {G}Профиль оставлен.{RST}")
+    return False
+
+
 def _read_profile_meta(p: Path) -> dict:
     """Читает .profile_meta.json профиля и возвращает обогащённый dict."""
     _raw = p.name[len("profile_"):] if p.name.startswith("profile_") else p.name
@@ -2162,7 +2180,8 @@ def screen_profiles():
         if choice == "А" and noaddr_profiles:
             print(f"\n  {G}⚡ Заполняю все доступные профили ({len(noaddr_profiles)} шт.)...{RST}")
             print(f"  {DIM}Адрес → чекаут → страница оплаты → закрыть{RST}\n")
-            _fa_ok = _fa_oos = _fa_oos2 = _fa_err = 0
+            _fa_ok = _fa_err = 0
+            _fa_oos_list = []  # профили с OOS — спросим удаление в конце
             for _fa_p in noaddr_profiles:
                 _fa_addr = _gen_indian_address()
                 print(f"  {DIM}▶ {_fa_p['username']} ...{RST}", end="", flush=True)
@@ -2172,12 +2191,10 @@ def screen_profiles():
                     if _fa_ok_r:
                         _fa_ok += 1
                         print(f"  {G}✔ готов{RST}")
-                    elif _fa_msg == "OUT_OF_STOCK_2":
-                        _fa_oos2 += 1
-                        print(f"  {R}✘ OOS (2 адреса) — удалён{RST}")
-                    elif _fa_msg == "OUT_OF_STOCK":
-                        _fa_oos += 1
-                        print(f"  {R}✘ OOS — удалён{RST}")
+                    elif _fa_msg in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
+                        _ag = " (2 адреса)" if _fa_msg == "OUT_OF_STOCK_2" else ""
+                        _fa_oos_list.append(_fa_p)
+                        print(f"  {R}✘ OOS{_ag} — профиль НЕ удалён{RST}")
                     else:
                         _fa_err += 1
                         print(f"  {Y}⚠ ошибка: {_fa_msg[:60]}{RST}")
@@ -2186,12 +2203,21 @@ def screen_profiles():
                     print(f"  {R}✘ {_fa_exc}{RST}")
             print(f"\n  ━━━━━━━━━━━━━━━━━━━━━━")
             print(f"  {G}✅ Готово: {_fa_ok}{RST}")
-            if _fa_oos2:
-                print(f"  {R}🚫 OOS (2 адреса): {_fa_oos2}{RST}")
-            if _fa_oos:
-                print(f"  {R}🚫 OOS: {_fa_oos}{RST}")
             if _fa_err:
                 print(f"  {Y}❌ Ошибки: {_fa_err}{RST}")
+            # Подтверждение удаления профилей с OOS
+            if _fa_oos_list:
+                print(f"\n  {R}🚫 Out of stock: {len(_fa_oos_list)} профил(ей){RST}")
+                for _op in _fa_oos_list:
+                    print(f"     • {_disp_phone(_op['username'])}")
+                _ans = input(f"\n  {BLD}Удалить эти {len(_fa_oos_list)} профил(ей) с OOS? [Д/Н]: {RST}").strip().upper()
+                if _ans in ("Д", "ДА", "Y", "YES"):
+                    import shutil as _shoo
+                    for _op in _fa_oos_list:
+                        _shoo.rmtree(str(_op["path"]), ignore_errors=True)
+                    print(f"  {Y}🗑 Удалено: {len(_fa_oos_list)}{RST}")
+                else:
+                    print(f"  {G}Профили оставлены.{RST}")
             pause()
             continue
 
@@ -2333,6 +2359,11 @@ def screen_profiles():
                 ok, msg = asyncio.run(_do_fill_address(selected["path"], addr))
                 if ok:
                     print(f"\n  {G}✅ Адрес сохранён: {msg}{RST}")
+                elif msg in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
+                    _ag = " (адрес введён 2 раза)" if msg == "OUT_OF_STOCK_2" else ""
+                    _ask_delete_profile_console(
+                        selected["path"], selected["username"],
+                        f"Currently out of stock{_ag} — товар недоступен для этого профиля.")
                 else:
                     print(f"\n  {R}❌ Ошибка: {msg}{RST}")
                 pause()
@@ -2370,15 +2401,13 @@ def screen_profiles():
                         addr_info = msg6.split("|", 1)[1] if "|" in msg6 else ""
                         if addr_info:
                             print(f"  {G}✔ {addr_info}{RST}")
-                        print(f"  {R}✘ Currently out of stock — профиль недоступен для покупки.{RST}")
-                        import shutil as _sh6
-                        try:
-                            _sh6.rmtree(selected["path"], ignore_errors=True)
-                            print(f"  {Y}Профиль {_disp_phone(selected['username'])} удалён.{RST}")
-                        except Exception:
-                            pass
-                        time.sleep(2)
-                        break
+                        _ag = " (адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg6 else ""
+                        if _ask_delete_profile_console(
+                            selected["path"], selected["username"],
+                            f"Currently out of stock{_ag} — товар недоступен для этого профиля."):
+                            time.sleep(2)
+                            break
+                        time.sleep(1)
                     else:
                         print(f"\n  {R}❌ {msg6}{RST}")
                     pause()
@@ -2833,10 +2862,10 @@ async def _do_fill_address(profile_path: Path, addr: dict,
 
         # ── Шаг B: viewcheckout → email → Continue → payments ───────────────
         async def _oos_delete_return(retry_done: bool = False):
-            """Удаляет профиль при OOS и возвращает стандартный код."""
+            """OOS — профиль НЕ удаляем сами. Закрываем браузер и сообщаем
+            вызывающему кодом OUT_OF_STOCK; удаление — только после подтверждения."""
             nonlocal _keep_open
-            _keep_open = True
-            shutil.rmtree(profile_path, ignore_errors=True)
+            _keep_open = False  # браузер закрыть, профиль оставить
             return False, "OUT_OF_STOCK_2" if retry_done else "OUT_OF_STOCK"
 
         async def _oos_try_new_addr() -> bool:
@@ -3040,6 +3069,7 @@ def screen_fill_address():
                 continue
 
         print()
+        _ff_oos = []  # профили с OOS — подтверждение удаления в конце
         for p in to_fill:
             addr = _gen_indian_address()
             print(f"  {C}{_disp_phone(p['username'])}{RST}")
@@ -3051,10 +3081,26 @@ def screen_fill_address():
             ok, msg = asyncio.run(_do_fill_address(p["path"], addr))
             if ok:
                 print(f"  {G}  ✅ Адрес сохранён: {msg}{RST}")
+            elif msg in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
+                _ff_oos.append(p)
+                print(f"  {R}  ✘ Out of stock — профиль НЕ удалён{RST}")
             else:
                 print(f"  {R}  ❌ Ошибка: {msg}{RST}")
             print()
             time.sleep(0.5)
+
+        if _ff_oos:
+            print(f"  {R}🚫 Out of stock: {len(_ff_oos)} профил(ей){RST}")
+            for _op in _ff_oos:
+                print(f"     • {_disp_phone(_op['username'])}")
+            _ans = input(f"\n  {BLD}Удалить эти {len(_ff_oos)} профил(ей) с OOS? [Д/Н]: {RST}").strip().upper()
+            if _ans in ("Д", "ДА", "Y", "YES"):
+                import shutil as _shff
+                for _op in _ff_oos:
+                    _shff.rmtree(str(_op["path"]), ignore_errors=True)
+                print(f"  {Y}🗑 Удалено: {len(_ff_oos)}{RST}")
+            else:
+                print(f"  {G}Профили оставлены.{RST}")
 
         pause()
         return
@@ -6875,7 +6921,7 @@ def screen_buy_membership():
                 except Exception as exc:
                     print(f"\n  {R}Ошибка удаления: {exc}{RST}")
                 print(f"\n  {DIM}Запускаю полный цикл: номер → вход → адрес → покупка...{RST}\n")
-                ok2, msg2 = asyncio.run(_do_all_in_one(months, headless=False, card=selected_card))
+                ok2, msg2 = asyncio.run(_do_all_in_one(months, headless=False, card=None))
                 if ok2:
                     print(f"\n  {G}{BLD}{msg2}{RST}")
                 else:

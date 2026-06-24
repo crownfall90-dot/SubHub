@@ -1060,6 +1060,18 @@ def _menu_tg_bot_thread() -> None:
             finally:
                 _bg_ops.pop(phone, None)
 
+        async def _send_oos_confirm(cid, phone, retry_note=""):
+            """OOS — профиль НЕ удалён. Спрашиваем подтверждение на удаление (Да/Нет)."""
+            await _send(cid,
+                f"🚫 <b>{phone}</b> — Currently out of stock{retry_note}\n"
+                f"<i>Товар недоступен для адреса этого профиля.</i>\n\n"
+                f"Удалить профиль?",
+                parse_mode="HTML",
+                reply_markup={"inline_keyboard": [[
+                    {"text": "🗑 Да, удалить", "callback_data": f"profile:oosdel:{phone}"},
+                    {"text": "✖️ Нет, оставить", "callback_data": f"profile:ooskeep:{phone}"},
+                ]]})
+
         async def _bg_address(cid, phone):
             _bg_ops[phone] = "running"
             await _send(cid, f"⏳ Заполняю адрес для <code>{phone}</code>...", parse_mode="HTML")
@@ -1084,8 +1096,7 @@ def _menu_tg_bot_thread() -> None:
                                      f"<code>{addr_str}</code>", parse_mode="HTML")
                 elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
-                    await _send(cid, f"🚫 <b>{phone}</b> — Currently out of stock{_retry_note}\n"
-                                     f"<i>Профиль удалён</i>", parse_mode="HTML")
+                    await _send_oos_confirm(cid, phone, _retry_note)
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {msg2_safe}", parse_mode="HTML")
             except Exception as e:
@@ -1121,8 +1132,7 @@ def _menu_tg_bot_thread() -> None:
                                      f"<i>Профиль перенесён в «С данными»</i>", parse_mode="HTML")
                 elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
-                    await _send(cid, f"🚫 <b>{phone}</b> — Currently out of stock{_retry_note}\n"
-                                     f"<i>Профиль удалён</i>", parse_mode="HTML")
+                    await _send_oos_confirm(cid, phone, _retry_note)
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {escape_html(msg2)}", parse_mode="HTML")
             except Exception as e:
@@ -1310,6 +1320,9 @@ def _menu_tg_bot_thread() -> None:
 
                 if ok:
                     await _send(cid, f"✅ <b>{phone}</b> — куплено\n<i>{msg_r_safe}</i>", parse_mode="HTML")
+                elif msg_r.startswith("OUT_OF_STOCK"):
+                    _rn = " (адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg_r else ""
+                    await _send_oos_confirm(cid, phone, _rn)
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b> — не куплено\n<i>{msg_r_safe or 'неизвестно'}</i>", parse_mode="HTML")
             except Exception as e:
@@ -1430,24 +1443,24 @@ def _menu_tg_bot_thread() -> None:
                 except Exception as _fe:
                     fail_cnt += 1
                     fail_phones.append(ph)
+            _oos_total = oos_cnt + oos2_cnt
             lines = [
                 f"⚡ *Готово* ({len(need)} профилей)",
                 "━━━━━━━━━━━━━━━━━━━━━━",
                 f"✅ Успешно: *{ok_cnt}*",
             ]
-            if oos2_cnt:
-                lines.append(f"🚫 Currently out of stock (адрес введён 2 раза): *{oos2_cnt}* _(профили удалены)_")
-                for fp in oos2_phones[:5]:
-                    lines.append(f"  • `{fp}`")
-            if oos_cnt:
-                lines.append(f"🚫 Currently out of stock: *{oos_cnt}* _(профили удалены)_")
-                for fp in oos_phones[:5]:
-                    lines.append(f"  • `{fp}`")
+            if _oos_total:
+                lines.append(f"🚫 Out of stock: *{_oos_total}* _(профили НЕ удалены — подтвердите ниже)_")
             if fail_cnt:
                 lines.append(f"❌ Ошибки: *{fail_cnt}*")
                 for fp in fail_phones[:5]:
                     lines.append(f"  • `{fp}`")
             await _send(cid, "\n".join(lines))
+            # По каждому OOS-профилю — отдельное подтверждение удаления (Да/Нет)
+            for fp in oos2_phones:
+                await _send_oos_confirm(cid, fp, " (адрес введён 2 раза)")
+            for fp in oos_phones:
+                await _send_oos_confirm(cid, fp, "")
 
         async def _bg_install(cid):
             """Устанавливает зависимости."""
@@ -1981,6 +1994,32 @@ def _menu_tg_bot_thread() -> None:
                     return
                 await _ack(qid, "⚡ Заполняю данные...")
                 asyncio.create_task(_bg_fill_data(cid, phone))
+                return
+
+            # Подтверждение удаления профиля при OOS (две кнопки Да/Нет)
+            if data.startswith("profile:oosdel:"):
+                phone = data.split(":", 2)[2]
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                    await _edit(cid, mid, f"❌ Профиль <code>{phone}</code> не найден (уже удалён?)",
+                                {"inline_keyboard": []}, parse_mode="HTML")
+                    return
+                import shutil as _sh_oos
+                try:
+                    _sh_oos.rmtree(str(pp), ignore_errors=True)
+                except Exception:
+                    pass
+                await _ack(qid, "🗑 Профиль удалён")
+                await _edit(cid, mid, f"🗑 Профиль <code>{phone}</code> удалён (Out of stock).",
+                            {"inline_keyboard": []}, parse_mode="HTML")
+                return
+
+            if data.startswith("profile:ooskeep:"):
+                phone = data.split(":", 2)[2]
+                await _ack(qid, "Профиль оставлен")
+                await _edit(cid, mid, f"✖️ Профиль <code>{phone}</code> оставлен (Out of stock).",
+                            {"inline_keyboard": []}, parse_mode="HTML")
                 return
 
             if data.startswith("profile:buy:"):
