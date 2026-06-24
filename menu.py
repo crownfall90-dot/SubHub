@@ -300,6 +300,9 @@ TG_SUBSCRIBERS_FILE = _DATA / "tg_subscribers.json"
 TG_STATS_FILE       = _DATA / "tg_stats.json"
 CARDS_FILE          = _DATA / "cards.json"
 
+# Код выхода процесса: 42 = menu.bat должен перезапуститься (применено обновление)
+_exit_code = [0]
+
 MSK = timezone(timedelta(hours=3))
 
 # ── Heartbeat для серверного режима ───────────────────────────────────────────
@@ -8564,6 +8567,7 @@ def screen_update() -> None:
             for _line in msg.splitlines():
                 print(f"  {DIM}  {_line}{RST}")
         time.sleep(2)
+        _exit_code[0] = 42  # чтобы finally в __main__ вышел с кодом 42 → menu.bat перезапустит
         sys.exit(42)
     else:
         print(f"  {R}❌ Ошибка: {msg}{RST}")
@@ -8965,6 +8969,7 @@ def _check_setup() -> None:
             if _ok_u:
                 print(f"  {G}✓ Обновление применено. Перезапуск...{RST}")
                 time.sleep(2)
+                _exit_code[0] = 42  # finally выйдет с кодом 42 → menu.bat перезапустит
                 sys.exit(42)  # menu.bat перезапустит
             print(f"  {Y}Не удалось применить: {_msg_u}{RST}")
         else:
@@ -9200,7 +9205,7 @@ if __name__ == "__main__":
     sys.unraisablehook = _quiet_unraisablehook
 
     _cli = sys.argv[1:]
-    _exit_code = [0]
+    _exit_code[0] = 0
 
     try:
         if "--full-cycle" in _cli or "--login-only" in _cli:
