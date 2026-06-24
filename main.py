@@ -84,7 +84,7 @@ def _update_stat(key: str = "", delta: int = 0, money: float = 0.0, balance: Opt
 class TelegramBotManager:
     """Управляет Telegram-ботом: подписка на уведомления и отправка OTP кодов."""
 
-    SUBSCRIBERS_FILE = Path("tg_subscribers.json")
+    SUBSCRIBERS_FILE = _DATA / "tg_subscribers.json"
 
     def __init__(self, token: str, send_only: bool = False) -> None:
         self.token = token
