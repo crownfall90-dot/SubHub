@@ -514,6 +514,14 @@ def _fmt_msk(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=MSK).strftime("%d.%m.%Y  %H:%M  МСК")
 
 
+def _disp_phone(username: str) -> str:
+    """Форматирует номер для вывода: +91 XXXXXXXXXX (без кода страны в самом номере)."""
+    u = str(username).strip()
+    if len(u) == 12 and u.startswith("91") and u.isdigit():
+        return f"+91 {u[2:]}"
+    return f"+91 {u}"
+
+
 def _read_profile_meta(p: Path) -> dict:
     """Читает .profile_meta.json профиля и возвращает обогащённый dict."""
     _raw = p.name[len("profile_"):] if p.name.startswith("profile_") else p.name
@@ -1967,7 +1975,7 @@ def screen_check_all_activated():
 
     for i, p in enumerate(profiles, 1):
         username = p.get("username", p["path"].name)
-        print(f"  [{i}/{len(profiles)}] +91 {username}")
+        print(f"  [{i}/{len(profiles)}] {_disp_phone(username)}")
         print(f"  {DIM}  Открываю black-store, прокручиваю...{RST}")
 
         try:
@@ -2091,7 +2099,7 @@ def screen_profiles():
             login_col = R if no_meta else DIM
             print(
                 f"  {BLD}{Y}[{i:>2}]{RST}{status_pre}  "
-                f"{W}+91 {p['username']:<15}{RST}  "
+                f"{W}{_disp_phone(p['username']):<14}{RST}  "
                 f"{_ln}  {DIM}│{RST}  {status_lbl}"
             )
         # Кнопка удаления профилей без данных (если есть)
@@ -2198,7 +2206,7 @@ def screen_profiles():
             header("ДЕЙСТВИЕ С ПРОФИЛЕМ", C)
             _sel_vt = selected.get("black_valid_till") or selected.get("subscription_expires_str") or ""
             _sel_slink = selected.get("black_short_link") or ""
-            print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
+            print(f"  Профиль  : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
             _info_line = f"{G}{selected['login_str']}{RST}"
             if selected.get("issued_str"):
                 _info_line += f"  {DIM}|{RST}  {B}выдан: {selected['issued_str']}{RST}"
@@ -2280,7 +2288,7 @@ def screen_profiles():
 
             elif action == "5":
                 addr = _gen_indian_address()
-                print(f"\n  {C}Генерирую адрес для +91 {selected['username']}:{RST}")
+                print(f"\n  {C}Генерирую адрес для {_disp_phone(selected['username'])}:{RST}")
                 print(f"  Имя    : {W}{addr['name']}{RST}")
                 print(f"  Индекс : {W}{addr['pincode']}{RST}  {DIM}({addr['city']}, {addr['state']}){RST}")
                 print(f"  Адрес1 : {DIM}{addr['house']}{RST}")
@@ -2297,7 +2305,7 @@ def screen_profiles():
                 # ── Полный цикл покупки прямо для этого профиля ──────────────
                 cls()
                 header("ПОЛНЫЙ ЦИКЛ — ПОКУПКА BLACK MEMBERSHIP", G)
-                print(f"  Профиль : {W}{BLD}+91 {selected['username']}{RST}")
+                print(f"  Профиль : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
                 print(f"  Вход    : {DIM}{selected['login_str']}{RST}")
                 print()
                 opt("1", "3 месяца  — ₹399  (скидка 20%)", G)
@@ -2332,7 +2340,7 @@ def screen_profiles():
                         import shutil as _sh6
                         try:
                             _sh6.rmtree(selected["path"], ignore_errors=True)
-                            print(f"  {Y}Профиль +91 {selected['username']} удалён.{RST}")
+                            print(f"  {Y}Профиль {_disp_phone(selected['username'])} удалён.{RST}")
                         except Exception:
                             pass
                         time.sleep(2)
@@ -2372,7 +2380,7 @@ def screen_profiles():
                 if _save_meta_field(selected["path"], issued_ts=ts):
                     selected["issued_ts"]  = ts
                     selected["issued_str"] = _fmt_msk(ts)
-                    print(f"\n  {B}🔵 Профиль +91 {selected['username']} "
+                    print(f"\n  {B}🔵 Профиль {_disp_phone(selected['username'])} "
                           f"помечен «Выдан».{RST}")
                     print(f"  {DIM}{selected['issued_str']}{RST}")
                 time.sleep(1.5)
@@ -2380,7 +2388,7 @@ def screen_profiles():
             elif action in ("3", "И", "I"):       # Cyrillic И или латинская I
                 cls()
                 header("ПОДТВЕРЖДЕНИЕ", M)
-                print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
+                print(f"  Профиль  : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
                 print(f"  Создан   : {G}{selected['login_str']}{RST}")
                 if selected.get("issued_str"):
                     print(f"  Выдан    : {B}{selected['issued_str']}{RST}")
@@ -2392,7 +2400,7 @@ def screen_profiles():
                     used_ts = time.time()
                     ok_arch = _archive_profile(selected["path"], used_ts=used_ts)
                     if ok_arch:
-                        print(f"\n  {M}✅ Профиль +91 {selected['username']} "
+                        print(f"\n  {M}✅ Профиль {_disp_phone(selected['username'])} "
                               f"сохранён в архив, папка удалена.{RST}")
                         print(f"  {DIM}Использован: {_fmt_msk(used_ts)}{RST}")
                     else:
@@ -2404,7 +2412,7 @@ def screen_profiles():
                 cls()
                 header("ВОССТАНОВЛЕНИЕ ИЗ КУКОВ", C)
                 username = selected.get("username", "")
-                print(f"  Профиль : {W}{BLD}+91 {username}{RST}\n")
+                print(f"  Профиль : {W}{BLD}{_disp_phone(username)}{RST}\n")
                 # Ищем JSON в cookies_backup/ по номеру
                 bk_dir = Path("cookies_backup")
                 candidates = []
@@ -2446,7 +2454,7 @@ def screen_profiles():
             elif action == "9":
                 cls()
                 header("УДАЛЕНИЕ ПРОФИЛЯ", R)
-                print(f"  Профиль  : {W}{BLD}+91 {selected['username']}{RST}")
+                print(f"  Профиль  : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
                 print(f"  Создан   : {G}{selected['login_str']}{RST}")
                 print()
                 print(f"  {R}{BLD}Профиль будет удалён безвозвратно!{RST}")
@@ -2457,7 +2465,7 @@ def screen_profiles():
                     try:
                         shutil.rmtree(str(selected["path"]))
                         deleted = True
-                        print(f"\n  {M}🗑 Профиль +91 {selected['username']} удалён.{RST}")
+                        print(f"\n  {M}🗑 Профиль {_disp_phone(selected['username'])} удалён.{RST}")
                     except Exception as exc:
                         print(f"\n  {R}Ошибка удаления: {exc}{RST}")
                     time.sleep(2)
@@ -2967,7 +2975,7 @@ def screen_fill_address():
         for i, p in enumerate(profiles, 1):
             mark = f"{B}🔵 Выдан{RST}" if p.get("issued_ts") else f"{G}● Доступен{RST}"
             print(
-                f"  {BLD}{Y}[{i:>2}]{RST}  {W}+91 {p['username']:<15}{RST}  "
+                f"  {BLD}{Y}[{i:>2}]{RST}  {W}{_disp_phone(p['username']):<14}{RST}  "
                 f"{DIM}{p['login_str']:<25}{RST}  {mark}"
             )
         print()
@@ -3000,7 +3008,7 @@ def screen_fill_address():
         print()
         for p in to_fill:
             addr = _gen_indian_address()
-            print(f"  {C}+91 {p['username']}{RST}")
+            print(f"  {C}{_disp_phone(p['username'])}{RST}")
             print(f"    Имя    : {W}{addr['name']}{RST}")
             print(f"    Индекс : {W}{addr['pincode']}{RST}  {DIM}({addr['city']}, {addr['state']}){RST}")
             print(f"    Адрес1 : {DIM}{addr['house']}{RST}")
@@ -6664,7 +6672,7 @@ def screen_buy_membership():
                 mark = f"{G}● Доступен{RST}"
             login_col = R if no_meta else DIM
             print(
-                f"  {BLD}{Y}[{i:>2}]{RST}  {W}+91 {p['username']:<15}{RST}  "
+                f"  {BLD}{Y}[{i:>2}]{RST}  {W}{_disp_phone(p['username']):<14}{RST}  "
                 f"{login_col}{p['login_str']:<40}{RST}  {mark}"
             )
         print()
@@ -6721,7 +6729,7 @@ def screen_buy_membership():
         # Выбор тарифа
         cls()
         header("ВЫБОР ТАРИФА", Y)
-        print(f"  Профиль : {W}{BLD}+91 {selected['username']}{RST}")
+        print(f"  Профиль : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
         print(f"  Вход    : {DIM}{selected['login_str']}{RST}")
         print()
         opt("1", "3 месяца  — ₹399  (скидка 20%)", G)

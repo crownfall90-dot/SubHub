@@ -232,6 +232,12 @@ def _menu_tg_bot_thread() -> None:
                     "normal": "🖥 Запуск | Вход на ПК (обычный)",
                     "headless": "🌑 Запуск | Вход на ПК (фоновый)"}.get(m, m)
 
+        def _disp_phone(ph: str) -> str:
+            u = str(ph).strip()
+            if len(u) == 12 and u.startswith("91") and u.isdigit():
+                return f"+91 {u[2:]}"
+            return f"+91 {u}"
+
         def _cnt_profiles():
             avail  = sum(1 for p in DONE_PROFILES_DIR.glob("profile_*")
                          if p.is_dir()) if DONE_PROFILES_DIR.exists() else 0
@@ -459,7 +465,7 @@ def _menu_tg_bot_thread() -> None:
                         icon = "🟠"
                     else:
                         icon = "🟢"
-                    line = f"{icon} `{ph}`"
+                    line = f"{icon} `{_disp_phone(ph)}`"
                     if vt:
                         line += f"  до {vt}"
                     elif has_lnk and list_type == "paid":
@@ -503,7 +509,7 @@ def _menu_tg_bot_thread() -> None:
                         icon = "🟣" if has_lnk else "🌟"
                     else:
                         icon = "🔵" if is_iss else ("🟣" if (has_lnk or st in ("activated", "explore_now", "activate_now") or vt) else "🟢")
-                    label = f"{icon} {ph}"
+                    label = f"{icon} {_disp_phone(ph)}"
                     if vt:
                         label += f" · до {vt}"
                     rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:{list_type}"}])
@@ -517,7 +523,7 @@ def _menu_tg_bot_thread() -> None:
         def _profile_menu_kb(phone, list_type="noaddr", rec_key=""):
             if list_type == "archive":
                 return {"inline_keyboard": [
-                    [{"text": f"📱 {phone}", "callback_data": "noop"}],
+                    [{"text": f"📱 {_disp_phone(phone)}", "callback_data": "noop"}],
                     [{"text": "📞 Показать номер", "callback_data": f"profile:shownum:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies_archived:{phone}:{rec_key}"}],
                     [{"text": "🔓 Вынести из архива", "callback_data": f"profile:unarchive:{rec_key}"}],
@@ -545,7 +551,7 @@ def _menu_tg_bot_thread() -> None:
                 )
                 has_link = bool(m.get("black_activation_link") or m.get("black_short_link"))
                 rows = [
-                    [{"text": f"📱 {phone}", "callback_data": "noop"}],
+                    [{"text": f"📱 {_disp_phone(phone)}", "callback_data": "noop"}],
                     [{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}],
                     [_issued_btn],
                 ]
@@ -560,7 +566,7 @@ def _menu_tg_bot_thread() -> None:
             else:
                 back_callback = f"profiles:list:{list_type}" if list_type in ("noaddr", "hasaddr") else "profiles:list:noaddr"
                 return {"inline_keyboard": [
-                    [{"text": f"📱 {phone}", "callback_data": "noop"}],
+                    [{"text": f"📱 {_disp_phone(phone)}", "callback_data": "noop"}],
                     [{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
                      {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}],
                     [{"text": "📍 Заполнить адрес доставки", "callback_data": f"profile:address:{phone}"}],
@@ -590,7 +596,7 @@ def _menu_tg_bot_thread() -> None:
                         except Exception:
                             ts = ""
                     suffix = (f"  ·  до {vt}" if vt else (f"  ·  {ts}" if ts else ""))
-                    lines.append(f"🟡 `{ph}`" + suffix)
+                    lines.append(f"🟡 `{_disp_phone(ph)}`" + suffix)
                 except Exception:
                     lines.append(f"🟡 {rec.name}")
             if len(records) > 20:
@@ -610,7 +616,7 @@ def _menu_tg_bot_thread() -> None:
                         ph = d.get("username") or rec.stem.replace("record_", "")
                         vt = d.get("black_valid_till") or ""
                         icon = "🌟" if vt else "✅"
-                        label = f"{icon} {ph}"
+                        label = f"{icon} {_disp_phone(ph)}"
                         if vt:
                             label += f" · {vt}"
                         rows.append([
