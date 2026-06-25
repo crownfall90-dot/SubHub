@@ -258,11 +258,10 @@ class GGSellMonitor:
     async def _check_new_messages(self, initialized: bool) -> None:
         """Проверить новые входящие сообщения от покупателей."""
         try:
-            # На первом запуске все чаты (для инициализации last_id),
-            # потом только с новой активностью через filter_new.
-            # cnt_new не используем — GGSell сбрасывает его при get_chats(),
-            # что делает его ненадёжным для отслеживания новых сообщений.
-            chats = await self.client.get_chats(filter_new=initialized)
+            # ВСЕГДА берём все чаты. filter_new ненадёжен: GGSell может не флагать
+            # чат как «новый» при сообщении покупателя — и сообщение терялось.
+            # Новизну отслеживаем сами по last_id каждого чата.
+            chats = await self.client.get_chats(filter_new=False)
         except Exception as exc:
             logger.debug(f"GGSell chats: {exc}")
             return
@@ -271,6 +270,10 @@ class GGSellMonitor:
             logger.trace(f"GGSell chat[0] keys: {list(chats[0].keys())}")
 
         seen = self._seen_msgs
+        # Ключи, которые уже были в сохранённом состоянии ДО этого прохода.
+        # Нужны, чтобы после перезапуска бота не «проглатывать» новые сообщения
+        # в уже известных чатах (раньше первый проход терял их без уведомления).
+        _orig_keys = set(seen.keys())
         changed = False
 
         for chat in chats:
@@ -295,8 +298,10 @@ class GGSellMonitor:
             msg_ids = [int(m.get("id") or m.get("message_id") or 0) for m in messages]
             max_id  = max(msg_ids) if msg_ids else 0
 
-            if not initialized:
-                # Первый запуск — запоминаем, уведомления не шлём
+            if not initialized and seen_key not in _orig_keys:
+                # Первый проход + чат БЕЗ сохранённого состояния (бэклог при самом
+                # первом запуске) — инициализируем без уведомления. Уже известные
+                # чаты обрабатываем нормально даже на первом проходе после рестарта.
                 seen[seen_key] = max(max_id, last_id)
                 changed = True
                 continue
@@ -306,13 +311,14 @@ class GGSellMonitor:
                 msg_id = int(msg.get("id") or msg.get("message_id") or 0)
                 if msg_id <= last_id:
                     continue
-                # Системные сообщения (поддержка GGSell, order_id=null) — пропускаем
-                if msg.get("system") or msg.get("order_id") is None:
+                # Диагностика: логируем КАЖДОЕ новое сообщение до фильтров
+                logger.debug(f"GGSell raw msg #{msg_id} в заказе #{id_i}: {msg}")
+                # Системные сообщения поддержки GGSell — пропускаем.
+                # (По order_id НЕ фильтруем: у обычных сообщений его может не быть.)
+                if msg.get("system"):
                     continue
-                # Уже прочитанные продавцом — не уведомляем
-                if msg.get("read"):
-                    continue
-                logger.debug(f"GGSell msg #{msg_id} в заказе #{id_i}: {msg}")
+                # Фильтр read убран: повторные уведомления и так исключаются по
+                # last_id; иначе прочитанное на сайте сообщение терялось.
                 # Сообщение от продавца (нашего бота) — не уведомляем
                 is_seller = bool(
                     msg.get("is_current_user")
