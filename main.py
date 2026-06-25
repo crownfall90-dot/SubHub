@@ -1305,7 +1305,7 @@ class LoginAutomation:
                             except Exception:
                                 pass
 
-                            # Заново проходим Фазу 1 для повторной отправки OTP
+                            # Заново проходим Фазу 1 для повторного ввода номера
                             try:
                                 logger.info(f"[{index}] [фон] Заново прохожу Фазу 1 для +{short_phone}...")
                                 p1 = await self._login_phase1(tab, phone, index)
@@ -1315,25 +1315,6 @@ class LoginAutomation:
                             except Exception as exc:
                                 logger.warning(f"[{index}] [фон] Ошибка Фазы 1 при повторной попытке для +{short_phone}: {exc}")
                                 continue
-
-                            # Сообщаем GrizzlySMS, что ждём новый SMS-код
-                            try:
-                                await self.sms_client.set_status(act_id, GrizzlySMSClient.STATUS_RETRY)
-                            except Exception as exc:
-                                logger.warning(f"[{index}] [фон] Не удалось установить статус RETRY в GrizzlySMS: {exc}")
-
-                            # Ждем новый код
-                            logger.info(f"[{index}] [фон] Ожидаю новый OTP код для +{short_phone}...")
-                            new_code = None
-                            try:
-                                new_code = await self.sms_client.wait_for_code(act_id, timeout=60, poll_interval=3)
-                            except Exception as exc:
-                                logger.warning(f"[{index}] [фон] Ошибка ожидания нового кода: {exc}")
-
-                            if not new_code:
-                                logger.warning(f"[{index}] [фон] Новый OTP код не получен для +{short_phone}")
-                                continue
-                            code = new_code
 
                         try:
                             phase2 = await self._login_phase2(tab, code, index, phone=short_phone)

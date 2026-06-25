@@ -897,7 +897,7 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 login_success = _auto_submitted and "login" not in page2.url.lower()
             except Exception:
                 login_success = _auto_submitted  # соединение потеряно, доверяем _auto_submitted
-            deadline = time.time() + 120.0
+            deadline = time.time() + 30.0
             _btn_clicked = False
 
             try:
@@ -999,8 +999,8 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 except Exception as _bgcke:
                     print(f"  [BG] Ошибка отправки кук в TG: {_bgcke}")
             else:
-                print(f"  [BG] Фоновый вход +91 {phone_10} не прошёл в течение 120 секунд")
-                await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (120 секунд истекло, сайт не перенаправил)")
+                print(f"  [BG] Фоновый вход +91 {phone_10} не прошёл в течение 30 секунд")
+                await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (30 секунд истекло, сайт не перенаправил)")
                 _bg_del_profile = True
         except BaseException as e:
             _err_str = str(e).lower()
