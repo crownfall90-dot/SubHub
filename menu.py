@@ -3642,6 +3642,14 @@ async def _fill_email_input(page) -> bool:
     inp = email_input.first
     await inp.scroll_into_view_if_needed()
     await _human_click(page, inp)
+    # Очищаем поле, если Flipkart его уже предзаполнил (например, сохранённой
+    # ранее почтой покупателя на не-gmail домене) — иначе ввод пойдёт «поверх».
+    try:
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Delete")
+        await page.wait_for_timeout(100)
+    except Exception:
+        pass
     await _human_type(page, email)
     await page.wait_for_timeout(300)
     # Сохраняем через Enter (надёжнее, чем искать кнопку Save)
