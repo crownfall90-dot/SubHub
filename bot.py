@@ -2862,6 +2862,13 @@ def _menu_tg_bot_thread() -> None:
 
             asyncio.ensure_future(_bg_update_loop())
 
+            # Разовый скан «висящих» заказов (есть сообщение покупателя, профиль
+            # не привязан, ссылка не выдана) — предложить начать выполнение.
+            try:
+                asyncio.ensure_future(_ggsel_handler[0].bg_check_hanging_orders())
+            except Exception:
+                pass
+
             # После рестарта от обновления: убираем "Перезапускаю..."
             try:
                 rf = Path(__file__).parent / "._restart_msg.json"

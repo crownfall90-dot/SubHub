@@ -1608,6 +1608,78 @@ class GGSellBotHandler:
             await self._notify_fulfill(cid, mid,
                 f"⚠️ *Заказ #{invoice_id}*: профиль создан, но ссылка не найдена — проверьте профили.")
 
+    async def bg_check_hanging_orders(self) -> None:
+        """При старте бота: ищет «висящие» заказы — без выданной ссылки и без
+        привязанного профиля, но с уже имеющимся сообщением от покупателя —
+        и предлагает в Telegram начать выполнение (кнопкой)."""
+        import asyncio as _aio
+        await _aio.sleep(20)  # даём GGSell-клиенту и монитору подняться
+        cli = self.get_client()
+        if not cli:
+            return
+        try:
+            orders = await cli.get_orders_v1(limit=30)
+            yt = [o for o in orders
+                  if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            if not yt:
+                orders = await cli.get_last_orders()
+                yt = [o for o in orders
+                      if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+        except Exception as exc:
+            logger.debug(f"GGSell hanging scan: {exc}")
+            return
+
+        done = self.get_done()
+        prompted = 0
+        for o in yt:
+            inv = int(o.get("invoice_id") or o.get("id") or 0)
+            if not inv or inv in done:
+                continue
+            if self.get_bound_profile(inv) or inv in self._auto_pending:
+                continue
+            # Есть ли сообщения именно от покупателя?
+            try:
+                msgs = await cli.get_messages(inv, id_from=0)
+            except Exception:
+                continue
+            has_buyer_msg = False
+            for m in (msgs or []):
+                if m.get("system"):
+                    continue
+                _is_seller = bool(
+                    m.get("is_current_user") or m.get("is_seller") or m.get("is_mine")
+                    or m.get("from_seller") or m.get("is_seller_msg")
+                    or int(m.get("type_message") or m.get("type_msg") or -1) == 1
+                )
+                if not _is_seller:
+                    has_buyer_msg = True
+                    break
+            if not has_buyer_msg:
+                continue
+            email = ""
+            try:
+                email = (await cli.get_buyer_email(inv)) or ""
+            except Exception:
+                pass
+            for _cid in list(self.subs):
+                try:
+                    await self._send(_cid,
+                        f"⏳ *Зависший заказ* `#{inv}`\n"
+                        + (f"👤 `{email}`\n" if email else "")
+                        + "_Сообщение покупателя есть, но профиль не привязан и ссылка не выдана._\n\n"
+                        "Начать выполнение?",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "▶️ Начать выполнение",
+                              "callback_data": f"ggsell:run:{inv}"}],
+                            [{"text": f"📋 Заказ #{inv}",
+                              "callback_data": f"ggsell:order:{inv}"}],
+                        ]})
+                except Exception:
+                    pass
+            prompted += 1
+        if prompted:
+            logger.info(f"GGSell: предложено выполнить {prompted} зависших заказа(ов)")
+
     async def bg_prepare_for_order(self, invoice_id: int, order: dict) -> None:
         """Сразу при получении заказа: резервируем профиль и сохраняем email покупателя."""
         import time as _time
@@ -1921,6 +1993,92 @@ class GGSellBotHandler:
                 f"⚠️ Заказ `#{invoice_id}`: автоматизация завершена, но ссылка в профиле не найдена.\n\n"
                 "_Проверьте профиль и отправьте ссылку вручную._")
 
+    # ── Шаблоны в ответе покупателю ──────────────────────────────────────────
+
+    def _reply_prompt_kb(self, invoice_id: int) -> dict:
+        """Клавиатура приглашения «напишите сообщение»: шаблоны + отмена."""
+        return {"inline_keyboard": [
+            [{"text": "📝 Шаблоны", "callback_data": f"ggsell:reply_tpl_list:{invoice_id}"}],
+            [{"text": "❌ Отмена", "callback_data": f"ggsell:reply_cancel:{invoice_id}"}],
+        ]}
+
+    def _render_template_for_order(self, name: str, invoice_id: int) -> str:
+        """Текст шаблона с подстановкой {link} (из заказа/привязанного профиля)."""
+        from ggsell.monitor import get_template
+        text = get_template(name) or ""
+        if "{link}" in text:
+            link = self.confirm.get(invoice_id) or self.get_sent_link(invoice_id) or ""
+            if not link:
+                bound = self.get_bound_profile(invoice_id)
+                if bound:
+                    meta = self._read_bound_meta(bound)
+                    link = (meta.get("black_short_link") or meta.get("issued_link")
+                            or meta.get("black_activation_link") or "")
+            text = text.replace("{link}", link)
+        return text
+
+    def reply_templates_page(self, invoice_id: int) -> tuple:
+        """Список шаблонов для отправки в чат покупателю."""
+        lines = [
+            f"📝 *Шаблоны* · заказ `#{invoice_id}`",
+            "",
+            "Выбери шаблон — покажу текст и кнопку «Отправить в чат».",
+        ]
+        rows = [[{"text": f"📄 {label}",
+                  "callback_data": f"ggsell:reply_tpl:{invoice_id}:{key}"}]
+                for key, (label, _desc) in self._TEMPLATE_NAMES.items()]
+        rows.append([{"text": "◀️ Назад", "callback_data": f"ggsell:reply_back:{invoice_id}"}])
+        return "\n".join(lines), {"inline_keyboard": rows}
+
+    def reply_template_preview(self, invoice_id: int, name: str) -> tuple:
+        """Предпросмотр шаблона + кнопка «Отправить в чат»."""
+        label, _desc = self._TEMPLATE_NAMES.get(name, (name, ""))
+        text = self._render_template_for_order(name, invoice_id)
+        preview = text[:500] + "…" if len(text) > 500 else text
+        lines = [
+            f"📄 *Шаблон: {label}* · заказ `#{invoice_id}`",
+            "━━━━━━━━━━━━━━━━━━━━━━", "",
+            preview, "",
+            "_Отправить этот текст покупателю в чат?_",
+        ]
+        kb = {"inline_keyboard": [
+            [{"text": "📤 Отправить в чат",
+              "callback_data": f"ggsell:reply_tpl_send:{invoice_id}:{name}"}],
+            [{"text": "◀️ К шаблонам",
+              "callback_data": f"ggsell:reply_tpl_list:{invoice_id}"}],
+        ]}
+        return "\n".join(lines), kb
+
+    async def bg_reply_template_send(self, cid: int, mid: int, invoice_id: int, name: str) -> None:
+        """Отправить выбранный шаблон в чат покупателю."""
+        cli = self.get_client()
+        if not cli:
+            await self._edit(cid, mid, "❌ GGSell клиент не настроен.", {"inline_keyboard": []})
+            return
+        text = self._render_template_for_order(name, invoice_id)
+        label, _desc = self._TEMPLATE_NAMES.get(name, (name, ""))
+        back_kb = {"inline_keyboard": [
+            [{"text": "◀️ К шаблонам", "callback_data": f"ggsell:reply_tpl_list:{invoice_id}"}]]}
+        try:
+            ok = await cli.send_message(invoice_id, text)
+        except Exception as exc:
+            await self._edit(cid, mid,
+                f"❌ Ошибка отправки шаблона (заказ `#{invoice_id}`): {exc}", back_kb)
+            return
+        if ok:
+            self.reply_mode.pop(cid, None)
+            preview = text[:300] + "…" if len(text) > 300 else text
+            await self._edit(cid, mid,
+                f"✅ *Шаблон «{label}» отправлен покупателю!*\n\n"
+                f"Заказ: `#{invoice_id}`\n\n{preview}",
+                {"inline_keyboard": [
+                    [{"text": "💬 Чат",    "callback_data": f"ggsell:chat:{invoice_id}"},
+                     {"text": "📋 Заказ",  "callback_data": f"ggsell:order:{invoice_id}"}],
+                ]})
+        else:
+            await self._edit(cid, mid,
+                f"⚠️ Не удалось отправить шаблон (заказ `#{invoice_id}`).", back_kb)
+
     async def bg_reply(self, cid, invoice_id: int, text: str) -> None:
         cli = self.get_client()
         if not cli:
@@ -1932,10 +2090,7 @@ class GGSellBotHandler:
             await self._send(cid,
                 f"💬 *Ответ покупателю* · заказ `#{invoice_id}`\n\n"
                 "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
-                reply_markup={"inline_keyboard": [
-                    [{"text": "❌ Отмена",
-                      "callback_data": f"ggsell:reply_cancel:{invoice_id}"}],
-                ]})
+                reply_markup=self._reply_prompt_kb(invoice_id))
 
         try:
             ok = await cli.send_message(invoice_id, text)
@@ -2104,12 +2259,26 @@ class GGSellBotHandler:
             f"*Заказ:* `#{invoice_id}`  │  👤 `{email}`{time_s}\n\n"
             f"{msg_text}"
         )
-        kb = {"inline_keyboard": [
+
+        # Заказ «висит»: нет выданной ссылки и нет привязанного профиля, и его
+        # НЕ собирается выполнить авто-режим прямо сейчас — предлагаем начать
+        # выполнение кнопкой (подбор профиля по приоритету).
+        _will_auto = (invoice_id in self._auto_pending and
+                      any(self._get(_c, "ggsel_auto_fulfill") for _c in list(self.subs)))
+        _is_pending = bool(invoice_id) and (invoice_id not in self.get_done()) \
+            and not self.get_bound_profile(invoice_id)
+
+        kb_rows = [
             [{"text": "💬 Ответить",
               "callback_data": f"ggsell:reply:{invoice_id}"},
              {"text": f"📋 Заказ #{invoice_id}",
               "callback_data": f"ggsell:order:{invoice_id}"}],
-        ]}
+        ]
+        if _is_pending and not _will_auto:
+            kb_rows.insert(0, [{"text": "▶️ Начать выполнение заказа",
+                                "callback_data": f"ggsell:run:{invoice_id}"}])
+            text += "\n\n_⚠️ Профиль не привязан, ссылка не выдана. Начать выполнение?_"
+        kb = {"inline_keyboard": kb_rows}
         for _cid in list(self.subs):
             if not self._get(_cid, "ggsel_notify_messages"):
                 continue
@@ -2633,10 +2802,42 @@ class GGSellBotHandler:
             await self._send(cid,
                 f"💬 *Ответ покупателю* · заказ `#{invoice_id}`\n\n"
                 "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
-                reply_markup={"inline_keyboard": [
-                    [{"text": "❌ Отмена",
-                      "callback_data": f"ggsell:reply_cancel:{invoice_id}"}],
-                ]})
+                reply_markup=self._reply_prompt_kb(invoice_id))
+            return
+
+        if data.startswith("ggsell:reply_back:"):
+            invoice_id = int(data.split(":")[2])
+            self.reply_mode[cid] = invoice_id
+            await self._ack(qid)
+            await self._edit(cid, mid,
+                f"💬 *Ответ покупателю* · заказ `#{invoice_id}`\n\n"
+                "Напишите сообщение — оно будет отправлено покупателю в чат GGSell:",
+                self._reply_prompt_kb(invoice_id))
+            return
+
+        if data.startswith("ggsell:reply_tpl_list:"):
+            invoice_id = int(data.split(":")[2])
+            self.reply_mode[cid] = invoice_id
+            await self._ack(qid)
+            txt, kb = self.reply_templates_page(invoice_id)
+            await self._edit(cid, mid, txt, kb)
+            return
+
+        if data.startswith("ggsell:reply_tpl_send:"):
+            parts = data.split(":")
+            invoice_id = int(parts[2])
+            name = parts[3]
+            await self._ack(qid, "⏳ Отправляю...")
+            asyncio.create_task(self.bg_reply_template_send(cid, mid, invoice_id, name))
+            return
+
+        if data.startswith("ggsell:reply_tpl:"):
+            parts = data.split(":")
+            invoice_id = int(parts[2])
+            name = parts[3]
+            await self._ack(qid)
+            txt, kb = self.reply_template_preview(invoice_id, name)
+            await self._edit(cid, mid, txt, kb)
             return
 
         if data.startswith("ggsell:reply_cancel:"):
