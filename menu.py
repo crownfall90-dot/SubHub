@@ -9727,4 +9727,13 @@ if __name__ == "__main__":
         except (KeyboardInterrupt, Exception) as _e:
             if not isinstance(_e, KeyboardInterrupt):
                 print(f"Ошибка при очистке номеров при выходе: {_e}")
-        sys.exit(_exit_code[0])
+        # Завершаемся жёстко через os._exit, минуя финализацию интерпретатора.
+        # Иначе демон-потоки (Telegram-поллинг, aiohttp) продолжают писать в
+        # stdout во время shutdown и роняют процесс фатальной ошибкой
+        # _enter_buffered_busy (гонка за блокировку буфера вывода).
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.flush()
+            except Exception:
+                pass
+        os._exit(_exit_code[0])
