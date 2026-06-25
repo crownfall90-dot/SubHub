@@ -5618,9 +5618,23 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     except Exception:
         pass
 
+    # «Due to inactivity … unable to process the transaction» на странице оплаты —
+    # по факту оплата ПРОШЛА (страница просто протухла). Не считаем провалом:
+    # идём на flipkart-black-store, ждём 90 сек, обновляем и забираем ссылку.
+    _inactivity = False
+    try:
+        _bt0 = (await page.evaluate("() => document.body.innerText") or "").lower()
+        if ("due to inactivity" in _bt0
+                or "unable to process the transaction" in _bt0):
+            _inactivity = True
+            print(f"  {G}✅ «Due to inactivity» — оплата прошла, иду на black-store за ссылкой...{RST}")
+    except Exception:
+        pass
+
     # Ранняя проверка: если вернулись на страницу payments или Paytm error — отклонён
+    # (кроме случая «Due to inactivity» — там оплата прошла).
     _FK_FAIL_URLS = ("/payments", "payment-failed", "checkout-failed", "payment_failure")
-    if any(kw in cur_url for kw in _FK_FAIL_URLS):
+    if not _inactivity and any(kw in cur_url for kw in _FK_FAIL_URLS):
         print(f"  {Y}⚠ Redirect на страницу оплаты/ошибки — платёж отклонён{RST}")
         result["error"] = f"payment_fail_redirect:{cur_url[:60]}"
         _send_tg_error(phone_number, "Redirect на страницу ошибки — платёж отклонён")
@@ -5671,8 +5685,9 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         pass
 
     # Нет баннера успешной оплаты — транзакция НЕ успешна (например, не хватило денег).
-    # Не идём на black-store, чтобы не принять существующую подписку за новую оплату.
-    if not _banner_confirmed:
+    # Исключение: «Due to inactivity» после Submit — оплата прошла, но баннер не
+    # показали; тогда идём на black-store за ссылкой (успех подтвердит подписка/Activate).
+    if not _banner_confirmed and not _inactivity:
         print(f"  {Y}⚠ Нет баннера успешной оплаты — транзакция не подтверждена{RST}")
         result["error"] = "no_success_banner"
         _send_tg_error(phone_number, "Нет баннера успешной оплаты — оплата не прошла")
