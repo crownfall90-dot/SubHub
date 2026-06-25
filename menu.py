@@ -7640,6 +7640,13 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
         except Exception as exc:
             print(f"  {DIM}Проверка старых активаций: {exc}{RST}")
 
+        # Проверяем доступность Flipkart один раз перед стартом.
+        # Повторные попытки (следующий номер, карта и т.д.) проверку не делают.
+        print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+        if not await _check_flipkart_accessible():
+            return False, "Flipkart недоступен — запуск отменён"
+        print(f"  {G}Flipkart доступен.{RST}")
+
         attempt = 0
         while True:
             attempt += 1
