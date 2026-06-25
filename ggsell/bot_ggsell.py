@@ -1254,7 +1254,24 @@ class GGSellBotHandler:
         order_rows = []
         for o in page:
             inv_i = int(o.get("invoice_id") or o.get("id") or 0)
-            label = self._order_label(o, inv_i)
+            # Email покупателя: из объекта/кэша, иначе дотягиваем через API
+            _em = self.parse_order(o).get("email", "")
+            if not _em:
+                _cc = self.orders.get(inv_i, {})
+                _em = (_cc.get("buyer_email") if isinstance(_cc, dict) else "") \
+                    or self._done_buyer_emails.get(inv_i, "")
+            if not _em:
+                try:
+                    _em = (await cli.get_buyer_email(inv_i)) or ""
+                except Exception:
+                    _em = ""
+            _dt = self.parse_order(o).get("date", "")
+            parts = []
+            if _em:
+                parts.append(_em[:34])
+            if _dt:
+                parts.append(_dt)
+            label = "  ·  ".join(parts) if parts else f"#{inv_i}"
             order_rows.append([{"text": label[:64],
                                  "callback_data": f"profile:send_to_order:{phone}:{inv_i}"}])
 
