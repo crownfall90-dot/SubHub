@@ -884,16 +884,15 @@ class LoginAutomation:
             pass
         await asyncio.sleep(0.3)
 
-        # Остальные номера НЕ отменяем сразу. Если на «лишний» номер пришёл (или
-        # вот-вот придёт) OTP — приоритет у входа: иначе код истечёт, пока идёт
-        # последовательная отмена. Поэтому для каждого номера сразу (параллельно)
-        # запускаем фоновый мониторинг: он первым делом проверяет OTP и при наличии
-        # выполняет вход, а при отсутствии кода — отменяет номер (возврат средств),
-        # как только отмена станет доступна.
+        # Запускаем фоновый мониторинг (который проверит OTP и отменит/войдет)
+        # для всех остальных номеров в параллели без блокировки главного потока.
         for aid, inf in list(active.items()):
             if aid != act_id:
                 inf["task"].cancel()   # стоп существующего мониторинга OTP
                 ph = inf.get("phone", "")
+                logger.info(
+                    f"[{index}] +{ph} передан в фоновый мониторинг (проверка OTP / отмена)"
+                )
                 t = asyncio.create_task(
                     self._background_login_monitor(
                         aid, ph, inf["tab"], inf["context"],
@@ -901,7 +900,6 @@ class LoginAutomation:
                     )
                 )
                 self._background_tasks.append(t)
-                logger.info(f"[{index}] +{ph} → фоновый мониторинг (вход при OTP, иначе возврат)")
                 del active[aid]  # убираем из active — _run_auto.finally не тронет повторно
 
         if self.tg_mode == "intercept":
@@ -1296,28 +1294,12 @@ class LoginAutomation:
                             "otp_code",
                         ))
 
-                    # ── 2. Phase 2: вводим код (до 2 попыток) ────────────────
-                    phase2 = False
-                    for _p2_try in range(2):
-                        try:
-                            phase2 = await self._login_phase2(tab, code, index, phone=short_phone)
-                        except Exception as exc:
-                            logger.warning(
-                                f"[{index}] [фон] Ошибка phase2 +{short_phone} "
-                                f"(попытка {_p2_try + 1}/2): {exc}"
-                            )
-                            phase2 = False
-                        if phase2:
-                            break
-                        if _p2_try == 0:
-                            logger.info(
-                                f"[{index}] [фон] Вход не удался +{short_phone} — повтор (2/2)..."
-                            )
-                            try:
-                                await tab.reload(wait_until="domcontentloaded", timeout=15_000)
-                                await tab.wait_for_timeout(1500)
-                            except Exception:
-                                pass
+                    # ── 2. Phase 2: вводим код ───────────────────────────────
+                    try:
+                        phase2 = await self._login_phase2(tab, code, index, phone=short_phone)
+                    except Exception as exc:
+                        logger.warning(f"[{index}] [фон] Ошибка phase2 +{short_phone}: {exc}")
+                        phase2 = False
 
                     if phase2:
                         # ── 3. Сохраняем профиль ────────────────────────────
@@ -1364,18 +1346,9 @@ class LoginAutomation:
                             ))
                         logged_in = True
                     else:
-                        # Не вошли за 2 попытки — пропускаем лишний аккаунт, считаем
-                        # неудачным и больше не пробуем. Сообщаем пользователю.
                         logger.warning(
-                            f"[{index}] [фон] Вход НЕ выполнен за 2 попытки для +{short_phone} — "
-                            f"пропускаю лишний аккаунт"
+                            f"[{index}] [фон] Phase2 не прошла для +{short_phone} — профиль не сохранён"
                         )
-                        if self.tg_client:
-                            asyncio.create_task(self.tg_client.notify_filtered(
-                                f"⚠️ Не удалось войти в лишний аккаунт `+91{short_phone}` "
-                                f"за 2 попытки — пропущен.",
-                                "otp_code",
-                            ))
                     return  # OTP был один — больше ничего не ждём
 
                 elif status["type"] == "CANCEL":
@@ -1883,35 +1856,6 @@ class LoginAutomation:
                 lambda url: "login" not in url,
                 timeout=self.config.timeout,
             )
-            # URL сменился — но это НЕ гарантия входа: Flipkart мог увести с login
-            # без установки сессии. Подтверждаем вход отсутствием кнопки «Login»
-            # (с ретраями против переходных состояний). Иначе профиль сохранять нельзя.
-            _logged_in = False
-            for _vchk in range(3):
-                await page.wait_for_timeout(1000)
-                try:
-                    _has_login_btn = await page.evaluate("""() => {
-                        for (const el of document.querySelectorAll(
-                                'button,a,div,span,[role="button"]')) {
-                            const t = (el.innerText || '').trim();
-                            if (t !== 'Login') continue;
-                            const r = el.getBoundingClientRect();
-                            if (r.width > 20 && r.height > 8) return true;
-                        }
-                        return false;
-                    }""")
-                except Exception:
-                    _has_login_btn = False
-                if not _has_login_btn:
-                    _logged_in = True
-                    break
-            if not _logged_in:
-                logger.error(
-                    f"[{index}] URL сменился, но кнопка «Login» осталась — "
-                    f"вход НЕ выполнен для +{phone} (профиль не сохраняется)"
-                )
-                await self._save_screenshot(page, index, "phase2", "login_btn_present")
-                return False
             logger.success(f"[{index}] Вход выполнен! URL: {page.url}")
             return True
         except Exception:
@@ -2599,8 +2543,6 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     kb_stop = _start_kb_monitor(asyncio.get_running_loop(), pause_event)
 
     automation = None  # определяем до try чтобы finally мог безопасно обратиться
-    # Финальное уведомление о выполнении шлём в finally — ПОСЛЕ отмены всех номеров
-    _completion = {"reached": False, "ok": 0, "target": 0}
     try:
         async with async_playwright() as pw:
             automation = LoginAutomation(
@@ -2675,13 +2617,24 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
 
                     _fill_slots()
 
-                # Цель достигнута. Уведомление в TG отправим в finally — ПОСЛЕ
-                # того как отменим все оставшиеся номера (фон + страховка),
-                # чтобы «Задача выполнена» приходило в самом конце.
+                # Цель достигнута — финальное сообщение
                 logger.success("=" * 52)
                 logger.success(f"  🎯 ЦЕЛЬ ДОСТИГНУТА: {success_count}/{target} аккаунтов!")
                 logger.success("=" * 52)
-                _completion = {"reached": True, "ok": success_count, "target": target}
+
+                if tg_manager:
+                    final_bal_str = "—"
+                    if sms_client:
+                        try:
+                            fb = await sms_client.get_balance()
+                            final_bal_str = f"${fb:.4f}"
+                        except Exception:
+                            pass
+                    await tg_manager.notify_all(
+                        f"🎯 Задача выполнена!\n"
+                        f"✅ Создано аккаунтов: {success_count}/{target}\n"
+                        f"💰 Итоговый баланс: {final_bal_str}"
+                    )
             else:
                 # ── Ручной режим: список аккаунтов из конфига ──────────────────
                 for idx, account in enumerate(manual_accounts):
@@ -2715,13 +2668,8 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 await asyncio.gather(*active_bg, return_exceptions=True)
                 logger.info("✅ Фоновые мониторинги завершены")
 
-            # Если остались открытые успешные браузеры — ждём Enter.
-            # Только в интерактивном консольном запуске с окном: при запуске из
-            # Telegram или в фоновом (headless) режиме у консоли нет оператора,
-            # который нажмёт Enter — иначе процесс зависает и плашка статуса в TG
-            # не обновляется до ручного нажатия Enter.
-            _interactive = tg_mode == "none" and not force_headless
-            if getattr(automation, "_kept_contexts", None) and _interactive:
+            # Если остались открытые успешные браузеры — ждём Enter
+            if getattr(automation, "_kept_contexts", None):
                 logger.info("=" * 52)
                 logger.info(
                     f"Открытых браузеров: {len(automation._kept_contexts)}. "
@@ -2749,25 +2697,6 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
             try:
                 bal = await sms_client.get_balance()
                 logger.info(f"  💰 Баланс после возвратов: ${bal:.4f}")
-            except Exception:
-                pass
-
-        # Финальное уведомление «Задача выполнена» — строго ПОСЛЕ отмены всех номеров
-        if _completion["reached"] and tg_manager:
-            _fb = "—"
-            if sms_client:
-                try:
-                    _b = await sms_client.get_balance()
-                    _fb = f"${_b:.4f}"
-                except Exception:
-                    pass
-            try:
-                await tg_manager.notify_all(
-                    f"🎯 Задача выполнена!\n"
-                    f"✅ Создано аккаунтов: {_completion['ok']}/{_completion['target']}\n"
-                    f"💰 Итоговый баланс: {_fb}\n"
-                    f"♻️ Все оставшиеся номера отменены."
-                )
             except Exception:
                 pass
 

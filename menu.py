@@ -7811,43 +7811,64 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             async def _do_loser(o_id, o_ph, o_pg, o_ctx):
                                 has_otp = False
                                 _loser_login_ok = False
+                                _deadline = time.monotonic() + 180.0
                                 try:
-                                    _lst = await sms_client.get_status(o_id)
-                                    if _lst.get("type") == "OK" and _lst.get("code"):
-                                        has_otp = True
-                                        if intercept_mode:
-                                            print(f"  {G}[BG] +91 {o_ph} OTP={_lst['code']} (перехват) → завершаю{RST}")
-                                            await _send_tg_otp(o_ph, _lst['code'], " (перехват)")
-                                            try: await sms_client.complete(o_id)
-                                            except Exception: pass
-                                            _grizzly_module.mark_completed(o_id)
-                                        else:
-                                            _loser_otp = _lst["code"]
-                                            print(f"  {G}[BG] +91 {o_ph}: OTP {_loser_otp} — вхожу{RST}")
-                                            try:
-                                                _loser_login_ok = await _enter_otp_on_page(
-                                                    o_pg, _loser_otp, timeout_redirect=22.0)
-                                            except Exception as _le:
-                                                print(f"  {Y}[BG] +91 {o_ph} ошибка входа: {_le}{RST}")
-                                            if _loser_login_ok:
+                                    while time.monotonic() < _deadline:
+                                        try:
+                                            _lst = await sms_client.get_status(o_id)
+                                        except Exception:
+                                            await asyncio.sleep(poll_int)
+                                            continue
+
+                                        if _lst.get("type") == "OK" and _lst.get("code"):
+                                            has_otp = True
+                                            if intercept_mode:
+                                                print(f"  {G}[BG] +91 {o_ph} OTP={_lst['code']} (перехват) → завершаю{RST}")
+                                                await _send_tg_otp(o_ph, _lst['code'], " (перехват)")
                                                 try: await sms_client.complete(o_id)
                                                 except Exception: pass
                                                 _grizzly_module.mark_completed(o_id)
-                                                try:
-                                                    _lp = DONE_PROFILES_DIR / f"profile_{o_ph}"
-                                                    (_lp / ".profile_meta.json").write_text(
-                                                        json.dumps({"username": o_ph, "login_ts": time.time(),
-                                                                    "otp_code": _loser_otp, "source": "parallel_loser"},
-                                                                   ensure_ascii=False), encoding="utf-8")
-                                                    _grizzly_module._STATS["profiles_saved"] += 1
-                                                except Exception: pass
-                                                print(f"  {G}[BG✓] Профиль +91 {o_ph} сохранён{RST}")
-                                                try:
-                                                    await _send_tg_login_ok(o_ph)
-                                                except Exception: pass
+                                                _loser_login_ok = True
                                             else:
-                                                print(f"  {Y}[BG] +91 {o_ph} вход не прошёл — отменяю{RST}")
-                                                _grizzly_module.mark_failed(o_id)
+                                                _loser_otp = _lst["code"]
+                                                print(f"  {G}[BG] +91 {o_ph}: OTP {_loser_otp} — вхожу{RST}")
+                                                try:
+                                                    _loser_login_ok = await _enter_otp_on_page(
+                                                        o_pg, _loser_otp, timeout_redirect=22.0)
+                                                except Exception as _le:
+                                                    print(f"  {Y}[BG] +91 {o_ph} ошибка входа: {_le}{RST}")
+                                                if _loser_login_ok:
+                                                    try: await sms_client.complete(o_id)
+                                                    except Exception: pass
+                                                    _grizzly_module.mark_completed(o_id)
+                                                    try:
+                                                        _lp = DONE_PROFILES_DIR / f"profile_{o_ph}"
+                                                        (_lp / ".profile_meta.json").write_text(
+                                                            json.dumps({"username": o_ph, "login_ts": time.time(),
+                                                                        "otp_code": _loser_otp, "source": "parallel_loser"},
+                                                                       ensure_ascii=False), encoding="utf-8")
+                                                        _grizzly_module._STATS["profiles_saved"] += 1
+                                                    except Exception: pass
+                                                    print(f"  {G}[BG✓] Профиль +91 {o_ph} сохранён{RST}")
+                                                    try:
+                                                        await _send_tg_login_ok(o_ph)
+                                                    except Exception: pass
+                                                else:
+                                                    print(f"  {Y}[BG] +91 {o_ph} вход не прошёл — отменяю{RST}")
+                                                    _grizzly_module.mark_failed(o_id)
+                                            break
+
+                                        elif _lst.get("type") in ("CANCEL", "UNKNOWN"):
+                                            break
+
+                                        # Пробуем отменить (кулдаун мог пройти)
+                                        try:
+                                            await sms_client.cancel(o_id)
+                                            break
+                                        except Exception:
+                                            pass
+
+                                        await asyncio.sleep(poll_int)
                                 except Exception: pass
                                 if not has_otp:
                                     _grizzly_module.mark_failed(o_id)
@@ -7989,7 +8010,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     
                     # Чистим оставшиеся неактивные номера
                     losers = [e for e in _active if e[0] != win_id]
-                    await asyncio.gather(*[_do_loser(e[0], e[1], e[2], e[4]) for e in losers])
+                    # Запускаем фоновые задачи очистки в фоне без ожидания
+                    for e in losers:
+                        asyncio.create_task(_do_loser(e[0], e[1], e[2], e[4]))
                     
                     return True, f"OTP отправлен в TG: +91 {phone_10}"
 
