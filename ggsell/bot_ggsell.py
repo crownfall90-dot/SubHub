@@ -2535,19 +2535,9 @@ class GGSellBotHandler:
         return "⭐" * n + "☆" * (5 - n) + f"  {n}/5"
 
     async def _get_review_promo_code(self, cli) -> str:
-        """Вернуть активный промокод для отзыва (applies_to_all_offers=False)."""
-        try:
-            codes = await cli.get_promo_codes()
-            for code in codes:
-                if (code.get("status", {}).get("slug") == "active"
-                        and not code.get("applies_to_all_offers")):
-                    limit = code.get("activation_limit")
-                    count = code.get("activation_count", 0)
-                    if limit is None or count < limit:
-                        return code.get("code", "")
-        except Exception as exc:
-            logger.debug(f"GGSell get_review_promo_code: {exc}")
-        return ""
+        """Вернуть промокод для отзыва — берётся из константы REVIEW_PROMO_CODE."""
+        from ggsell.monitor import REVIEW_PROMO_CODE
+        return REVIEW_PROMO_CODE
 
     async def notify_review(self, item: dict) -> None:
         invoice_id = item.get("invoice_id")
