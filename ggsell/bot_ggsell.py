@@ -383,36 +383,58 @@ class GGSellBotHandler:
                 sell_s = str(p["sum_sell"])
             lines.append(f"💼 Твоя выплата: *{sell_s}₽*")
 
-        # Дата
+        # Дата создания заказа
         if p["date"]:
-            lines.append(f"🕒 {p['date']}")
+            lines.append(f"🕒 Создан: `{p['date']}`")
 
         # Статус
         lines.append("")
         issued_dt = done.get(invoice_id, "")
         if invoice_id in used_ids:
             lines.append("🟡 *Статус: в архиве*")
-            if sent_link:
-                lines.append(f"🔗 `{sent_link}`")
         elif invoice_id in done:
             lines.append("🔵 *Статус: выдано*")
-            if issued_dt:
-                lines.append(f"📅 Выдано: `{issued_dt}`")
-            if sent_link:
-                lines.append(f"🔗 `{sent_link}`")
         elif confirm_lnk:
             lines.append("⏳ *Статус: ждёт подтверждения*")
             lines.append(f"🔗 `{confirm_lnk}`")
         else:
             lines.append("🟢 *Статус: новый*")
 
-        # Привязанный профиль (номер) — чтобы знать откуда выдана ссылка
+        # Привязанный (оплаченный) профиль: номер, короткая ссылка, дата выдачи
         bound = self.get_bound_profile(invoice_id)
         if bound:
+            meta = self._read_bound_meta(bound)
             ph_raw = Path(bound).name.replace("profile_", "")
-            lines.append(f"📱 Профиль: `{self._disp_phone(ph_raw)}`")
+            short_link = (meta.get("black_short_link") or sent_link
+                          or meta.get("issued_link")
+                          or meta.get("black_activation_link") or "")
+            issued_str = issued_dt or meta.get("issued_str") or ""
+            lines.append("")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("📎 *Привязанный профиль*")
+            lines.append(f"📱 `{self._disp_phone(ph_raw)}`")
+            if short_link:
+                lines.append(f"🔗 `{short_link}`")
+            if issued_str:
+                lines.append(f"📅 Выдан: `{issued_str}`")
+        elif sent_link and (invoice_id in done or invoice_id in used_ids):
+            # Профиль не привязан, но ссылка покупателю отправлялась
+            lines.append(f"🔗 `{sent_link}`")
+            if issued_dt:
+                lines.append(f"📅 Выдан: `{issued_dt}`")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _read_bound_meta(profile_path: str) -> dict:
+        """Метаданные привязанного профиля (.profile_meta.json)."""
+        try:
+            mf = Path(profile_path) / ".profile_meta.json"
+            if mf.exists():
+                return json.loads(mf.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
 
     @staticmethod
     def _disp_phone(username: str) -> str:
@@ -438,6 +460,18 @@ class GGSellBotHandler:
             ])
         elif invoice_id not in used_ids:
             rows.append([{"text": "🟡 Использована", "callback_data": f"ggsell:mark_used:{invoice_id}"}])
+
+        # Привязанный профиль: переход и замена ссылки (как в меню профиля)
+        bound = self.get_bound_profile(invoice_id)
+        if bound:
+            bound_phone = Path(bound).name.replace("profile_", "")
+            rows.append([
+                {"text": "👤 Перейти к профилю",
+                 "callback_data": f"profile:menu:{bound_phone}:active"},
+                {"text": "🔄 Заменить ссылку",
+                 "callback_data": f"profile:refresh_link:{bound_phone}"},
+            ])
+
         review_icon = "✅" if review_exists else "❌"
         chat_row = [
             {"text": "💬 Чат", "callback_data": f"ggsell:chat:{invoice_id}"},
@@ -1280,6 +1314,300 @@ class GGSellBotHandler:
                     [{"text": "📤 Другой заказ", "callback_data": f"profile:send_to_buyer:{phone}:0"}],
                 ]})
 
+    # ── Единая выдача заказа по приоритету профилей ──────────────────────────
+
+    def _order_months(self, order: dict) -> int:
+        """Срок подписки из ВЫБРАННОЙ опции заказа: 3 или 12 месяцев.
+        Название товара не смотрим — там всегда оба срока. По умолчанию 3."""
+        try:
+            p = self.parse_order(order)
+            for opt in p.get("options", []):
+                t = (str(opt.get("value", "")) + " " + str(opt.get("name", ""))).lower()
+                m = re.search(r"(\d+)\s*(мес|month|год|year)", t)
+                if m:
+                    n = int(m.group(1))
+                    if m.group(2) in ("год", "year"):
+                        n *= 12
+                    return 12 if n >= 12 else 3
+        except Exception:
+            pass
+        return 3
+
+    def _order_youtube_email(self, order: dict) -> str:
+        """Email для активации YouTube из параметра заказа
+        («Ваш адрес электронной почты для YouTube»). Приоритет над email аккаунта."""
+        try:
+            p = self.parse_order(order)
+            for opt in p.get("options", []):
+                name = str(opt.get("name", "")).lower()
+                if any(k in name for k in ("youtube", "почт", "email", "mail")):
+                    val = str(opt.get("value", "")).strip()
+                    if "@" in val:
+                        return val
+        except Exception:
+            pass
+        return ""
+
+    def _categorize_profiles(self):
+        """(paid, hasdata, available) — невыданные профили по статусам:
+        paid — Оплаченные (есть ссылка/активация), hasdata — С данными,
+        available — Доступные (вход есть, данные не заполнены)."""
+        paid, hasdata, available = [], [], []
+        try:
+            profiles = self._m("_load_done_profiles")() or []
+        except Exception:
+            return paid, hasdata, available
+        for p in profiles:
+            if not p.get("login_ts") or p.get("issued_ts"):
+                continue
+            st = p.get("status") or ""
+            has_link  = bool(p.get("black_activation_link") or p.get("black_short_link"))
+            is_subact = st in ("activated", "explore_now", "activate_now") or bool(p.get("black_valid_till"))
+            is_ready  = bool(p.get("prepared_ts") or p.get("buyer_email") or st == "email_completed")
+            if has_link or is_subact:
+                paid.append(p)
+            elif is_ready:
+                hasdata.append(p)
+            else:
+                available.append(p)
+        available.sort(key=lambda x: x.get("login_ts") or 0)
+        hasdata.sort(key=lambda x: x.get("prepared_ts") or x.get("login_ts") or 0)
+        return paid, hasdata, available
+
+    async def _notify_fulfill(self, cid, mid, text: str) -> None:
+        """Сообщение о ходе выдачи: редактируем карточку (кнопка «Выполнить»)
+        или шлём всем подписчикам (авто-выдача по сообщению покупателя)."""
+        if cid and mid:
+            try:
+                await self._edit(cid, mid, text,
+                    {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+                return
+            except Exception:
+                pass
+        for c in list(self.subs):
+            try:
+                await self._send(c, text)
+            except Exception:
+                pass
+
+    async def _send_link_and_bind(self, invoice_id, link, profile_path, phone, cid, mid, source="") -> None:
+        """Отправляет ссылку покупателю шаблоном и привязывает профиль к заказу."""
+        from ggsell.monitor import get_template
+        cli = self.get_client()
+        ok = False
+        try:
+            ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
+        except Exception as exc:
+            logger.error(f"GGSell fulfill #{invoice_id}: ошибка отправки ссылки: {exc}")
+        if ok:
+            self.mark_done(invoice_id, link, profile_path=str(profile_path))
+            _src = f"\n_(из «{source}»)_" if source else ""
+            await self._notify_fulfill(cid, mid,
+                f"✅ *Заказ #{invoice_id} выполнен!*\n"
+                f"📱 Профиль: `{self._disp_phone(phone)}`\n"
+                f"🔗 `{link}`\n"
+                f"_Ссылка отправлена покупателю, профиль привязан к заказу._{_src}")
+        else:
+            await self._notify_fulfill(cid, mid,
+                f"⚠️ *Заказ #{invoice_id}*: ссылка готова, но не отправилась в чат.\n"
+                f"📱 `{self._disp_phone(phone)}`\n🔗 `{link}`")
+
+    @staticmethod
+    def _run_menu_coro(coro_factory):
+        """Запускает корутину menu.py в отдельном event loop (для run_in_executor)."""
+        import asyncio as _aio
+        loop = _aio.new_event_loop()
+        _aio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro_factory())
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    async def _read_profile_link(self, profile_path) -> str:
+        try:
+            meta = json.loads((Path(profile_path) / ".profile_meta.json").read_text(encoding="utf-8"))
+            return (meta.get("black_activation_link") or meta.get("black_short_link")
+                    or meta.get("activation_url") or "")
+        except Exception:
+            return ""
+
+    async def _buy_and_deliver(self, prof, months, invoice_id, buyer_email, cid, mid, source="") -> bool:
+        """Покупает срок на профиле, читает ссылку, отправляет покупателю и привязывает."""
+        import functools, importlib
+        phone = prof.get("username", prof["path"].name)
+        await self._notify_fulfill(cid, mid,
+            f"💳 *Заказ #{invoice_id}*: покупаю {months} мес на `{self._disp_phone(phone)}`"
+            + (f" (из «{source}»)" if source else "") + "...\n_Займёт несколько минут._")
+        menu = importlib.import_module("menu")
+        menu._override_email = buyer_email or ""
+        try:
+            ok, msg = await asyncio.get_event_loop().run_in_executor(
+                None, functools.partial(
+                    self._run_menu_coro,
+                    lambda: self._m("_do_buy_membership")(prof["path"], months, None)))
+        except Exception as exc:
+            ok, msg = False, str(exc)
+        finally:
+            menu._override_email = ""
+        if not ok:
+            await self._notify_fulfill(cid, mid,
+                f"❌ *Заказ #{invoice_id}*: покупка не прошла на `{self._disp_phone(phone)}`.\n`{str(msg)[:200]}`")
+            return False
+        link = await self._read_profile_link(prof["path"])
+        if not link:
+            await self._notify_fulfill(cid, mid,
+                f"⚠️ *Заказ #{invoice_id}*: покупка прошла, но ссылка не получена (`{self._disp_phone(phone)}`).")
+            return False
+        await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, source)
+        return True
+
+    def _profile_pick_info(self, prof, status_label: str) -> str:
+        """Подробности подобранного профиля: номер, статус, даты создания/переноса."""
+        phone = prof.get("username", prof["path"].name)
+        lines = [
+            f"📱 `{self._disp_phone(phone)}`",
+            f"🏷 Статус: *{status_label}*",
+            f"📆 Создан: `{prof.get('login_str') or '—'}`",
+        ]
+        pts = prof.get("prepared_ts")
+        if pts:
+            try:
+                lines.append(f"🗂 Перенесён в «С данными»: `{self._m('_fmt_msk')(float(pts))}`")
+            except Exception:
+                pass
+        vt = prof.get("black_valid_till")
+        if vt:
+            lines.append(f"⏳ Подписка до: `{vt}`")
+        return "\n".join(lines)
+
+    async def bg_fulfill_order(self, invoice_id: int, order: dict, cid=None, mid=None) -> None:
+        """Выдача заказа по приоритету профилей:
+        1) Оплаченные (есть ссылка на нужный срок) → отдать ссылку;
+        2) С данными → докупить срок → отдать ссылку;
+        3) Доступные → заполнить данные → купить → отдать ссылку;
+        4) Профилей нет → создать новый (логин + покупка) → отдать ссылку.
+        Во всех случаях профиль привязывается к заказу."""
+        import functools, importlib
+        cli = self.get_client()
+        if not cli:
+            await self._notify_fulfill(cid, mid, f"❌ GGSell не настроен (заказ #{invoice_id}).")
+            return
+
+        months = self._order_months(order)
+        # Email для активации — из параметра заказа «почта для YouTube».
+        # Если в заказе его нет — берём через API (тоже парсит этот параметр).
+        buyer_email = self._order_youtube_email(order)
+        if not buyer_email:
+            try:
+                buyer_email = (await cli.get_buyer_email(invoice_id)) or ""
+            except Exception:
+                buyer_email = ""
+        if not buyer_email:
+            buyer_email = (order.get("buyer_email")
+                           or (order.get("buyer") or {}).get("email")
+                           or order.get("email") or "")
+        buyer_email = buyer_email.strip()
+
+        paid, hasdata, available = self._categorize_profiles()
+
+        # 1. Оплаченные с подходящим сроком и готовой ссылкой
+        paid_match = [
+            p for p in paid
+            if (p.get("black_activation_link") or p.get("black_short_link"))
+            and int(p.get("subscription_months") or 0) == months
+        ]
+        if paid_match:
+            prof = paid_match[0]
+            link = prof.get("black_activation_link") or prof.get("black_short_link")
+            phone = prof.get("username", prof["path"].name)
+            await self._notify_fulfill(cid, mid,
+                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
+                + self._profile_pick_info(prof, "Оплаченные")
+                + "\n\n_Отдаю готовую ссылку покупателю..._")
+            await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, "Оплаченные")
+            return
+
+        # 2. С данными — докупить срок
+        if hasdata:
+            prof = hasdata[0]
+            await self._notify_fulfill(cid, mid,
+                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
+                + self._profile_pick_info(prof, "С данными")
+                + "\n\n_Покупаю срок и выдаю ссылку..._")
+            await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными")
+            return
+
+        # 3. Доступные — заполнить данные → купить
+        if available:
+            prof = available[0]
+            phone = prof.get("username", prof["path"].name)
+            await self._notify_fulfill(cid, mid,
+                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
+                + self._profile_pick_info(prof, "Доступные")
+                + "\n\n_Заполняю данные..._")
+            addr = self._m("_gen_indian_address")()
+            # Email активации вводится на checkout уже при заполнении данных — задаём override
+            menu = importlib.import_module("menu")
+            menu._override_email = buyer_email or ""
+            try:
+                ok_fill, msg_fill = await asyncio.get_event_loop().run_in_executor(
+                    None, functools.partial(
+                        self._run_menu_coro,
+                        lambda: self._m("_do_fill_address")(prof["path"], addr, stop_at_payment=True)))
+            except Exception as exc:
+                ok_fill, msg_fill = False, str(exc)
+            finally:
+                menu._override_email = ""
+            if not ok_fill:
+                if msg_fill in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
+                    await self._notify_fulfill(cid, mid,
+                        f"🚫 *Заказ #{invoice_id}*: профиль `{self._disp_phone(phone)}` — Out of stock. "
+                        f"Профиль не удалён, заказ не выполнен.")
+                else:
+                    await self._notify_fulfill(cid, mid,
+                        f"⚠️ *Заказ #{invoice_id}*: не удалось заполнить данные `{self._disp_phone(phone)}`.\n`{str(msg_fill)[:200]}`")
+                return
+            # Данные заполнены успешно → покупаем и выдаём
+            await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
+            return
+
+        # 4. Нет профилей ни в одной вкладке — создаём новый (логин + покупка)
+        await self._notify_fulfill(cid, mid,
+            f"🔄 *Заказ #{invoice_id}*: свободных профилей нет — создаю новый "
+            f"(логин + покупка {months} мес)...\n_Это займёт время._")
+        menu = importlib.import_module("menu")
+        menu._override_email = buyer_email or ""
+        try:
+            ok_new, msg_new = await asyncio.get_event_loop().run_in_executor(
+                None, functools.partial(
+                    self._run_menu_coro,
+                    lambda: self._m("_do_all_in_one")(months, True, None)))
+        except Exception as exc:
+            ok_new, msg_new = False, str(exc)
+        finally:
+            menu._override_email = ""
+        if not ok_new:
+            await self._notify_fulfill(cid, mid,
+                f"❌ *Заказ #{invoice_id}*: не удалось создать профиль и купить.\n`{str(msg_new)[:200]}`")
+            return
+        # Находим свежесозданный профиль со ссылкой
+        _paid2, _hd2, _av2 = self._categorize_profiles()
+        _newest = None
+        for p in _paid2:
+            if (p.get("black_activation_link") or p.get("black_short_link")):
+                if _newest is None or (p.get("login_ts") or 0) > (_newest.get("login_ts") or 0):
+                    _newest = p
+        if _newest:
+            link = _newest.get("black_activation_link") or _newest.get("black_short_link")
+            phone = _newest.get("username", _newest["path"].name)
+            await self._send_link_and_bind(invoice_id, link, _newest["path"], phone, cid, mid, "новый профиль")
+        else:
+            await self._notify_fulfill(cid, mid,
+                f"⚠️ *Заказ #{invoice_id}*: профиль создан, но ссылка не найдена — проверьте профили.")
+
     async def bg_prepare_for_order(self, invoice_id: int, order: dict) -> None:
         """Сразу при получении заказа: резервируем профиль и сохраняем email покупателя."""
         import time as _time
@@ -1743,11 +2071,12 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-        # Авто-выполнение: сразу резервируем профиль, покупку запускаем по первому сообщению
+        # Авто-выполнение: профиль НЕ резервируем заранее (и не пишем какой).
+        # Просто ждём первого сообщения покупателя — тогда и подбираем профиль
+        # по приоритету (Оплаченные → С данными → Доступные → новый).
         if any(self._get(_cid, "ggsel_auto_fulfill") for _cid in list(self.subs)):
             self._auto_pending[invoice_id] = order
             logger.info(f"GGSell auto #{invoice_id}: ждём первого сообщения от покупателя")
-            asyncio.create_task(self.bg_prepare_for_order(invoice_id, order))
 
     async def notify_message(self, item: dict) -> None:
         invoice_id = item.get("invoice_id")
@@ -1791,11 +2120,12 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-        # Авто-выполнение: запускаем при первом сообщении покупателя по ожидающему заказу
+        # Авто-выполнение: запускаем при первом сообщении покупателя по ожидающему заказу.
+        # Подбор профиля по приоритету (Оплаченные → С данными → Доступные → новый).
         if invoice_id and invoice_id in self._auto_pending:
             _order = self._auto_pending.pop(invoice_id)
             if any(self._get(_cid, "ggsel_auto_fulfill") for _cid in list(self.subs)):
-                asyncio.create_task(self.bg_auto_fulfill(invoice_id, _order))
+                asyncio.create_task(self.bg_fulfill_order(invoice_id, _order))
 
     # ── Отзывы ───────────────────────────────────────────────────────────────
 
@@ -2281,8 +2611,13 @@ class GGSellBotHandler:
 
         if data.startswith("ggsell:run:"):
             invoice_id = int(data.split(":")[2])
-            await self._ack(qid, "⏳ Запускаю автоматизацию...")
-            asyncio.create_task(self.bg_run(cid, mid, invoice_id))
+            await self._ack(qid, "⏳ Подбираю профиль...")
+            _ord = (self.orders.get(invoice_id, {}) or {}).get("order", {})
+            await self._edit(cid, mid,
+                f"⏳ *Выполняю заказ* `#{invoice_id}`\n\n_Подбираю профиль по приоритету:_\n"
+                f"_Оплаченные → С данными → Доступные → новый._",
+                {"inline_keyboard": []})
+            asyncio.create_task(self.bg_fulfill_order(invoice_id, _ord, cid, mid))
             return
 
         if data.startswith("ggsell:send:"):
