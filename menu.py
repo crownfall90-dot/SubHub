@@ -8759,7 +8759,15 @@ def _do_git_update() -> tuple[bool, str]:
     # Пробуем git только если есть .git папка
     if (_cwd / ".git").exists():
         try:
-            r = subprocess.run([_GIT, "pull", "--ff-only"],
+            _branch = "master"
+            try:
+                _rb = subprocess.run([_GIT, "rev-parse", "--abbrev-ref", "HEAD"],
+                                     capture_output=True, text=True, timeout=5, cwd=_cwd)
+                if _rb.returncode == 0:
+                    _branch = _rb.stdout.strip() or "master"
+            except Exception:
+                pass
+            r = subprocess.run([_GIT, "pull", "--ff-only", "origin", _branch],
                                capture_output=True, text=True, timeout=60, cwd=_cwd,
                                encoding="utf-8", errors="replace")
             if r.returncode == 0:
