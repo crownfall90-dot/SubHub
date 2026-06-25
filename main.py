@@ -2436,7 +2436,9 @@ class LoginAutomation:
     # ── Utilities ────────────────────────────────────────────────────────────
 
     async def _save_screenshot(self, page: Page, index: int, username: str, tag: str) -> None:
-        screenshots_dir = Path("screenshots")
+        if tag in ("blocked_phase1", "no_phone_field"):
+            return
+        screenshots_dir = Path("debug")
         screenshots_dir.mkdir(exist_ok=True)
         safe_name = "".join(c if c.isalnum() else "_" for c in username)
         path = screenshots_dir / f"{index:04d}_{safe_name}_{tag}.png"

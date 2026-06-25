@@ -5,6 +5,7 @@ Interactive console menu for Login Automation
 
 import asyncio
 import os
+os.makedirs("debug", exist_ok=True)
 import random
 import sys
 import json
@@ -1934,7 +1935,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         # При unknown — скриншот + дамп текста для диагностики
         if result["status"] == "unknown":
             try:
-                await page.screenshot(path="debug_activation.png", full_page=True)
+                await page.screenshot(path="debug/debug_activation.png", full_page=True)
                 print(f"  Скриншот: debug_activation.png")
             except Exception:
                 pass
@@ -4366,7 +4367,7 @@ async def _handle_paytm_currency_page(page) -> bool:
             # Pay INR не найдена даже после выбора радио
             print(f"  Pay INR не найдена (attempt {attempt+1}) — скриншот...")
             try:
-                await page.screenshot(path=f"debug_pay_{pay_attempt}_{attempt}.png")
+                await page.screenshot(path=f"debug/debug_pay_{pay_attempt}_{attempt}.png")
                 print(f"    Скриншот: debug_pay_{pay_attempt}_{attempt}.png")
             except Exception:
                 pass
@@ -4375,7 +4376,7 @@ async def _handle_paytm_currency_page(page) -> bool:
         if not pay_clicked:
             print(f"  {Y}⚠ Кнопка Pay INR не найдена после всех попыток{RST}")
             try:
-                await page.screenshot(path="debug_pay_notfound.png")
+                await page.screenshot(path="debug/debug_pay_notfound.png")
                 print("  Скриншот: debug_pay_notfound.png")
             except Exception:
                 pass
@@ -4701,7 +4702,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                     _err = _up.unquote(cur_url.split("errorMessage=")[-1].split("&")[0][:80])
                 print(f"  {Y}⚠ Paytm ошибка подтверждения: {_err or 'неизвестна'}{RST}")
                 try:
-                    await page.screenshot(path=f"debug_gateway_{pay_attempt}.png")
+                    await page.screenshot(path=f"debug/debug_gateway_{pay_attempt}.png")
                 except Exception:
                     pass
                 declined = True
@@ -4714,7 +4715,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                     # Не 3DS и не flipkart.com — вероятно тихое отклонение
                     print(f"  {Y}⚠ Остались на шлюзе ({cur_url[:60]}) — скорее всего отклонено{RST}")
                     try:
-                        await page.screenshot(path=f"debug_gateway_{pay_attempt}.png")
+                        await page.screenshot(path=f"debug/debug_gateway_{pay_attempt}.png")
                     except Exception:
                         pass
                     declined = True
@@ -4755,7 +4756,7 @@ async def _handle_paytm_currency_page(page) -> bool:
         else:
             print(f"  {Y}⚠ После оплаты не вернулись на Flipkart ({page.url[:60]}) — отклонён{RST}")
             try:
-                await page.screenshot(path="debug_pay_nofk.png")
+                await page.screenshot(path="debug/debug_pay_nofk.png")
             except Exception:
                 pass
             return "declined"
@@ -5217,7 +5218,7 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
             break
         print(f"  {Y}⚠ Номер карты не введён (попытка {_fa+1}/3) — повторяю{RST}")
     if not card_val:
-        await page.screenshot(path="debug_card_fail.png")
+        await page.screenshot(path="debug/debug_card_fail.png")
         print(f"  {Y}⚠ Не удалось ввести номер карты — скриншот: debug_card_fail.png{RST}")
         return False
     # Tab + явный dispatch blur/change — React-формы могут слушать синтетические события
@@ -5254,7 +5255,7 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
                 break
             print(f"  {Y}⚠ Дата карты не введена (попытка {_fa+1}/3) — повторяю{RST}")
         if not valid_val:
-            await page.screenshot(path="debug_card_fail.png")
+            await page.screenshot(path="debug/debug_card_fail.png")
             print(f"  {Y}⚠ Не удалось ввести дату — debug_card_fail.png{RST}")
             return False
     # Tab + dispatch blur/change для срока
@@ -5287,7 +5288,7 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
                 break
             print(f"  {Y}⚠ CVV не введён (попытка {_fa+1}/3) — повторяю{RST}")
         if not cvv_val:
-            await page.screenshot(path="debug_card_fail.png")
+            await page.screenshot(path="debug/debug_card_fail.png")
             print(f"  {Y}⚠ Не удалось ввести CVV — debug_card_fail.png{RST}")
             return False
     # Tab + dispatch blur/change для CVV — финальный триггер валидации формы
@@ -5353,7 +5354,7 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
             break
         pay_clicked_ok = False
     if not pay_clicked_ok:
-        await page.screenshot(path="debug_card_fail.png")
+        await page.screenshot(path="debug/debug_card_fail.png")
         print(f"  {Y}⚠ Pay-кнопка не сработала — debug_card_fail.png{RST}")
 
     print(f"  Карта введена: {_mask_card(raw)}")
@@ -5648,7 +5649,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     cur_url = page.url
     print(f"  Flipkart URL после оплаты: {cur_url[:100]}")
     try:
-        await page.screenshot(path="debug_after_payment.png")
+        await page.screenshot(path="debug/debug_after_payment.png")
     except Exception:
         pass
 
@@ -6452,7 +6453,7 @@ async def _viewcheckout_to_payments(page) -> bool:
         print(f"  {DIM}Continue клик: {'да' if clicked else 'нет'} (попытка {attempt + 1}/4){RST}")
         if not clicked and attempt == 0:
             try:
-                _scr_path = f"viewcheckout_debug_{attempt}.png"
+                _scr_path = f"debug/viewcheckout_debug_{attempt}.png"
                 await page.screenshot(path=_scr_path)
                 print(f"  {DIM}Скриншот: {_scr_path}{RST}")
             except Exception:
