@@ -1009,6 +1009,8 @@ def _menu_tg_bot_thread() -> None:
                                 reply_markup={"inline_keyboard": [
                                     [{"text": "📤 Отправить покупателю",
                                       "callback_data": f"profile:send_to_buyer:{phone}:0"}],
+                                    [{"text": "◀️ В главное меню",
+                                      "callback_data": "go:main"}],
                                 ]})
                 elif st == "activated":
                     # Ссылка активирована покупателем — предлагаем перенести в архив (с подтверждением)
@@ -1021,6 +1023,8 @@ def _menu_tg_bot_thread() -> None:
                               "callback_data": f"profile:archive_one:{phone}"}],
                             [{"text": "👤 Перейти в профиль",
                               "callback_data": f"profile:menu:{phone}:active"}],
+                            [{"text": "◀️ В главное меню",
+                              "callback_data": "go:main"}],
                         ]})
                 else:
                     msgs = {
@@ -1028,7 +1032,12 @@ def _menu_tg_bot_thread() -> None:
                         "not_logged_in":f"🔒 <b>{phone}</b> — не авторизован",
                     }
                     await _send(cid, msgs.get(st,
-                        f"❓ <b>{phone}</b> — {st}" + (f"\n{err_safe}" if err_safe else "")), parse_mode="HTML")
+                        f"❓ <b>{phone}</b> — {st}" + (f"\n{err_safe}" if err_safe else "")),
+                        parse_mode="HTML",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "◀️ В главное меню",
+                              "callback_data": "go:main"}],
+                        ]})
             except Exception as e:
                 def escape_html(t: str) -> str:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
