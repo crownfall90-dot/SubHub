@@ -45,9 +45,11 @@ def _read_proxy_cfg() -> dict:
         import yaml as _y
         with open(_proxy_cfg_path(), encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
-        return cfg.get("proxy") or {}
+        pcfg = dict(cfg.get("proxy") or {})
+        pcfg["enabled"] = False  # прокси отключены глобально (временно)
+        return pcfg
     except Exception:
-        return {}
+        return {"enabled": False}
 
 
 def _write_proxy_cfg(pcfg: dict) -> None:
