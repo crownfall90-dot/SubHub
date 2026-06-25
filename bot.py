@@ -959,6 +959,24 @@ def _menu_tg_bot_thread() -> None:
             return (r[0], str(r[1])) if isinstance(r, tuple) and len(r) > 1 \
                    else (bool(r), "")
 
+        def _save_activation_result(pp, result):
+            if not isinstance(result, dict):
+                return
+            meta_updates = {}
+            if result.get("status"):
+                meta_updates["status"] = result["status"]
+            if result.get("valid_till"):
+                meta_updates["black_valid_till"] = result["valid_till"]
+            if result.get("activation_url"):
+                meta_updates["black_activation_link"] = result["activation_url"]
+            if result.get("short_link"):
+                meta_updates["black_short_link"] = result["short_link"]
+            if meta_updates:
+                try:
+                    _m("_save_meta_field")(pp, **meta_updates)
+                except Exception:
+                    pass
+
         async def _bg_activate(cid, phone):
             _bg_ops[phone] = "running"
             await _send(cid, f"⏳ Проверяю активацию <code>{phone}</code>...", parse_mode="HTML")
@@ -970,6 +988,7 @@ def _menu_tg_bot_thread() -> None:
                 loop   = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: asyncio.run(
                     _m("_check_black_store_activation")(pp, username=phone, headless=True)))
+                _save_activation_result(pp, result)
                 st  = result.get("status", "?") if isinstance(result, dict) else "?"
                 vt  = (result.get("valid_till") or "") if isinstance(result, dict) else ""
                 err = (result.get("error") or "")     if isinstance(result, dict) else str(result)
@@ -1349,6 +1368,7 @@ def _menu_tg_bot_thread() -> None:
                     loop   = asyncio.get_running_loop()
                     result = await loop.run_in_executor(None, lambda pp=pp: asyncio.run(
                         _m("_check_black_store_activation")(pp, username=phone, headless=True)))
+                    _save_activation_result(pp, result)
                     st  = result.get("status", "?") if isinstance(result, dict) else "?"
                     err = result.get("error") if isinstance(result, dict) else None
                     if st == "activated":       activated     += 1

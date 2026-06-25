@@ -1948,7 +1948,12 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         return result
     except Exception as e:
         result["error"] = str(e)
-        if _is_proxy_error(e):
+        _proxy_enabled = False
+        try:
+            _proxy_enabled = bool((_read_proxy_cfg() or {}).get("enabled"))
+        except Exception:
+            pass
+        if _proxy_enabled and _is_proxy_error(e):
             _mark_proxy_failed(_proxy_module._last_proxy_server)
             result["error"] = ("PROXY_DEAD: Прокси недоступен — обновите список "
                                "(Прокси → [А] или [С])")
