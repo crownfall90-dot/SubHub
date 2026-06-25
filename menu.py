@@ -2807,7 +2807,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                            _use_proxy: bool | None = None,
                            stop_at_payment: bool = False) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
-    if _retry_n == 0 and not _skip_ping:
+    if _retry_n == 0:
         print(f"  {DIM}Проверка доступности Flipkart...{RST}")
         if not await _check_flipkart_accessible():
             _ping_msg = "Flipkart недоступен"

@@ -1644,7 +1644,14 @@ class GGSellBotHandler:
             _fail_reasons.append((_ph2, "Out of stock" if _r == "oos" else "покупка не прошла"))
             continue
 
-        # 3. Доступные — заполнить данные → купить (перебираем; OOS → следующий)
+        # 3. Доступные — покупаем напрямую, как при ручной покупке.
+        # ВАЖНО: раньше тут был отдельный предварительный шаг
+        # _do_fill_address(stop_at_payment=True), а уже потом покупка. Этот путь
+        # расходился с рабочим ручным («Купить» → _do_buy_membership) и ломался
+        # на всех профилях подряд. _do_buy_membership сам делает «Buy Now → адрес
+        # (если нужен) → viewcheckout → почта → оплата», а email покупателя
+        # подставляется через _override_email внутри _buy_and_deliver. Поэтому
+        # отдельное заполнение убрано — перебираем профили одним проходом.
         for prof in available:
             if await _cancelled():
                 return
@@ -1652,41 +1659,14 @@ class GGSellBotHandler:
             await self._notify_fulfill(cid, mid,
                 f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
                 + self._profile_pick_info(prof, "Доступные")
-                + "\n\n_Заполняю данные..._", cancel_inv=invoice_id)
-            addr = self._m("_gen_indian_address")()
-            menu = importlib.import_module("menu")
-            menu._override_email = buyer_email or ""
-            try:
-                ok_fill, msg_fill = await asyncio.get_event_loop().run_in_executor(
-                    None, functools.partial(
-                        self._run_menu_coro,
-                        lambda: self._m("_do_fill_address")(prof["path"], addr, stop_at_payment=True)))
-            except Exception as exc:
-                ok_fill, msg_fill = False, str(exc)
-            finally:
-                menu._override_email = ""
-            if not ok_fill:
-                if msg_fill == "CANCELLED":
-                    await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
-                    return
-                if msg_fill in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
-                    _fail_reasons.append((phone, "Out of stock"))
-                    await self._notify_oos_delete(phone, invoice_id)
-                    continue
-                _fail_reasons.append((phone, f"заполнение: {str(msg_fill)[:80]}"))
-                await self._notify_fulfill(cid, mid,
-                    f"⚠️ *Заказ #{invoice_id}*: не удалось заполнить данные `{self._disp_phone(phone)}`.\n`{str(msg_fill)[:200]}` — пробую следующий.")
-                continue
-            # Данные заполнены → покупаем; OOS на покупке → следующий профиль
-            if await _cancelled():
-                return
+                + "\n\n_Покупаю срок и выдаю ссылку..._", cancel_inv=invoice_id)
             _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
             if _r == "ok":
                 return
             if _r == "cancelled":
                 await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
                 return
-            _fail_reasons.append((phone, f"покупка: {_r}"))
+            _fail_reasons.append((phone, "Out of stock" if _r == "oos" else "покупка не прошла"))
             continue
 
         # 4. Свободных профилей нет ни в одной вкладке.
