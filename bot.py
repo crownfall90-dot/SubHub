@@ -3011,7 +3011,6 @@ def _menu_tg_bot_thread() -> None:
                                 "timeout": 0 if _first else 5,
                                 "allowed_updates": ["message", "callback_query"]},
                     )
-                    _first   = False
                     cons_err = 0
 
                     if resp.status_code == 401:
@@ -3039,6 +3038,8 @@ def _menu_tg_bot_thread() -> None:
                         msg = upd.get("message") or upd.get("edited_message")
                         if msg:
                             await _handle_msg(client, msg)
+
+                    _first = False
 
                     # Drain GGSell monitor queue → уведомляем о новых заказах/сообщениях
                     try:
