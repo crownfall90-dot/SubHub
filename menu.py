@@ -8767,10 +8767,16 @@ def _do_git_update() -> tuple[bool, str]:
                     _branch = _rb.stdout.strip() or "master"
             except Exception:
                 pass
-            r = subprocess.run([_GIT, "pull", "--ff-only", "origin", _branch],
-                               capture_output=True, text=True, timeout=60, cwd=_cwd,
-                               encoding="utf-8", errors="replace")
-            if r.returncode == 0:
+            r_fetch = subprocess.run([_GIT, "fetch", "origin", _branch],
+                                     capture_output=True, text=True, timeout=60, cwd=_cwd,
+                                     encoding="utf-8", errors="replace")
+            if r_fetch.returncode != 0:
+                err = r_fetch.stderr.strip() or r_fetch.stdout.strip() or "git fetch не удался"
+                return False, err
+            r_merge = subprocess.run([_GIT, "merge", "--ff-only", f"origin/{_branch}"],
+                                     capture_output=True, text=True, timeout=60, cwd=_cwd,
+                                     encoding="utf-8", errors="replace")
+            if r_merge.returncode == 0:
                 _update_available = False
                 _update_commits   = []
                 try:
@@ -8780,8 +8786,8 @@ def _do_git_update() -> tuple[bool, str]:
                     pass
                 _init_secrets()
                 _migrate_config()
-                return True, r.stdout.strip() or "Версия уже актуальна"
-            err = r.stderr.strip() or r.stdout.strip() or "git pull не удался"
+                return True, r_merge.stdout.strip() or "Версия уже актуальна"
+            err = r_merge.stderr.strip() or r_merge.stdout.strip() or "git merge не удался"
             return False, err
         except OSError:
             pass  # git не установлен
