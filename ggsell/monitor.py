@@ -27,8 +27,8 @@ _SEEN_MSGS_FILE   = _DATA / "ggsel_seen_msgs.json"
 _TEMPLATES_FILE   = _DATA / "ggsel_templates.json"
 _SEEN_REVIEWS_FILE = _DATA / "ggsel_seen_reviews.json"
 
-POLL_INTERVAL        = 60.0  # секунды между проверкой заказов
-MSG_POLL_INTERVAL    = 15.0  # секунды между проверкой сообщений
+POLL_INTERVAL        = 15.0  # секунды между проверкой заказов
+MSG_POLL_INTERVAL    =  5.0  # секунды между проверкой сообщений
 REVIEW_POLL_INTERVAL = 120.0 # секунды между проверкой отзывов
 
 # Обрабатываем только заказы YouTube Premium
