@@ -345,6 +345,9 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "◀️ Назад", "callback_data": "go:main"}],
             ]}
 
+        def _buy_stop_kb():
+            return {"inline_keyboard": [[{"text": "🛑 Остановить", "callback_data": "buy:stop"}]]}
+
         def _wz_mode_kb(br):
             return {"inline_keyboard": [
                 [{"text": "Запуск | Полный цикл", "callback_data": f"wz:md:{br}:purchase"}],
@@ -1128,7 +1131,12 @@ def _menu_tg_bot_thread() -> None:
 
         async def _bg_address(cid, phone):
             _bg_ops[phone] = "running"
-            await _send(cid, f"⏳ Заполняю адрес для <code>{phone}</code>...", parse_mode="HTML")
+            try:
+                _m("_purchase_cancel").clear()
+            except Exception:
+                pass
+            await _send(cid, f"⏳ Заполняю адрес для <code>{phone}</code>...",
+                        parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
                 pp = _find_profile(phone)
                 if not pp:
@@ -1148,6 +1156,8 @@ def _menu_tg_bot_thread() -> None:
                 if ok:
                     await _send(cid, f"✅ <b>{phone}</b> — адрес заполнен\n"
                                      f"<code>{addr_str}</code>", parse_mode="HTML")
+                elif msg2 == "CANCELLED":
+                    await _send(cid, f"🛑 <b>{phone}</b> — остановлено", parse_mode="HTML")
                 elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
                     await _send_oos_confirm(cid, phone, _retry_note)
@@ -1163,8 +1173,13 @@ def _menu_tg_bot_thread() -> None:
         async def _bg_fill_data(cid, phone):
             """Заполняет все данные до оплаты и переносит профиль в «С данными»."""
             _bg_ops[phone] = "running"
+            try:
+                _m("_purchase_cancel").clear()
+            except Exception:
+                pass
             await _send(cid, f"⚡ Заполняю данные для <code>{phone}</code>...\n"
-                             f"<i>Адрес → чекаут → страница оплаты → закрыть</i>", parse_mode="HTML")
+                             f"<i>Адрес → чекаут → страница оплаты → закрыть</i>",
+                        parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
                 pp = _find_profile(phone)
                 if not pp:
@@ -1184,6 +1199,8 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, f"✅ <b>{phone}</b> — данные заполнены\n"
                                      f"<code>{addr_str}</code>\n"
                                      f"<i>Профиль перенесён в «С данными»</i>", parse_mode="HTML")
+                elif msg2 == "CANCELLED":
+                    await _send(cid, f"🛑 <b>{phone}</b> — остановлено", parse_mode="HTML")
                 elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
                     await _send_oos_confirm(cid, phone, _retry_note)
@@ -1346,8 +1363,13 @@ def _menu_tg_bot_thread() -> None:
 
         async def _bg_buy(cid, phone, months):
             _bg_ops[phone] = "running"
+            try:
+                _m("_purchase_cancel").clear()
+            except Exception:
+                pass
             tariff = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
-            await _send(cid, f"⏳ <b>Покупка Black Membership</b>\n\n<code>{phone}</code>\n💳 {tariff}", parse_mode="HTML")
+            await _send(cid, f"⏳ <b>Покупка Black Membership</b>\n\n<code>{phone}</code>\n💳 {tariff}",
+                        parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
                 pp = _find_profile(phone)
                 if not pp:
@@ -1374,6 +1396,8 @@ def _menu_tg_bot_thread() -> None:
 
                 if ok:
                     await _send(cid, f"✅ <b>{phone}</b> — куплено\n<i>{msg_r_safe}</i>", parse_mode="HTML")
+                elif msg_r == "CANCELLED":
+                    await _send(cid, f"🛑 <b>{phone}</b> — остановлено", parse_mode="HTML")
                 elif msg_r.startswith("OUT_OF_STOCK"):
                     _rn = " (адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg_r else ""
                     await _send_oos_confirm(cid, phone, _rn)
@@ -1472,12 +1496,19 @@ def _menu_tg_bot_thread() -> None:
             if not need:
                 await _send(cid, "✅ _Нет профилей в категории «Доступные»_")
                 return
-            await _send(cid, f"⚡ *Заполняю все доступные профили* ({len(need)} шт.)\n_Адрес → чекаут → страница оплаты → закрыть_")
+            try:
+                _m("_purchase_cancel").clear()
+            except Exception:
+                pass
+            await _send(cid, f"⚡ *Заполняю все доступные профили* ({len(need)} шт.)\n_Адрес → чекаут → страница оплаты → закрыть_",
+                        reply_markup=_buy_stop_kb())
             ok_cnt = fail_cnt = oos_cnt = oos2_cnt = 0
             fail_phones = []
             oos_phones = []
             oos2_phones = []
             for ph, pp in need:
+                if _m("_purchase_cancel").is_set():
+                    break
                 try:
                     addr = _m("_gen_indian_address")()
                     loop = asyncio.get_running_loop()
@@ -2656,6 +2687,14 @@ def _menu_tg_bot_thread() -> None:
             if data == "run:stop":
                 await _ack(qid, "🛑 Останавливаю...")
                 await _do_stop(cid, mid)
+                return
+
+            if data == "buy:stop":
+                try:
+                    _m("_purchase_cancel").set()
+                except Exception:
+                    pass
+                await _ack(qid, "🛑 Останавливаю...")
                 return
 
             if data == "run:status":

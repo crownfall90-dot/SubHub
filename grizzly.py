@@ -407,13 +407,12 @@ async def _cancel_rental_task(aid):
                     # external: номер подхвачен сканером — его уже обработал
                     # _background_login_monitor в main.py; повторный вход не нужен
                     _reason = "перехват" if r.get("intercept_mode") else "внешний, уже обработан"
-                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} ({_reason}) — отменяю без входа{_RST}")
+                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} ({_reason}) — завершаю аренду{_RST}")
                     try:
-                        await client.cancel(aid)
+                        await client.complete(aid)
                     except Exception:
                         pass
-                    r["status"] = "completed"
-                    _RENTALS.pop(aid, None)
+                    mark_completed(aid)  # добавляет в _COMPLETED_IDS, не даёт сканеру переподхватить
                     await client.close()
                     return
                 print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} пришёл в последний момент: {otp}. Вход...{_RST}")

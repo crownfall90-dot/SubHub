@@ -2715,7 +2715,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 logger.info("✅ Фоновые мониторинги завершены")
 
             # Итоговое TG-сообщение — после завершения всех фоновых задач и отмены номеров
-            if tg_manager and success_count >= target:
+            if tg_manager:
                 final_bal_str = "—"
                 if sms_client:
                     try:
@@ -2723,9 +2723,15 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                         final_bal_str = f"${fb:.4f}"
                     except Exception:
                         pass
+                if is_auto:
+                    _hdr = (
+                        f"🎯 Задача выполнена!\n"
+                        f"✅ Создано аккаунтов: {success_count}/{target}\n"
+                    )
+                else:
+                    _hdr = ""
                 await tg_manager.notify_all(
-                    f"🎯 Задача выполнена!\n"
-                    f"✅ Создано аккаунтов: {success_count}/{target}\n"
+                    f"{_hdr}"
                     f"💰 Итоговый баланс: {final_bal_str}"
                 )
 
