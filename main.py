@@ -1294,12 +1294,55 @@ class LoginAutomation:
                             "otp_code",
                         ))
 
-                    # ── 2. Phase 2: вводим код ───────────────────────────────
-                    try:
-                        phase2 = await self._login_phase2(tab, code, index, phone=short_phone)
-                    except Exception as exc:
-                        logger.warning(f"[{index}] [фон] Ошибка phase2 +{short_phone}: {exc}")
-                        phase2 = False
+                    # ── 2. Phase 2: вводим код (до 2 попыток) ────────────────
+                    phase2 = False
+                    for attempt in range(1, 3):
+                        if attempt > 1:
+                            logger.info(f"[{index}] [фон] Попытка входа {attempt}/2 для +{short_phone}. Перезагрузка страницы...")
+                            try:
+                                await tab.reload(timeout=10000)
+                                await asyncio.sleep(3.0)
+                            except Exception:
+                                pass
+
+                            # Заново проходим Фазу 1 для повторной отправки OTP
+                            try:
+                                logger.info(f"[{index}] [фон] Заново прохожу Фазу 1 для +{short_phone}...")
+                                p1 = await self._login_phase1(tab, phone, index)
+                                if not p1:
+                                    logger.warning(f"[{index}] [фон] Не удалось пройти Фазу 1 при повторной попытке для +{short_phone}")
+                                    continue
+                            except Exception as exc:
+                                logger.warning(f"[{index}] [фон] Ошибка Фазы 1 при повторной попытке для +{short_phone}: {exc}")
+                                continue
+
+                            # Сообщаем GrizzlySMS, что ждём новый SMS-код
+                            try:
+                                await self.sms_client.set_status(act_id, GrizzlySMSClient.STATUS_RETRY)
+                            except Exception as exc:
+                                logger.warning(f"[{index}] [фон] Не удалось установить статус RETRY в GrizzlySMS: {exc}")
+
+                            # Ждем новый код
+                            logger.info(f"[{index}] [фон] Ожидаю новый OTP код для +{short_phone}...")
+                            new_code = None
+                            try:
+                                new_code = await self.sms_client.wait_for_code(act_id, timeout=60, poll_interval=3)
+                            except Exception as exc:
+                                logger.warning(f"[{index}] [фон] Ошибка ожидания нового кода: {exc}")
+
+                            if not new_code:
+                                logger.warning(f"[{index}] [фон] Новый OTP код не получен для +{short_phone}")
+                                continue
+                            code = new_code
+
+                        try:
+                            phase2 = await self._login_phase2(tab, code, index, phone=short_phone)
+                        except Exception as exc:
+                            logger.warning(f"[{index}] [фон] Попытка {attempt}/2. Ошибка phase2 +{short_phone}: {exc}")
+                            phase2 = False
+
+                        if phase2:
+                            break
 
                     if phase2:
                         # ── 3. Сохраняем профиль ────────────────────────────
@@ -1347,9 +1390,13 @@ class LoginAutomation:
                         logged_in = True
                     else:
                         logger.warning(
-                            f"[{index}] [фон] Phase2 не прошла для +{short_phone} — профиль не сохранён"
+                            f"[{index}] [фон] Не удалось войти в лишний аккаунт +91{short_phone} за 2 попытки"
                         )
-                    return  # OTP был один — больше ничего не ждём
+                        if self.tg_client:
+                            asyncio.create_task(self.tg_client.notify_all(
+                                f"⚠️ Не удалось войти в лишний аккаунт `+91{short_phone}` за 2 попытки — пропущен."
+                            ))
+                    return  # OTP был обработан — выходим из монитора (и в finally удалим temp_path, если не вошли)
 
                 elif status["type"] == "CANCEL":
                     logger.info(f"[{index}] [фон] Активация {act_id} отменена провайдером")

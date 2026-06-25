@@ -811,6 +811,15 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
             profile_path = DONE_PROFILES_DIR / f"profile_{phone_10}"
             if profile_path.exists():
                 print(f"  [BG] Профиль +91 {phone_10} уже существует, пропускаю")
+                try:
+                    await client.complete(activation_id)
+                except Exception:
+                    pass
+                mark_completed(activation_id)
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
                 return
             # Также проверяем профили с другим форматом имени (напр. profile_0004_919850389594)
             try:
@@ -820,6 +829,15 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                     for p in DONE_PROFILES_DIR.iterdir() if p.is_dir()
                 ):
                     print(f"  [BG] Профиль +91 {phone_10} уже существует (другое имя), пропускаю")
+                    try:
+                        await client.complete(activation_id)
+                    except Exception:
+                        pass
+                    mark_completed(activation_id)
+                    try:
+                        await pw.stop()
+                    except Exception:
+                        pass
                     return
             except Exception:
                 pass
