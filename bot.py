@@ -59,7 +59,26 @@ _ggsel_status: str = ""   # "" — не настроен / "ok" — активе
 _update_available: bool = False
 _update_commits: list   = []
 _update_checked: bool   = False
-_notified_update_hashes: set = set()
+def _load_notified_updates() -> set:
+    p = Path(__file__).parent / "data" / "notified_updates.json"
+    if p.exists():
+        try:
+            return set(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return set()
+
+
+def _save_notified_updates(hashes: set) -> None:
+    p = Path(__file__).parent / "data" / "notified_updates.json"
+    try:
+        p.parent.mkdir(exist_ok=True)
+        p.write_text(json.dumps(list(hashes), ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+_notified_update_hashes: set = _load_notified_updates()
 
 
 def _tg_status_line() -> str:
@@ -1701,13 +1720,51 @@ def _menu_tg_bot_thread() -> None:
                 if not _git_ok:
                     return _m("_http_check_updates")()
 
-            # Инициализация: не уведомляем о существующих обновлениях после рестарта
+            async def _send_update_notification(nc):
+                if not nc:
+                    return
+                def _esc(t):
+                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                body = "\n".join(f"<blockquote>{_esc(c)}</blockquote>" for c in nc[:10])
+                if len(nc) > 10:
+                    body += f"\n<i>...и ещё {len(nc)-10}</i>"
+                msg = (
+                    "⬆️ <b>Новое обновление!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"Новых коммитов: <b>{len(nc)}</b>\n\n"
+                    f"{body}\n\n"
+                    "<i>Нажмите кнопку для обновления:</i>"
+                )
+                kb = {"inline_keyboard": [[
+                    {"text": "⬆️ Обновить сейчас", "callback_data": "update:pull"},
+                    {"text": "⏭ Позже",            "callback_data": "go:main"},
+                ]]}
+                for _cid in list(subs):
+                    try:
+                        async with httpx.AsyncClient(
+                                timeout=httpx.Timeout(8.0), trust_env=False) as c2:
+                            await c2.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": _cid, "text": msg,
+                                      "parse_mode": "HTML",
+                                      "reply_markup": kb})
+                    except Exception:
+                        pass
+
+            # Инициализация: проверяем и уведомляем о новых коммитах при старте
             try:
                 _init = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-                _notified_update_hashes.update({c.split()[0] for c in _init if c})
                 _update_available = bool(_init)
                 _update_commits   = _init
                 _update_checked   = True
+                if _init:
+                    fhash = {c.split()[0] for c in _init if c}
+                    new_h = fhash - _notified_update_hashes
+                    if new_h:
+                        _notified_update_hashes.update(fhash)
+                        _save_notified_updates(_notified_update_hashes)
+                        nc = [c for c in _init if c.split()[0] in new_h]
+                        await _send_update_notification(nc)
             except Exception:
                 pass
 
@@ -1722,34 +1779,9 @@ def _menu_tg_bot_thread() -> None:
                     _update_checked   = True
                     if new_h:
                         _notified_update_hashes.update(fhash)
+                        _save_notified_updates(_notified_update_hashes)
                         nc   = [c for c in fetched if c.split()[0] in new_h]
-                        def _esc(t):
-                            return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        body = "\n".join(f"<blockquote>{_esc(c)}</blockquote>" for c in nc[:10])
-                        if len(nc) > 10:
-                            body += f"\n<i>...и ещё {len(nc)-10}</i>"
-                        msg = (
-                            "⬆️ <b>Новое обновление!</b>\n"
-                            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"Новых коммитов: <b>{len(nc)}</b>\n\n"
-                            f"{body}\n\n"
-                            "<i>Нажмите кнопку для обновления:</i>"
-                        )
-                        kb = {"inline_keyboard": [[
-                            {"text": "⬆️ Обновить сейчас", "callback_data": "update:pull"},
-                            {"text": "⏭ Позже",            "callback_data": "go:main"},
-                        ]]}
-                        for _cid in list(subs):
-                            try:
-                                async with httpx.AsyncClient(
-                                        timeout=httpx.Timeout(8.0), trust_env=False) as c2:
-                                    await c2.post(
-                                        f"https://api.telegram.org/bot{token}/sendMessage",
-                                        json={"chat_id": _cid, "text": msg,
-                                              "parse_mode": "HTML",
-                                              "reply_markup": kb})
-                            except Exception:
-                                pass
+                        await _send_update_notification(nc)
                 except Exception:
                     pass
                 await asyncio.sleep(300)
