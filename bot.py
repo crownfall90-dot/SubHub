@@ -548,11 +548,16 @@ def _menu_tg_bot_thread() -> None:
             _known_lt = ("noaddr", "hasaddr", "paid", "active")
             back_callback = f"profiles:list:{list_type if list_type in _known_lt else 'noaddr'}"
 
+            _bound_inv = m.get("issued_invoice_id") or ""
+
             rows = []
             if is_issued:
                 # Выданные
                 rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
                 rows.append([{"text": "🟢 Выдан", "callback_data": "noop"}])
+                if _bound_inv:
+                    rows.append([{"text": f"📋 Перейти к заказу #{_bound_inv}",
+                                  "callback_data": f"ggsell:order:{_bound_inv}"}])
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
                 rows.append([{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}])

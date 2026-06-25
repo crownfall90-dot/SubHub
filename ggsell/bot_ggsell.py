@@ -119,7 +119,7 @@ class GGSellBotHandler:
         if link:
             self._done_links[invoice_id] = link
 
-        # Email покупателя из кэша заказов
+        # Email покупателя из кэша заказов (или из ранее сохранённого)
         _cached = self.orders.get(invoice_id, {})
         buyer_email = ""
         if isinstance(_cached, dict):
@@ -127,6 +127,8 @@ class GGSellBotHandler:
                 _cached.get("buyer_email") or
                 self.parse_order(_cached.get("order", {})).get("email", "")
             ) or ""
+        if not buyer_email:
+            buyer_email = self._done_buyer_emails.get(invoice_id, "")
         if buyer_email:
             self._done_buyer_emails[invoice_id] = buyer_email
 
@@ -155,7 +157,7 @@ class GGSellBotHandler:
 
         # Привязываем заказ к профилю в его .profile_meta.json — ссылка не потеряется
         if profile_path_str:
-            self._bind_profile_to_order(profile_path_str, invoice_id, link)
+            self._bind_profile_to_order(profile_path_str, invoice_id, link, buyer_email)
         self._confirm_profile.pop(invoice_id, None)
 
     def get_used(self) -> set:
@@ -210,9 +212,10 @@ class GGSellBotHandler:
              {"text": "◀️ Заказы", "callback_data": "ggsell:orders"}],
         ]})
 
-    def _bind_profile_to_order(self, profile_path_str: str, invoice_id: int, link: str = "") -> None:
-        """Привязывает заказ GGSell к профилю: пишет issued_ts/issued_link/issued_invoice_id
-        в .profile_meta.json. Так ссылка, выданная в профиле, никогда не теряется."""
+    def _bind_profile_to_order(self, profile_path_str: str, invoice_id: int,
+                                link: str = "", buyer_email: str = "") -> None:
+        """Привязывает заказ GGSell к профилю: пишет issued_ts/issued_link/
+        issued_invoice_id/buyer_email в .profile_meta.json. Профиль → статус «выдан»."""
         try:
             import time as _time
             if not profile_path_str:
@@ -225,6 +228,8 @@ class GGSellBotHandler:
             meta["issued_invoice_id"] = invoice_id
             if link:
                 meta["issued_link"] = link
+            if buyer_email:
+                meta["buyer_email"] = buyer_email
             meta_file.write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
             logger.info(
@@ -1501,7 +1506,7 @@ class GGSellBotHandler:
                 pass
 
     async def _buy_and_deliver(self, prof, months, invoice_id, buyer_email, cid, mid, source="") -> str:
-        """Покупает срок, выдаёт ссылку и привязывает. Возвращает 'ok' | 'oos' | 'fail'."""
+        """Покупает срок, выдаёт ссылку и привязывает. Возвращает 'ok' | 'oos' | 'fail' | 'cancelled'."""
         import functools, importlib
         phone = prof.get("username", prof["path"].name)
         await self._notify_fulfill(cid, mid,
@@ -1520,6 +1525,8 @@ class GGSellBotHandler:
         finally:
             menu._override_email = ""
         if not ok:
+            if str(msg) == "CANCELLED":
+                return "cancelled"
             if str(msg).startswith("OUT_OF_STOCK"):
                 await self._notify_oos_delete(phone, invoice_id)
                 return "oos"
@@ -1582,10 +1589,18 @@ class GGSellBotHandler:
         buyer_email = buyer_email.strip()
 
         self._fulfill_cancel.discard(invoice_id)  # сброс возможной прошлой отмены
+        try:
+            importlib.import_module("menu")._purchase_cancel.clear()
+        except Exception:
+            pass
 
         async def _cancelled() -> bool:
             if invoice_id in self._fulfill_cancel:
                 self._fulfill_cancel.discard(invoice_id)
+                try:
+                    importlib.import_module("menu")._purchase_cancel.clear()
+                except Exception:
+                    pass
                 await self._notify_fulfill(cid, mid,
                     f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
                 return True
@@ -1621,6 +1636,9 @@ class GGSellBotHandler:
             _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными")
             if _r == "ok":
                 return
+            if _r == "cancelled":
+                await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
+                return
             if _r == "oos":
                 continue   # OOS — уведомили/спросили удаление, берём следующий профиль
             # прочая ошибка покупки — тоже пробуем следующий профиль
@@ -1648,6 +1666,9 @@ class GGSellBotHandler:
             finally:
                 menu._override_email = ""
             if not ok_fill:
+                if msg_fill == "CANCELLED":
+                    await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
+                    return
                 if msg_fill in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     # OOS — уведомить + подтвердить удаление + взять следующий профиль
                     await self._notify_oos_delete(phone, invoice_id)
@@ -1660,6 +1681,9 @@ class GGSellBotHandler:
                 return
             _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
             if _r == "ok":
+                return
+            if _r == "cancelled":
+                await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
                 return
             continue
 
@@ -3007,11 +3031,17 @@ class GGSellBotHandler:
         if data.startswith("ggsell:fulfill_cancel:"):
             invoice_id = int(data.split(":")[2])
             self._fulfill_cancel.add(invoice_id)
-            await self._ack(qid, "🛑 Отменяю выполнение...")
+            # Флаг для menu.py — прерывает уже запущенную покупку/заполнение
+            # (закрывает браузер) в долгих ожиданиях/циклах.
+            try:
+                import importlib as _il
+                _il.import_module("menu")._purchase_cancel.set()
+            except Exception:
+                pass
+            await self._ack(qid, "🛑 Отменяю полностью...")
             await self._edit(cid, mid,
-                f"🛑 *Заказ #{invoice_id}*: запрошена отмена.\n"
-                "_Остановлюсь перед следующим шагом._\n"
-                "_(Уже запущенная покупка в браузере может завершиться.)_",
+                f"🛑 *Заказ #{invoice_id}*: выполнение отменяется.\n"
+                "_Останавливаю покупку и закрываю браузер..._",
                 {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
             return
 

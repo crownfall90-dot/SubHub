@@ -3011,6 +3011,10 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         except Exception:
             pass
         return True, f"{addr['name']} | {addr.get('pincode','')} {addr.get('city','')} → ✅ оплата запущена"
+    except _PurchaseCancelled:
+        print(f"  {Y}🛑 Выполнение отменено пользователем — закрываю браузер.{RST}")
+        _keep_open = False
+        return False, "CANCELLED"
     except Exception as exc:
         msg = str(exc)
         if _use_proxy and _is_proxy_error(exc) and not _keep_open and _retry_n < _MAX_PROXY_RETRIES:
@@ -3558,6 +3562,34 @@ def _random_gmail() -> str:
 
 # Если задан — используется вместо случайного gmail при оплате (для конкретного покупателя)
 _override_email: str = ""
+
+# Немедленная отмена выполнения заказа: бот ставит флаг, покупка/заполнение его
+# проверяют в долгих ожиданиях/циклах и сразу прерываются (с закрытием браузера).
+import threading as _threading_pc
+_purchase_cancel = _threading_pc.Event()
+
+
+class _PurchaseCancelled(Exception):
+    """Выполнение прервано пользователем."""
+    pass
+
+
+def _ckcancel() -> None:
+    if _purchase_cancel.is_set():
+        raise _PurchaseCancelled()
+
+
+async def _cancellable_wait(page, ms: int) -> None:
+    """page.wait_for_timeout с проверкой отмены каждые 0.5с."""
+    _waited = 0
+    while _waited < ms:
+        _ckcancel()
+        _step = min(500, ms - _waited)
+        try:
+            await page.wait_for_timeout(_step)
+        except Exception:
+            await asyncio.sleep(_step / 1000)
+        _waited += _step
 
 
 async def _fill_email_input(page) -> bool:
@@ -4988,6 +5020,7 @@ async def _handle_3ds_verification(page) -> bool:
             # кодов делается один раз в начале оплаты в _enter_card_on_payments).
             _otp_submitted = False
             while asyncio.get_event_loop().time() < _otp_tgt:
+                _ckcancel()
                 if "flipkart.com" in page.url:
                     print(f"  {G}✅ 3DS подтверждён — Flipkart{RST}")
                     _tg_send_direct("✅ *3DS подтверждён* — возврат на Flipkart")
@@ -5082,6 +5115,7 @@ async def _get_3ds_otp_from_telegram() -> str | None:
 
     # Основной путь: читаем из файла, который пишет bot.py
     while asyncio.get_running_loop().time() < deadline:
+        _ckcancel()
         try:
             codes = _json.loads(_OTP_FILE.read_text(encoding="utf-8"))
             if codes:
@@ -5700,7 +5734,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         black_page = page
     else:
         print(f"  Оплата подтверждена — ждём 90 сек для активации membership...")
-        await page.wait_for_timeout(90_000)
+        await _cancellable_wait(page, 90_000)
         black_page = await ctx.new_page()
         try:
             await black_page.goto(_black_url, wait_until="domcontentloaded", timeout=20_000)
@@ -6741,6 +6775,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         _payments_url_saved = page.url
         _post_result: dict = {}
         for _ci, _ctry in enumerate(_cards_seq):
+            _ckcancel()
             if _ci > 0:
                 _nick = (_ctry.get("nickname") or _ctry.get("number", "")[-4:]) if _ctry else "—"
                 print(f"\n  Карта {_ci+1}/{len(_cards_seq)}: {_nick} — пробую...")
@@ -6796,6 +6831,10 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             return True, base + f" → ✅ Оплата прошла{(' (до ' + vt + ')') if vt else ''}"
         return True, base + (" → ⚠️ Оплата не подтверждена, браузер оставлен открытым"
                               if _keep_open else " → ⚠️ Оплата не подтверждена")
+    except _PurchaseCancelled:
+        print(f"  {Y}🛑 Выполнение отменено пользователем — закрываю браузер.{RST}")
+        _keep_open = False
+        return False, "CANCELLED"
     except Exception as exc:
         msg = str(exc)
         if _use_proxy and _is_proxy_error(exc) and _retry_n < _MAX_PROXY_RETRIES:
