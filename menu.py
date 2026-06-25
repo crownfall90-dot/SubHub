@@ -5663,6 +5663,26 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
 
     result: dict = {"valid_till": "", "short_link": "", "activation_url": "", "paid": False}
 
+    # Ждем до 10 секунд перенаправления на Flipkart и прогрузки страницы после оплаты
+    print("  Ожидание перенаправления и прогрузки страницы после оплаты (лимит 10 сек)...")
+    for _sec in range(10):
+        cur_url = page.url
+        if "flipkart.com" in cur_url:
+            try:
+                body_text = (await page.evaluate("() => document.body.innerText") or "").lower()
+                # Если уже на странице успеха или ошибки, выходим из ожидания
+                if ("orderresponse" in cur_url 
+                        or "welcome to black" in body_text 
+                        or "flipkart-black-store" in cur_url
+                        or "payment failed" in body_text
+                        or "payment unsuccessful" in body_text
+                        or "transaction failed" in body_text
+                        or any(kw in cur_url for kw in ("/payments", "payment-failed", "checkout-failed", "payment_failure"))):
+                    break
+            except Exception:
+                pass
+        await page.wait_for_timeout(1_000)
+
     # Проверяем что вернулись на Flipkart (шлюз должен был перенаправить)
     if "flipkart.com" not in page.url:
         print(f"  {Y}⚠ Оплата не подтверждена: URL={page.url[:60]}{RST}")
