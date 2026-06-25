@@ -1650,12 +1650,13 @@ class GGSellBotHandler:
                 continue
             if inv in self._hanging_prompted:   # уже спрашивали в этой сессии
                 continue
-            # Есть ли сообщения именно от покупателя?
+            # Есть ли сообщения от покупателя? Запоминаем последнее.
             try:
                 msgs = await cli.get_messages(inv, id_from=0)
             except Exception:
                 continue
-            has_buyer_msg = False
+            last_buyer = None
+            buyer_cnt = 0
             for m in (msgs or []):
                 if m.get("system"):
                     continue
@@ -1665,22 +1666,43 @@ class GGSellBotHandler:
                     or int(m.get("type_message") or m.get("type_msg") or -1) == 1
                 )
                 if not _is_seller:
-                    has_buyer_msg = True
-                    break
-            if not has_buyer_msg:
+                    buyer_cnt += 1
+                    last_buyer = m   # сообщения по возрастанию id → последнее перезапишется
+            if not last_buyer:
                 continue
+
             email = ""
             try:
                 email = (await cli.get_buyer_email(inv)) or ""
             except Exception:
                 pass
+
+            # Дата/время создания заказа
+            _odate = str(o.get("date") or o.get("created_at")
+                         or o.get("date_add") or "").replace("T", " ")[:16]
+
+            # Текст и время последнего сообщения покупателя
+            _lm_text = str(last_buyer.get("text") or last_buyer.get("message")
+                           or last_buyer.get("body") or "…")
+            if len(_lm_text) > 300:
+                _lm_text = _lm_text[:300] + "…"
+            _lm_raw = (last_buyer.get("date") or last_buyer.get("created_at")
+                       or last_buyer.get("timestamp") or last_buyer.get("date_add") or "")
+            _lm_time = str(_lm_raw)[:16].replace("T", " ") if _lm_raw else ""
+
+            _txt = (
+                f"⏳ *Зависший заказ* `#{inv}`\n"
+                + (f"🗓 Создан: `{_odate}`\n" if _odate else "")
+                + (f"👤 `{email}`\n" if email else "")
+                + f"💬 Сообщений от покупателя: *{buyer_cnt}*\n"
+                + "━━━━━━━━━━━━━━━━━━━━━━\n"
+                + (f"_Последнее" + (f" ({_lm_time})" if _lm_time else "") + ":_\n")
+                + f"{_lm_text}\n\n"
+                + "_Профиль не привязан, ссылка не выдана._  Начать выполнение?"
+            )
             for _cid in list(self.subs):
                 try:
-                    await self._send(_cid,
-                        f"⏳ *Зависший заказ* `#{inv}`\n"
-                        + (f"👤 `{email}`\n" if email else "")
-                        + "_Сообщение покупателя есть, но профиль не привязан и ссылка не выдана._\n\n"
-                        "Начать выполнение?",
+                    await self._send(_cid, _txt,
                         reply_markup={"inline_keyboard": [
                             [{"text": "▶️ Начать выполнение",
                               "callback_data": f"ggsell:run:{inv}"}],
