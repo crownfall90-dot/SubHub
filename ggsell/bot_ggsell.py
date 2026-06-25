@@ -76,6 +76,7 @@ class GGSellBotHandler:
         self.card_order_mode:    dict = {}  # cid → True (ожидаем ввод порядка карт)
         self._auto_pending:      dict = {}  # invoice_id → order (ждём первого сообщения покупателя)
         self._hanging_prompted:  set  = set()  # invoice_id, по которым уже спросили выполнение
+        self._greeted_sent:      dict = {}     # invoice_id → строка времени отправки приветствия
 
     # ── GGSell client ────────────────────────────────────────────────────────
 
@@ -522,7 +523,7 @@ class GGSellBotHandler:
     # ── Шаблоны сообщений ────────────────────────────────────────────────────
 
     _TEMPLATE_NAMES = {
-        "msg_greeting":    ("Приветствие",      "Отправляется покупателю автоматически при получении нового заказа (авто-режим)."),
+        "msg_greeting":    ("Приветствие",      "Отправляется покупателю сразу при получении ЛЮБОГО нового заказа."),
         "msg_template":    ("Ссылка готова",    "Отправляется покупателю вместе со ссылкой на активацию. Используй `{link}` для вставки ссылки."),
         "msg_wait":        ("Ожидание",         "Отправляется покупателю пока ссылка ещё готовится."),
         "msg_review_promo":("Промокод за отзыв","Отправляется покупателю автоматически при получении отзыва 5 звёзд. Используй `{promo_code}` для вставки кода."),
@@ -1640,35 +1641,66 @@ class GGSellBotHandler:
             logger.debug(f"GGSell hanging scan: {exc}")
             return
 
+        import datetime as _dt
+        from ggsell.monitor import get_template
+        greeting = get_template("msg_greeting") or ""
+        marker = greeting.strip()[:24]
+
         done = self.get_done()
         prompted = 0
         for o in yt:
             inv = int(o.get("invoice_id") or o.get("id") or 0)
             if not inv or inv in done:
                 continue
-            if self.get_bound_profile(inv) or inv in self._auto_pending:
+            if self.get_bound_profile(inv):
                 continue
-            if inv in self._hanging_prompted:   # уже спрашивали в этой сессии
-                continue
-            # Есть ли сообщения от покупателя? Запоминаем последнее.
+            # Сообщения чата: ищем приветствие (от продавца) и сообщения покупателя
             try:
                 msgs = await cli.get_messages(inv, id_from=0)
             except Exception:
                 continue
             last_buyer = None
             buyer_cnt = 0
+            greet_msg = None
             for m in (msgs or []):
                 if m.get("system"):
                     continue
+                _mtext = str(m.get("text") or m.get("message") or m.get("body") or "")
                 _is_seller = bool(
                     m.get("is_current_user") or m.get("is_seller") or m.get("is_mine")
                     or m.get("from_seller") or m.get("is_seller_msg")
                     or int(m.get("type_message") or m.get("type_msg") or -1) == 1
                 )
-                if not _is_seller:
+                if _is_seller:
+                    if marker and marker in _mtext:
+                        greet_msg = m
+                else:
                     buyer_cnt += 1
-                    last_buyer = m   # сообщения по возрастанию id → последнее перезапишется
+                    last_buyer = m   # по возрастанию id → последнее перезапишется
+
+            # 1) Приветствие: если ещё не отправляли (нет в чате и не слали в сессии) — отправляем
+            greet_time = ""
+            if greet_msg:
+                _gr = (greet_msg.get("date") or greet_msg.get("created_at")
+                       or greet_msg.get("timestamp") or greet_msg.get("date_add") or "")
+                greet_time = str(_gr)[:16].replace("T", " ")
+            elif inv in self._greeted_sent:
+                greet_time = self._greeted_sent[inv]
+            elif greeting:
+                try:
+                    await cli.send_message(inv, greeting)
+                    greet_time = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    self._greeted_sent[inv] = greet_time
+                    logger.info(f"GGSell #{inv}: приветствие отправлено (старт-скан)")
+                except Exception as exc:
+                    logger.warning(f"GGSell #{inv}: ошибка приветствия: {exc}")
+
+            # 2) Сообщений покупателя нет → приветствие отправили, ждём (не спрашиваем)
             if not last_buyer:
+                continue
+
+            # 3) Зависший заказ с сообщением → предлагаем выполнение (один раз за сессию)
+            if inv in self._auto_pending or inv in self._hanging_prompted:
                 continue
 
             email = ""
@@ -1677,11 +1709,8 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-            # Дата/время создания заказа
             _odate = str(o.get("date") or o.get("created_at")
                          or o.get("date_add") or "").replace("T", " ")[:16]
-
-            # Текст и время последнего сообщения покупателя
             _lm_text = str(last_buyer.get("text") or last_buyer.get("message")
                            or last_buyer.get("body") or "…")
             if len(_lm_text) > 300:
@@ -1690,10 +1719,18 @@ class GGSellBotHandler:
                        or last_buyer.get("timestamp") or last_buyer.get("date_add") or "")
             _lm_time = str(_lm_raw)[:16].replace("T", " ") if _lm_raw else ""
 
+            if greet_time:
+                _greet_line = f"👋 Приветствие отправлено: `{greet_time}`\n"
+            elif greet_msg or inv in self._greeted_sent:
+                _greet_line = "👋 _Приветствие отправлено_\n"
+            else:
+                _greet_line = ""
+
             _txt = (
                 f"⏳ *Зависший заказ* `#{inv}`\n"
                 + (f"🗓 Создан: `{_odate}`\n" if _odate else "")
                 + (f"👤 `{email}`\n" if email else "")
+                + _greet_line
                 + f"💬 Сообщений от покупателя: *{buyer_cnt}*\n"
                 + "━━━━━━━━━━━━━━━━━━━━━━\n"
                 + (f"_Последнее" + (f" ({_lm_time})" if _lm_time else "") + ":_\n")
@@ -2261,6 +2298,19 @@ class GGSellBotHandler:
                                             "parse_mode": "Markdown", "reply_markup": kb})
             except Exception:
                 pass
+
+        # При ЛЮБОМ новом заказе сразу шлём приветствие покупателю в чат GGSell.
+        try:
+            import datetime as _dtg
+            from ggsell.monitor import get_template as _gt
+            _greet = _gt("msg_greeting")
+            _cli2 = self.get_client()
+            if _greet and _cli2 and invoice_id not in self._greeted_sent:
+                await _cli2.send_message(invoice_id, _greet)
+                self._greeted_sent[invoice_id] = _dtg.datetime.now().strftime("%Y-%m-%d %H:%M")
+                logger.info(f"GGSell #{invoice_id}: приветствие отправлено покупателю")
+        except Exception as exc:
+            logger.warning(f"GGSell #{invoice_id}: ошибка приветствия: {exc}")
 
         # Авто-выполнение: профиль НЕ резервируем заранее (и не пишем какой).
         # Просто ждём первого сообщения покупателя — тогда и подбираем профиль
