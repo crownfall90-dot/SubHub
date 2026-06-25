@@ -1335,6 +1335,33 @@ class GGSellBotHandler:
             pass
         return 3
 
+    async def _resolve_months(self, invoice_id, order: dict) -> int:
+        """Надёжно определяет срок: если в заказе нет опций (например, после
+        рестарта self.orders пуст) — дотягивает selected_options через API,
+        чтобы не купить не тот период (12 vs 3)."""
+        order = order or {}
+        if self.parse_order(order).get("options"):
+            return self._order_months(order)
+        cli = self.get_client()
+        sel = []
+        if cli:
+            try:
+                v2 = await cli.get_order_info_v2(invoice_id)
+                if v2:
+                    sel = v2.get("selected_options") or []
+            except Exception:
+                pass
+            if not sel:
+                try:
+                    info = await cli.get_order_info(invoice_id)
+                    c = (info.get("content") if isinstance(info, dict) else {}) or {}
+                    sel = c.get("selected_options") or c.get("options") or []
+                except Exception:
+                    pass
+        if sel:
+            return self._order_months({"selected_options": sel})
+        return self._order_months(order)
+
     def _order_youtube_email(self, order: dict) -> str:
         """Email для активации YouTube из параметра заказа
         («Ваш адрес электронной почты для YouTube»). Приоритет над email аккаунта."""
@@ -1517,7 +1544,7 @@ class GGSellBotHandler:
             await self._notify_fulfill(cid, mid, f"❌ GGSell не настроен (заказ #{invoice_id}).")
             return
 
-        months = self._order_months(order)
+        months = await self._resolve_months(invoice_id, order)
         # Email для активации — из параметра заказа «почта для YouTube».
         # Если в заказе его нет — берём через API (тоже парсит этот параметр).
         buyer_email = self._order_youtube_email(order)
@@ -1734,23 +1761,36 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-            # Название заказа и купленная опция (срок 3/12 мес)
-            _ord_obj = {
-                "selected_options": o.get("selected_options") or [],
-                "options": o.get("options") or [],
-                "name": o.get("offer_title") or o.get("name") or "",
-            }
-            if not _ord_obj["selected_options"] and not _ord_obj["options"]:
+            # Название и купленная опция (срок 3/12 мес). Берём из уже обогащённого
+            # заказа (self.orders) или ВСЕГДА дотягиваем selected_options через v2/
+            # детали заказа — у списочного объекта периода обычно нет.
+            _cached = (self.orders.get(inv) or {}) if isinstance(self.orders.get(inv), dict) else {}
+            _co = _cached.get("order", {}) if isinstance(_cached.get("order"), dict) else {}
+            _sel  = _co.get("selected_options") or o.get("selected_options") or []
+            _opts = _co.get("options") or o.get("options") or []
+            _name = _co.get("name") or o.get("offer_title") or o.get("name") or ""
+            if not _sel:
                 try:
                     _v2 = await cli.get_order_info_v2(inv)
                     if _v2:
-                        _ord_obj["selected_options"] = _v2.get("selected_options") or []
-                        if not _ord_obj["name"]:
-                            _ord_obj["name"] = _v2.get("offer_title") or ""
+                        _sel = _v2.get("selected_options") or _sel
+                        if not _name:
+                            _name = _v2.get("offer_title") or _name
                 except Exception:
                     pass
+            if not _sel and not _opts:
+                try:
+                    _info = await cli.get_order_info(inv)
+                    _c = (_info.get("content") if isinstance(_info, dict) else {}) or {}
+                    _sel  = _c.get("selected_options") or _sel
+                    _opts = _c.get("options") or _opts
+                    if not _name:
+                        _name = _c.get("offer_title") or _name
+                except Exception:
+                    pass
+            _ord_obj = {"selected_options": _sel, "options": _opts, "name": _name}
             _pp = self.parse_order(_ord_obj)
-            _name_s = _pp.get("name_short") or _ord_obj["name"]
+            _name_s = _pp.get("name_short") or _name
             _months = self._order_months(_ord_obj)
 
             _odate = str(o.get("date") or o.get("created_at")
