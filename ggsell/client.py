@@ -319,6 +319,12 @@ class GGSellClient:
             )
             logger.info(f"GGSell: сообщение отправлено → заказ #{order_id}")
             logger.debug(f"GGSell send_message response: {data}")
+            # Запоминаем своё сообщение — чтобы монитор не принял его за покупательское
+            try:
+                from .monitor import record_sent_message
+                record_sent_message(order_id, message)
+            except Exception:
+                pass
             return True
         except GGSellError as exc:
             logger.error(f"GGSell: ошибка отправки сообщения в #{order_id}: {exc}")

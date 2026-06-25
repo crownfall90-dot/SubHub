@@ -1436,8 +1436,24 @@ class GGSellBotHandler:
         except Exception:
             return ""
 
-    async def _buy_and_deliver(self, prof, months, invoice_id, buyer_email, cid, mid, source="") -> bool:
-        """Покупает срок на профиле, читает ссылку, отправляет покупателю и привязывает."""
+    async def _notify_oos_delete(self, phone, invoice_id) -> None:
+        """Сообщает об OOS на профиле и предлагает удалить его (Да/Нет).
+        Удаление — только по подтверждению; заказ при этом продолжаем на другом профиле."""
+        for _cid in list(self.subs):
+            try:
+                await self._send(_cid,
+                    f"🚫 *Заказ #{invoice_id}*: профиль `{self._disp_phone(phone)}` — "
+                    f"Currently out of stock.\n_Перехожу к следующему профилю._\n\n"
+                    f"Удалить этот профиль?",
+                    reply_markup={"inline_keyboard": [[
+                        {"text": "🗑 Да, удалить", "callback_data": f"profile:oosdel:{phone}"},
+                        {"text": "✖️ Нет, оставить", "callback_data": f"profile:ooskeep:{phone}"},
+                    ]]})
+            except Exception:
+                pass
+
+    async def _buy_and_deliver(self, prof, months, invoice_id, buyer_email, cid, mid, source="") -> str:
+        """Покупает срок, выдаёт ссылку и привязывает. Возвращает 'ok' | 'oos' | 'fail'."""
         import functools, importlib
         phone = prof.get("username", prof["path"].name)
         await self._notify_fulfill(cid, mid,
@@ -1455,16 +1471,19 @@ class GGSellBotHandler:
         finally:
             menu._override_email = ""
         if not ok:
+            if str(msg).startswith("OUT_OF_STOCK"):
+                await self._notify_oos_delete(phone, invoice_id)
+                return "oos"
             await self._notify_fulfill(cid, mid,
                 f"❌ *Заказ #{invoice_id}*: покупка не прошла на `{self._disp_phone(phone)}`.\n`{str(msg)[:200]}`")
-            return False
+            return "fail"
         link = await self._read_profile_link(prof["path"])
         if not link:
             await self._notify_fulfill(cid, mid,
                 f"⚠️ *Заказ #{invoice_id}*: покупка прошла, но ссылка не получена (`{self._disp_phone(phone)}`).")
-            return False
+            return "fail"
         await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, source)
-        return True
+        return "ok"
 
     def _profile_pick_info(self, prof, status_label: str) -> str:
         """Подробности подобранного профиля: номер, статус, даты создания/переноса."""
@@ -1532,26 +1551,28 @@ class GGSellBotHandler:
             await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, "Оплаченные")
             return
 
-        # 2. С данными — докупить срок
-        if hasdata:
-            prof = hasdata[0]
+        # 2. С данными — докупить срок (перебираем по очереди; OOS → следующий)
+        for prof in hasdata:
             await self._notify_fulfill(cid, mid,
                 f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
                 + self._profile_pick_info(prof, "С данными")
                 + "\n\n_Покупаю срок и выдаю ссылку..._")
-            await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными")
-            return
+            _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными")
+            if _r == "ok":
+                return
+            if _r == "oos":
+                continue   # OOS — уведомили/спросили удаление, берём следующий профиль
+            # прочая ошибка покупки — тоже пробуем следующий профиль
+            continue
 
-        # 3. Доступные — заполнить данные → купить
-        if available:
-            prof = available[0]
+        # 3. Доступные — заполнить данные → купить (перебираем; OOS → следующий)
+        for prof in available:
             phone = prof.get("username", prof["path"].name)
             await self._notify_fulfill(cid, mid,
                 f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
                 + self._profile_pick_info(prof, "Доступные")
                 + "\n\n_Заполняю данные..._")
             addr = self._m("_gen_indian_address")()
-            # Email активации вводится на checkout уже при заполнении данных — задаём override
             menu = importlib.import_module("menu")
             menu._override_email = buyer_email or ""
             try:
@@ -1565,16 +1586,17 @@ class GGSellBotHandler:
                 menu._override_email = ""
             if not ok_fill:
                 if msg_fill in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
-                    await self._notify_fulfill(cid, mid,
-                        f"🚫 *Заказ #{invoice_id}*: профиль `{self._disp_phone(phone)}` — Out of stock. "
-                        f"Профиль не удалён, заказ не выполнен.")
-                else:
-                    await self._notify_fulfill(cid, mid,
-                        f"⚠️ *Заказ #{invoice_id}*: не удалось заполнить данные `{self._disp_phone(phone)}`.\n`{str(msg_fill)[:200]}`")
+                    # OOS — уведомить + подтвердить удаление + взять следующий профиль
+                    await self._notify_oos_delete(phone, invoice_id)
+                    continue
+                await self._notify_fulfill(cid, mid,
+                    f"⚠️ *Заказ #{invoice_id}*: не удалось заполнить данные `{self._disp_phone(phone)}`.\n`{str(msg_fill)[:200]}` — пробую следующий.")
+                continue
+            # Данные заполнены → покупаем; OOS на покупке → следующий профиль
+            _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
+            if _r == "ok":
                 return
-            # Данные заполнены успешно → покупаем и выдаём
-            await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
-            return
+            continue
 
         # 4. Нет профилей ни в одной вкладке — создаём новый (логин + покупка)
         await self._notify_fulfill(cid, mid,
@@ -1659,6 +1681,7 @@ class GGSellBotHandler:
                 msgs = await cli.get_messages(inv, id_from=0)
             except Exception:
                 continue
+            from ggsell.monitor import is_own_sent as _own
             last_buyer = None
             buyer_cnt = 0
             greet_msg = None
@@ -1666,17 +1689,19 @@ class GGSellBotHandler:
                 if m.get("system"):
                     continue
                 _mtext = str(m.get("text") or m.get("message") or m.get("body") or "")
+                # Наше приветствие (по тексту шаблона) — не покупательское
+                if marker and marker in _mtext:
+                    greet_msg = m
+                    continue
                 _is_seller = bool(
                     m.get("is_current_user") or m.get("is_seller") or m.get("is_mine")
                     or m.get("from_seller") or m.get("is_seller_msg")
                     or int(m.get("type_message") or m.get("type_msg") or -1) == 1
                 )
-                if _is_seller:
-                    if marker and marker in _mtext:
-                        greet_msg = m
-                else:
-                    buyer_cnt += 1
-                    last_buyer = m   # по возрастанию id → последнее перезапишется
+                if _is_seller or _own(inv, _mtext):   # продавец/наше отправленное — пропускаем
+                    continue
+                buyer_cnt += 1
+                last_buyer = m   # по возрастанию id → последнее перезапишется
 
             # 1) Приветствие: если ещё не отправляли (нет в чате и не слали в сессии) — отправляем
             greet_time = ""
@@ -1709,6 +1734,25 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
+            # Название заказа и купленная опция (срок 3/12 мес)
+            _ord_obj = {
+                "selected_options": o.get("selected_options") or [],
+                "options": o.get("options") or [],
+                "name": o.get("offer_title") or o.get("name") or "",
+            }
+            if not _ord_obj["selected_options"] and not _ord_obj["options"]:
+                try:
+                    _v2 = await cli.get_order_info_v2(inv)
+                    if _v2:
+                        _ord_obj["selected_options"] = _v2.get("selected_options") or []
+                        if not _ord_obj["name"]:
+                            _ord_obj["name"] = _v2.get("offer_title") or ""
+                except Exception:
+                    pass
+            _pp = self.parse_order(_ord_obj)
+            _name_s = _pp.get("name_short") or _ord_obj["name"]
+            _months = self._order_months(_ord_obj)
+
             _odate = str(o.get("date") or o.get("created_at")
                          or o.get("date_add") or "").replace("T", " ")[:16]
             _lm_text = str(last_buyer.get("text") or last_buyer.get("message")
@@ -1728,6 +1772,8 @@ class GGSellBotHandler:
 
             _txt = (
                 f"⏳ *Зависший заказ* `#{inv}`\n"
+                + (f"📦 {_name_s}\n" if _name_s else "")
+                + f"🛒 Опция: *{_months} мес*\n"
                 + (f"🗓 Создан: `{_odate}`\n" if _odate else "")
                 + (f"👤 `{email}`\n" if email else "")
                 + _greet_line
@@ -2338,21 +2384,16 @@ class GGSellBotHandler:
                     or msg.get("date_add") or "")
         msg_time = str(raw_date)[:16].replace("T", " ") if raw_date else ""
 
+        is_seller = bool(item.get("is_seller"))
         time_s = f"  │  _{msg_time}_" if msg_time else ""
+        _header = ("📤 *Сообщение отправлено покупателю* (от вас)"
+                   if is_seller else "💬 *Новое сообщение от покупателя*")
         text = (
-            f"💬 *Новое сообщение от покупателя*\n"
+            f"{_header}\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             f"*Заказ:* `#{invoice_id}`  │  👤 `{email}`{time_s}\n\n"
             f"{msg_text}"
         )
-
-        # Заказ «висит»: нет выданной ссылки и нет привязанного профиля, и его
-        # НЕ собирается выполнить авто-режим прямо сейчас — предлагаем начать
-        # выполнение кнопкой (подбор профиля по приоритету).
-        _will_auto = (invoice_id in self._auto_pending and
-                      any(self._get(_c, "ggsel_auto_fulfill") for _c in list(self.subs)))
-        _is_pending = bool(invoice_id) and (invoice_id not in self.get_done()) \
-            and not self.get_bound_profile(invoice_id)
 
         kb_rows = [
             [{"text": "💬 Ответить",
@@ -2360,10 +2401,17 @@ class GGSellBotHandler:
              {"text": f"📋 Заказ #{invoice_id}",
               "callback_data": f"ggsell:order:{invoice_id}"}],
         ]
-        if _is_pending and not _will_auto:
-            kb_rows.insert(0, [{"text": "▶️ Начать выполнение заказа",
-                                "callback_data": f"ggsell:run:{invoice_id}"}])
-            text += "\n\n_⚠️ Профиль не привязан, ссылка не выдана. Начать выполнение?_"
+        # Кнопку «Начать выполнение» и авто-режим — ТОЛЬКО для сообщений покупателя.
+        _will_auto = False
+        if not is_seller:
+            _will_auto = (invoice_id in self._auto_pending and
+                          any(self._get(_c, "ggsel_auto_fulfill") for _c in list(self.subs)))
+            _is_pending = bool(invoice_id) and (invoice_id not in self.get_done()) \
+                and not self.get_bound_profile(invoice_id)
+            if _is_pending and not _will_auto:
+                kb_rows.insert(0, [{"text": "▶️ Начать выполнение заказа",
+                                    "callback_data": f"ggsell:run:{invoice_id}"}])
+                text += "\n\n_⚠️ Профиль не привязан, ссылка не выдана. Начать выполнение?_"
         kb = {"inline_keyboard": kb_rows}
         for _cid in list(self.subs):
             if not self._get(_cid, "ggsel_notify_messages"):
@@ -2375,9 +2423,9 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-        # Авто-выполнение: запускаем при первом сообщении покупателя по ожидающему заказу.
-        # Подбор профиля по приоритету (Оплаченные → С данными → Доступные → новый).
-        if invoice_id and invoice_id in self._auto_pending:
+        # Авто-выполнение: ТОЛЬКО по сообщению ПОКУПАТЕЛЯ (не своему), по ожидающему
+        # заказу. Подбор профиля по приоритету (Оплаченные → С данными → Доступные → новый).
+        if not is_seller and invoice_id and invoice_id in self._auto_pending:
             _order = self._auto_pending.pop(invoice_id)
             if any(self._get(_cid, "ggsel_auto_fulfill") for _cid in list(self.subs)):
                 asyncio.create_task(self.bg_fulfill_order(invoice_id, _order))

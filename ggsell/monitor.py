@@ -38,6 +38,39 @@ YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
 # Элементы: {"type": "new_order", "invoice_id": int, "order": dict}
 notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
 
+# Сообщения, отправленные НАМИ (продавцом/ботом) — чтобы монитор не принял их
+# за сообщения покупателя. Хранит (invoice_id, нормализованный_текст, время).
+import collections as _collections
+_recent_sent: "_collections.deque" = _collections.deque(maxlen=400)
+
+
+def _norm_msg(text: str) -> str:
+    return " ".join(str(text or "").split())[:200].lower()
+
+
+def record_sent_message(invoice_id, text: str) -> None:
+    """Запомнить отправленное продавцом сообщение (фильтр своих сообщений)."""
+    try:
+        _recent_sent.append((int(invoice_id), _norm_msg(text), time.time()))
+    except Exception:
+        pass
+
+
+def is_own_sent(invoice_id, text: str, max_age: float = 1800.0) -> bool:
+    """True, если сообщение совпадает с недавно отправленным нами по тому же заказу."""
+    try:
+        inv = int(invoice_id)
+        norm = _norm_msg(text)
+        if not norm:
+            return False
+        now = time.time()
+        for _inv, _norm, _ts in list(_recent_sent):
+            if _inv == inv and (now - _ts) <= max_age and _norm == norm:
+                return True
+    except Exception:
+        pass
+    return False
+
 # Сообщение покупателю при получении ссылки
 MSG_TEMPLATE = (
     "Ссылка на активацию подписки отправлена ✅\n\n"
@@ -320,11 +353,12 @@ class GGSellMonitor:
                 # (По order_id НЕ фильтруем: у обычных сообщений его может не быть.)
                 if msg.get("system"):
                     continue
-                # Фильтр read убран: повторные уведомления и так исключаются по
-                # last_id; иначе прочитанное на сайте сообщение терялось.
-                # Сообщение от продавца (нашего бота) — не уведомляем
+                _mtext = str(msg.get("text") or msg.get("message") or msg.get("body") or "")
+                # Определяем, чьё сообщение: наше (продавца/бота) или покупателя.
+                # Фильтр read убран: повторы исключаются по last_id.
                 is_seller = bool(
-                    msg.get("is_current_user")
+                    is_own_sent(id_i, _mtext)
+                    or msg.get("is_current_user")
                     or msg.get("is_seller")
                     or msg.get("is_seller_msg")
                     or msg.get("sender") == "seller"
@@ -337,16 +371,20 @@ class GGSellMonitor:
                     or msg.get("is_mine")
                     or int(msg.get("type_message") or msg.get("type_msg") or -1) == 1
                 )
-                if not is_seller:
-                    buyer_email = (msg.get("author") or {}).get("email") or ""
-                    notify_queue.put({
-                        "type": "new_message",
-                        "invoice_id": id_i,
-                        "message": msg,
-                        "chat": chat,
-                        "buyer_email": buyer_email,
-                    })
-                    logger.info(f"GGSell: новое сообщение от покупателя {buyer_email!r} в заказе #{id_i}")
+                # Уведомляем о ВСЕХ сообщениях (и своих, и покупателя), но с флагом —
+                # бот покажет «от вас» или «от покупателя».
+                buyer_email = (msg.get("author") or {}).get("email") or ""
+                notify_queue.put({
+                    "type": "new_message",
+                    "invoice_id": id_i,
+                    "message": msg,
+                    "chat": chat,
+                    "buyer_email": buyer_email,
+                    "is_seller": is_seller,
+                })
+                logger.info(
+                    f"GGSell: новое сообщение ({'продавец' if is_seller else 'покупатель'}) "
+                    f"в заказе #{id_i}")
 
             if max_id > last_id:
                 seen[seen_key] = max_id
