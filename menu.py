@@ -1812,6 +1812,17 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                     else:
                         status = "explore_now"
                         print(f"  {C}💳 Benefit-секция найдена → explore_now{RST}")
+                elif result.get("valid_till") or "membership valid till" in _html_check.lower():
+                    # Резервный чек: если есть валидная дата, но benefit-faq-store не найден в html
+                    if "explore now" in _html_check.lower():
+                        status = "explore_now"
+                        print(f"  {C}💳 Резерв: Найдено Valid Till + explore now → explore_now{RST}")
+                    elif "activate now" in _html_check.lower():
+                        status = "activate_now"
+                        print(f"  {C}💳 Резерв: Найдено Valid Till + activate now → activate_now{RST}")
+                    else:
+                        status = "activated"
+                        print(f"  {C}💳 Резерв: Найдено Valid Till → activated{RST}")
             except Exception:
                 pass
 
