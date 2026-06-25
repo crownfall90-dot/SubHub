@@ -2485,9 +2485,31 @@ class ResultTracker:
 # main
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _check_flipkart_accessible() -> bool:
+    try:
+        _rd, _wr = await asyncio.wait_for(
+            asyncio.open_connection("www.flipkart.com", 443),
+            timeout=10.0,
+        )
+        _wr.close()
+        try:
+            await _wr.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, force_headless: bool = False) -> None:
     _script_dir = Path(__file__).resolve().parent
     setup_logging(log_file=str(_script_dir / "automation.log"))
+
+    logger.info("Проверка доступности Flipkart...")
+    if not await _check_flipkart_accessible():
+        logger.error("Flipkart недоступен. Запуск невозможен. Повторите попытку позже.")
+        sys.exit(1)
+    logger.info("Flipkart доступен.")
 
     config_path = _script_dir / "config.yaml"
     if not config_path.exists():

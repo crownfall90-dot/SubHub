@@ -2028,6 +2028,13 @@ def screen_check_all_activated():
     """Проверить активацию Black для всех профилей со статусом «Выдан»."""
     cls()
     header("ПРОВЕРКА АКТИВАЦИИ — ВСЕ ПРОФИЛИ", G)
+    print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+    if not _is_flipkart_accessible_sync():
+        print(f"\n  {R}⚠ Flipkart недоступен{RST}")
+        print(f"  {Y}Повторите попытку позже.{RST}")
+        pause()
+        return
+    print(f"  {G}Flipkart доступен.{RST}")
 
     all_profiles = _load_done_profiles()
     profiles = [p for p in all_profiles if p.get("issued_ts")]
@@ -2800,6 +2807,15 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                            _use_proxy: bool | None = None,
                            stop_at_payment: bool = False) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
+    if _retry_n == 0 and not _skip_ping:
+        print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+        if not await _check_flipkart_accessible():
+            _ping_msg = "Flipkart недоступен"
+            print(f"\n  {R}⚠ {_ping_msg}{RST}")
+            print(f"  {Y}Покупка Membership невозможна. Повторите позже.{RST}")
+            return False, _ping_msg
+        print(f"  {G}Flipkart доступен.{RST}")
+
     if _use_proxy is None:
         _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
     _MAX_PROXY_RETRIES = 3
@@ -3042,6 +3058,13 @@ async def _do_fill_address(profile_path: Path, addr: dict,
 
 def screen_fill_address():
     """Автоматически заполнить рандомный индийский адрес в выбранных профилях."""
+    print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+    if not _is_flipkart_accessible_sync():
+        print(f"\n  {R}⚠ Flipkart недоступен{RST}")
+        print(f"  {Y}Повторите попытку позже.{RST}")
+        pause()
+        return
+    print(f"  {G}Flipkart доступен.{RST}")
     while True:
         cls()
         header("ЗАПОЛНИТЬ АДРЕС  —  ИНДИЯ", Y)
@@ -6542,15 +6565,48 @@ async def _navigate_search_buy(page, months: int) -> str | None:
     return await _click_buy_now(page, _BLACK_URLS[months])
 
 
+async def _check_flipkart_accessible() -> bool:
+    try:
+        _rd, _wr = await asyncio.wait_for(
+            asyncio.open_connection("www.flipkart.com", 443),
+            timeout=10.0,
+        )
+        _wr.close()
+        try:
+            await _wr.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _is_flipkart_accessible_sync() -> bool:
+    try:
+        return asyncio.run(_check_flipkart_accessible())
+    except Exception:
+        return False
+
+
 async def _do_buy_membership(profile_path: Path, months: int, card: dict | None = None,
                              _skip_proxies: set | None = None,
                              _retry_n: int = 0,
                              _use_proxy: bool | None = None,
                              _forced_proxy: dict | None = None,
-                             _skip_proxy_loop: bool = False) -> tuple[bool, str]:
+                             _skip_proxy_loop: bool = False,
+                             _skip_ping: bool = False) -> tuple[bool, str]:
     """Buy Now → адрес (если нужен) → viewcheckout → Continue → оплата.
     Прокси используется для всего (навигация + оплата) через встроенный Playwright
     Chromium — CDP Fetch.authRequired обрабатывает авторизацию без диалога."""
+    if _retry_n == 0 and not _skip_ping:
+        print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+        if not await _check_flipkart_accessible():
+            _ping_msg = "Flipkart недоступен"
+            print(f"\n  {R}⚠ {_ping_msg}{RST}")
+            print(f"  {Y}Покупка Membership невозможна. Повторите позже.{RST}")
+            return False, _ping_msg
+        print(f"  {G}Flipkart доступен.{RST}")
+
     if _use_proxy is None:
         _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
     _MAX_PROXY_RETRIES = 3
@@ -6846,11 +6902,13 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             print(f"  {Y}⚠ Прокси недоступен — пробую следующий "
                   f"({_retry_n + 1}/{_MAX_PROXY_RETRIES})...{RST}")
             return await _do_buy_membership(profile_path, months, card,
-                                            _skip_proxies, _retry_n + 1, _use_proxy)
+                                            _skip_proxies, _retry_n + 1, _use_proxy,
+                                            _skip_ping=True)
         if _use_proxy and _is_proxy_error(exc):
             print(f"  {Y}⚠ Все прокси недоступны — пробую без прокси...{RST}")
             return await _do_buy_membership(profile_path, months, card,
-                                            set(), 1, _use_proxy=False)
+                                            set(), 1, _use_proxy=False,
+                                            _skip_ping=True)
         return False, msg
     finally:
         _loop.set_exception_handler(_orig_exc_handler)
@@ -8415,6 +8473,15 @@ def screen_all_in_one():
         except Exception:
             _n = 1
 
+    # ── Проверка доступности Flipkart перед запуском ──────────────────────────
+    print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+    if not _is_flipkart_accessible_sync():
+        print(f"\n  {R}⚠ Flipkart недоступен{RST}")
+        print(f"  {Y}Повторите попытку позже.{RST}")
+        pause()
+        return
+    print(f"  {G}Flipkart доступен.{RST}")
+
     section(f"Запуск: {_n} аккаунт(ов) | {label} | {mode_lbl}")
     print()
 
@@ -8441,7 +8508,7 @@ def screen_all_in_one():
                         try:
                             print(f"  {DIM}  → {_pp.name}{RST}")
                             _pok, _pmsg = asyncio.run(
-                                _do_buy_membership(_pp, months, card=selected_card))
+                                _do_buy_membership(_pp, months, card=selected_card, _skip_ping=True))
                             print(f"  {'✅' if _pok else '❌'} {_pp.name}: {_pmsg}")
                             if _pok:
                                 ok_count += 1
