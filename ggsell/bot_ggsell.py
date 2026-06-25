@@ -75,6 +75,7 @@ class GGSellBotHandler:
         self.template_edit_mode: dict = {}  # cid → template_name
         self.card_order_mode:    dict = {}  # cid → True (ожидаем ввод порядка карт)
         self._auto_pending:      dict = {}  # invoice_id → order (ждём первого сообщения покупателя)
+        self._hanging_prompted:  set  = set()  # invoice_id, по которым уже спросили выполнение
 
     # ── GGSell client ────────────────────────────────────────────────────────
 
@@ -1609,11 +1610,21 @@ class GGSellBotHandler:
                 f"⚠️ *Заказ #{invoice_id}*: профиль создан, но ссылка не найдена — проверьте профили.")
 
     async def bg_check_hanging_orders(self) -> None:
-        """При старте бота: ищет «висящие» заказы — без выданной ссылки и без
-        привязанного профиля, но с уже имеющимся сообщением от покупателя —
-        и предлагает в Telegram начать выполнение (кнопкой)."""
+        """Постоянно (с момента старта консоли/бота) следит за «висящими»
+        заказами — без выданной ссылки и без привязанного профиля, но с уже
+        имеющимся сообщением от покупателя — и предлагает начать выполнение
+        кнопкой. Повторно по одному заказу не спрашиваем (дедуп)."""
         import asyncio as _aio
         await _aio.sleep(20)  # даём GGSell-клиенту и монитору подняться
+        while True:
+            try:
+                await self._scan_hanging_orders_once()
+            except Exception as exc:
+                logger.debug(f"GGSell hanging scan: {exc}")
+            await _aio.sleep(300)  # перепроверяем каждые 5 минут
+
+    async def _scan_hanging_orders_once(self) -> None:
+        """Один проход поиска зависших заказов."""
         cli = self.get_client()
         if not cli:
             return
@@ -1636,6 +1647,8 @@ class GGSellBotHandler:
             if not inv or inv in done:
                 continue
             if self.get_bound_profile(inv) or inv in self._auto_pending:
+                continue
+            if inv in self._hanging_prompted:   # уже спрашивали в этой сессии
                 continue
             # Есть ли сообщения именно от покупателя?
             try:
@@ -1676,6 +1689,7 @@ class GGSellBotHandler:
                         ]})
                 except Exception:
                     pass
+            self._hanging_prompted.add(inv)
             prompted += 1
         if prompted:
             logger.info(f"GGSell: предложено выполнить {prompted} зависших заказа(ов)")
