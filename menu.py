@@ -6975,13 +6975,14 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 if _is_last_card:
                     _send_tg_error(_pp_phone, "Карта не прошла — все карты исчерпаны")
 
-        _keep_open = not _auto_close
         base = f"✅ {addr_msg}" if addr_msg else "✅ Адрес уже был сохранён"
         if _post_result.get("paid"):
+            _keep_open = False  # оплата прошла → закрываем браузер автоматически
             vt = _post_result.get("valid_till", "")
             if _last_proxy_server:
                 _mark_proxy_ok(_last_proxy_server)
             return True, base + f" → ✅ Оплата прошла{(' (до ' + vt + ')') if vt else ''}"
+        _keep_open = not _auto_close
         return True, base + (" → ⚠️ Оплата не подтверждена, браузер оставлен открытым"
                               if _keep_open else " → ⚠️ Оплата не подтверждена")
     except _PurchaseCancelled:
