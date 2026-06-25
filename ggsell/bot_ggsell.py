@@ -246,31 +246,25 @@ class GGSellBotHandler:
     # ── Метка заказа для кнопок ─────────────────────────────────────────────
 
     def _order_label(self, order: dict, invoice_id: int) -> str:
-        """Краткая читаемая метка: email · период · дата."""
+        """Метка заказа для кнопки: email покупателя · дата и время создания
+        (номер заказа не пишем)."""
         p = self.parse_order(order)
         email = p["email"]
-        if not email:
+        date  = p.get("date") or ""
+        if not email or not date:
             cached = self.orders.get(invoice_id, {})
-            email = (cached.get("buyer_email")
-                     or self.parse_order(cached.get("order", {})).get("email", "")
-                     if cached else "")
-
-        # Период подписки из options ("3 месяца" → "3м", "12 месяцев" → "12м")
-        period = ""
-        for opt in p["options"]:
-            val = opt.get("value", "")
-            m = re.search(r"(\d+)\s*(мес|год|month|year)", val.lower())
-            if m:
-                unit = "м" if m.group(2) in ("мес", "month") else "г"
-                period = f"{m.group(1)}{unit}"
-                break
+            _co = self.parse_order(cached.get("order", {})) if isinstance(cached, dict) else {}
+            if not email:
+                email = (cached.get("buyer_email") if isinstance(cached, dict) else "") or _co.get("email", "")
+            if not date:
+                date = _co.get("date", "")
 
         parts = []
-        if period:
-            parts.append(period)
         if email:
-            parts.append(email[:32])
-        return " · ".join(parts) if parts else f"#{invoice_id}"
+            parts.append(email[:34])
+        if date:
+            parts.append(date)
+        return "  ·  ".join(parts) if parts else f"#{invoice_id}"
 
     # ── Парсинг заказа ───────────────────────────────────────────────────────
 
@@ -1458,7 +1452,8 @@ class GGSellBotHandler:
     async def _read_profile_link(self, profile_path) -> str:
         try:
             meta = json.loads((Path(profile_path) / ".profile_meta.json").read_text(encoding="utf-8"))
-            return (meta.get("black_activation_link") or meta.get("black_short_link")
+            # Покупателю всегда КОРОТКАЯ ссылка (clck.ru); длинная — только запасной.
+            return (meta.get("black_short_link") or meta.get("black_activation_link")
                     or meta.get("activation_url") or "")
         except Exception:
             return ""
@@ -1569,7 +1564,7 @@ class GGSellBotHandler:
         ]
         if paid_match:
             prof = paid_match[0]
-            link = prof.get("black_activation_link") or prof.get("black_short_link")
+            link = prof.get("black_short_link") or prof.get("black_activation_link")
             phone = prof.get("username", prof["path"].name)
             await self._notify_fulfill(cid, mid,
                 f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
@@ -1652,7 +1647,7 @@ class GGSellBotHandler:
                 if _newest is None or (p.get("login_ts") or 0) > (_newest.get("login_ts") or 0):
                     _newest = p
         if _newest:
-            link = _newest.get("black_activation_link") or _newest.get("black_short_link")
+            link = _newest.get("black_short_link") or _newest.get("black_activation_link")
             phone = _newest.get("username", _newest["path"].name)
             await self._send_link_and_bind(invoice_id, link, _newest["path"], phone, cid, mid, "новый профиль")
         else:

@@ -2608,7 +2608,8 @@ def _menu_tg_bot_thread() -> None:
                     return
                 try:
                     m = _m("_read_profile_meta")(pp)
-                    link = m.get("black_activation_link") or m.get("black_short_link") or ""
+                    # Покупателю — короткую ссылку (clck.ru), длинная только запасной
+                    link = m.get("black_short_link") or m.get("black_activation_link") or ""
                 except Exception:
                     link = ""
                 if not link:
@@ -2632,7 +2633,8 @@ def _menu_tg_bot_thread() -> None:
                     return
                 try:
                     m = _m("_read_profile_meta")(pp)
-                    link = m.get("black_activation_link") or m.get("black_short_link") or ""
+                    # Покупателю — короткую ссылку (clck.ru), длинная только запасной
+                    link = m.get("black_short_link") or m.get("black_activation_link") or ""
                 except Exception:
                     link = ""
                 if not link:
