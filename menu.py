@@ -3587,6 +3587,18 @@ def _random_gmail() -> str:
 # Если задан — используется вместо случайного gmail при оплате (для конкретного покупателя)
 _override_email: str = ""
 
+
+def _to_gmail(email: str) -> str:
+    """Приводит почту к @gmail.com: берёт имя (часть до @) и подставляет
+    @gmail.com вместо любого другого домена. Если домен уже gmail.com — без
+    изменений. Нужно, чтобы в профиль всегда вводился gmail, даже если
+    покупатель в GGSell указал почту на другом домене. Возвращает '' если
+    имя выделить не удалось (тогда вызывающий берёт случайный gmail)."""
+    local = (email or "").strip().split("@", 1)[0].strip()
+    if not local:
+        return ""
+    return f"{local}@gmail.com"
+
 # Немедленная отмена выполнения заказа: бот ставит флаг, покупка/заполнение его
 # проверяют в долгих ожиданиях/циклах и сразу прерываются (с закрытием браузера).
 import threading as _threading_pc
@@ -3626,7 +3638,7 @@ async def _fill_email_input(page) -> bool:
     )
     if await email_input.count() == 0:
         return False
-    email = _override_email if _override_email else _random_gmail()
+    email = (_to_gmail(_override_email) or _random_gmail()) if _override_email else _random_gmail()
     inp = email_input.first
     await inp.scroll_into_view_if_needed()
     await _human_click(page, inp)
