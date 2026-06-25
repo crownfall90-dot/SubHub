@@ -402,8 +402,12 @@ async def _cancel_rental_task(aid):
                     return
                 # В intercept-режиме OTP передаётся в TG основным потоком —
                 # монитор не должен запускать фоновый вход, только завершить аренду
-                if r.get("intercept_mode"):
-                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} (перехват) — завершаю аренду без входа{_RST}")
+                if r.get("intercept_mode") or r.get("external"):
+                    # intercept: OTP уже передан основным потоком в TG
+                    # external: номер подхвачен сканером — его уже обработал
+                    # _background_login_monitor в main.py; повторный вход не нужен
+                    _reason = "перехват" if r.get("intercept_mode") else "внешний, уже обработан"
+                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} ({_reason}) — отменяю без входа{_RST}")
                     try:
                         await client.cancel(aid)
                     except Exception:

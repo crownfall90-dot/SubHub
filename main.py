@@ -1414,6 +1414,13 @@ class LoginAutomation:
                     pass
                 self.profile_manager.delete_profile(temp_path)
             self._all_pending.pop(act_id, None)
+            # Помечаем act_id завершённым, чтобы grizzly.py-сканер не подхватил
+            # тот же номер повторно и не запустил _submit_bg_login ещё раз.
+            try:
+                import grizzly as _grz
+                _grz.mark_completed(act_id)
+            except Exception:
+                pass
 
     async def _cancel_stale_activations(self, index: int) -> None:
         """Отменяет все активные активации на GrizzlySMS перед стартом новой сессии."""
@@ -2669,24 +2676,11 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
 
                     _fill_slots()
 
-                # Цель достигнута — финальное сообщение
+                # Цель достигнута — в консоль сразу
                 logger.success("=" * 52)
                 logger.success(f"  🎯 ЦЕЛЬ ДОСТИГНУТА: {success_count}/{target} аккаунтов!")
                 logger.success("=" * 52)
-
-                if tg_manager:
-                    final_bal_str = "—"
-                    if sms_client:
-                        try:
-                            fb = await sms_client.get_balance()
-                            final_bal_str = f"${fb:.4f}"
-                        except Exception:
-                            pass
-                    await tg_manager.notify_all(
-                        f"🎯 Задача выполнена!\n"
-                        f"✅ Создано аккаунтов: {success_count}/{target}\n"
-                        f"💰 Итоговый баланс: {final_bal_str}"
-                    )
+                # TG-уведомление отправляем ПОСЛЕ ожидания фоновых задач (ниже)
             else:
                 # ── Ручной режим: список аккаунтов из конфига ──────────────────
                 for idx, account in enumerate(manual_accounts):
@@ -2719,6 +2713,21 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 )
                 await asyncio.gather(*active_bg, return_exceptions=True)
                 logger.info("✅ Фоновые мониторинги завершены")
+
+            # Итоговое TG-сообщение — после завершения всех фоновых задач и отмены номеров
+            if tg_manager and success_count >= target:
+                final_bal_str = "—"
+                if sms_client:
+                    try:
+                        fb = await sms_client.get_balance()
+                        final_bal_str = f"${fb:.4f}"
+                    except Exception:
+                        pass
+                await tg_manager.notify_all(
+                    f"🎯 Задача выполнена!\n"
+                    f"✅ Создано аккаунтов: {success_count}/{target}\n"
+                    f"💰 Итоговый баланс: {final_bal_str}"
+                )
 
             # Если остались открытые успешные браузеры — ждём Enter
             if getattr(automation, "_kept_contexts", None):
