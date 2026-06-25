@@ -1,5 +1,6 @@
 """
 bot.py — Telegram bot background thread.
+Integrated Flipkart accessibility checks and update notifications persistence.
 """
 
 import asyncio
