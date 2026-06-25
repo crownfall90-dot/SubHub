@@ -3249,6 +3249,34 @@ async def _fill_address_form(page, addr: dict) -> bool:
     await _fill("Road name", addr["road"])
     await page.wait_for_timeout(150)
 
+    # Очищаем поле "Alternate phone number" — Flipkart предзаполняет его
+    # номером аккаунта с +91 (например, +917204960944), что вызывает ошибку
+    # валидации «Enter a valid 10-digit mobile number» и блокирует сохранение.
+    # Поле необязательное, поэтому просто стираем его содержимое.
+    try:
+        await page.evaluate("""() => {
+            for (const inp of document.querySelectorAll('input[type=tel], input[type=number], input[type=text]')) {
+                const ph = (inp.placeholder || inp.getAttribute('aria-label') || '').toLowerCase();
+                const lbl = (() => {
+                    let el = inp.parentElement;
+                    for (let i = 0; i < 5 && el; i++, el = el.parentElement) {
+                        const l = el.querySelector('label');
+                        if (l) return l.textContent.toLowerCase();
+                    }
+                    return '';
+                })();
+                if (ph.includes('alternate') || lbl.includes('alternate')) {
+                    inp.focus();
+                    inp.value = '';
+                    inp.dispatchEvent(new Event('input', {bubbles: true}));
+                    inp.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+            }
+        }""")
+        await page.wait_for_timeout(200)
+    except Exception:
+        pass
+
     # Тип адреса (Home/Work radio)
     try:
         radio = page.locator("input[type='radio']").first
@@ -6336,6 +6364,34 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
         # с 3-й попытки — вводим пинкод через поиск на карте
         if ("address-map" in page.url or "changeShipping" in page.url) and _outer >= 2:
             await _search_location_by_pincode(page)
+
+        # Перед нажатием «Update address» чистим поле Alternate phone —
+        # Flipkart предзаполняет его номером аккаунта с +91 (например,
+        # +917204960944), что вызывает ошибку валидации и блокирует сохранение.
+        if "address-map" in page.url or "changeShipping" in page.url:
+            try:
+                await page.evaluate("""() => {
+                    for (const inp of document.querySelectorAll('input')) {
+                        const ph = (inp.placeholder || inp.getAttribute('aria-label') || '').toLowerCase();
+                        const lbl = (() => {
+                            let el = inp.parentElement;
+                            for (let i = 0; i < 5 && el; i++, el = el.parentElement) {
+                                const l = el.querySelector('label');
+                                if (l) return l.textContent.toLowerCase();
+                            }
+                            return '';
+                        })();
+                        if (ph.includes('alternate') || lbl.includes('alternate')) {
+                            inp.focus();
+                            inp.value = '';
+                            inp.dispatchEvent(new Event('input', {bubbles: true}));
+                            inp.dispatchEvent(new Event('change', {bubbles: true}));
+                        }
+                    }
+                }""")
+                await page.wait_for_timeout(200)
+            except Exception:
+                pass
 
         # Затем Update address
         for _btn_step in range(3):
