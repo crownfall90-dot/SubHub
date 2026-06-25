@@ -2403,6 +2403,9 @@ def _menu_tg_bot_thread() -> None:
                 return
 
             if data == "update:pull":
+                if _first:
+                    await _ack(qid)
+                    return
                 await _ack(qid, "Применяю обновление...")
                 await _edit(cid, mid, "⏳ *Загружаю обновление...*", {"inline_keyboard": []})
                 try:
@@ -2464,6 +2467,9 @@ def _menu_tg_bot_thread() -> None:
                 return
 
             if data == "action:restart":
+                if _first:
+                    await _ack(qid)
+                    return
                 await _ack(qid, "Перезапускаю консоль...")
                 result = "⏳ *Перезапуск консоли...*\n\n⚡ _Перезапускаю..._"
                 await _edit(cid, mid, result, {"inline_keyboard": []})
