@@ -2508,7 +2508,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     logger.info("Проверка доступности Flipkart...")
     if not await _check_flipkart_accessible():
         logger.error("Flipkart недоступен. Запуск невозможен. Повторите попытку позже.")
-        sys.exit(1)
+        sys.exit(2)
     logger.info("Flipkart доступен.")
 
     config_path = _script_dir / "config.yaml"
