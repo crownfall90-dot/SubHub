@@ -1607,6 +1607,7 @@ class GGSellBotHandler:
             return False
 
         paid, hasdata, available = self._categorize_profiles()
+        _fail_reasons = []   # (phone, причина) — для диагностики в итоговом сообщении
 
         # 1. Оплаченные с подходящим сроком и готовой ссылкой
         paid_match = [
@@ -1639,9 +1640,8 @@ class GGSellBotHandler:
             if _r == "cancelled":
                 await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
                 return
-            if _r == "oos":
-                continue   # OOS — уведомили/спросили удаление, берём следующий профиль
-            # прочая ошибка покупки — тоже пробуем следующий профиль
+            _ph2 = prof.get("username", prof["path"].name)
+            _fail_reasons.append((_ph2, "Out of stock" if _r == "oos" else "покупка не прошла"))
             continue
 
         # 3. Доступные — заполнить данные → купить (перебираем; OOS → следующий)
@@ -1670,9 +1670,10 @@ class GGSellBotHandler:
                     await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
                     return
                 if msg_fill in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
-                    # OOS — уведомить + подтвердить удаление + взять следующий профиль
+                    _fail_reasons.append((phone, "Out of stock"))
                     await self._notify_oos_delete(phone, invoice_id)
                     continue
+                _fail_reasons.append((phone, f"заполнение: {str(msg_fill)[:80]}"))
                 await self._notify_fulfill(cid, mid,
                     f"⚠️ *Заказ #{invoice_id}*: не удалось заполнить данные `{self._disp_phone(phone)}`.\n`{str(msg_fill)[:200]}` — пробую следующий.")
                 continue
@@ -1685,43 +1686,29 @@ class GGSellBotHandler:
             if _r == "cancelled":
                 await self._notify_fulfill(cid, mid, f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
                 return
+            _fail_reasons.append((phone, f"покупка: {_r}"))
             continue
 
-        # 4. Нет профилей ни в одной вкладке — создаём новый (логин + покупка)
-        if await _cancelled():
-            return
+        # 4. Свободных профилей нет ни в одной вкладке.
+        # ВАЖНО: автоматически НЕ запускаем создание нового профиля (полную
+        # автоматизацию). Она в цикле покупает номера GrizzlySMS и жжёт деньги,
+        # т.к. 3DS-код для НОВОГО аккаунта никто не вводит вовремя → таймаут →
+        # следующий номер. Профили нужно готовить заранее.
+        # Счётчики помогают понять, почему профиль не подобрался.
+        _hint = ""
+        if paid and not paid_match:
+            _hint = f"\n_(в «Оплаченные» есть {len(paid)}, но не на срок {months} мес)_"
+        # Причины, почему перепробованные профили не сработали (диагностика)
+        _reasons_txt = ""
+        if _fail_reasons:
+            _lines = [f"  • `{self._disp_phone(ph)}` — {rs}" for ph, rs in _fail_reasons[:8]]
+            _reasons_txt = "\n\n*Перепробованы, но не сработали:*\n" + "\n".join(_lines)
         await self._notify_fulfill(cid, mid,
-            f"🔄 *Заказ #{invoice_id}*: свободных профилей нет — создаю новый "
-            f"(логин + покупка {months} мес)...\n_Это займёт время._", cancel_inv=invoice_id)
-        menu = importlib.import_module("menu")
-        menu._override_email = buyer_email or ""
-        try:
-            ok_new, msg_new = await asyncio.get_event_loop().run_in_executor(
-                None, functools.partial(
-                    self._run_menu_coro,
-                    lambda: self._m("_do_all_in_one")(months, True, None)))
-        except Exception as exc:
-            ok_new, msg_new = False, str(exc)
-        finally:
-            menu._override_email = ""
-        if not ok_new:
-            await self._notify_fulfill(cid, mid,
-                f"❌ *Заказ #{invoice_id}*: не удалось создать профиль и купить.\n`{str(msg_new)[:200]}`")
-            return
-        # Находим свежесозданный профиль со ссылкой
-        _paid2, _hd2, _av2 = self._categorize_profiles()
-        _newest = None
-        for p in _paid2:
-            if (p.get("black_activation_link") or p.get("black_short_link")):
-                if _newest is None or (p.get("login_ts") or 0) > (_newest.get("login_ts") or 0):
-                    _newest = p
-        if _newest:
-            link = _newest.get("black_short_link") or _newest.get("black_activation_link")
-            phone = _newest.get("username", _newest["path"].name)
-            await self._send_link_and_bind(invoice_id, link, _newest["path"], phone, cid, mid, "новый профиль")
-        else:
-            await self._notify_fulfill(cid, mid,
-                f"⚠️ *Заказ #{invoice_id}*: профиль создан, но ссылка не найдена — проверьте профили.")
+            f"⚠️ *Заказ #{invoice_id}*: не удалось выдать — нет рабочего профиля.\n"
+            f"_Оплаченные: {len(paid)} · С данными: {len(hasdata)} · Доступные: {len(available)}_{_hint}"
+            f"{_reasons_txt}\n\n"
+            f"_Авто-создание с покупкой номеров отключено, чтобы не жечь деньги. "
+            f"Подготовьте профиль и нажмите «▶️ Выполнить» снова._")
 
     async def bg_check_hanging_orders(self) -> None:
         """Постоянно (с момента старта консоли/бота) следит за «висящими»
