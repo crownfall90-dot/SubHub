@@ -305,6 +305,7 @@ def _menu_tg_bot_thread() -> None:
                  {"text": "📁 Профили",   "callback_data": "go:profiles"},
                  {"text": "⚙️ Другое",    "callback_data": "go:other"}],
                 [{"text": "💰 GGSell",    "callback_data": "go:ggsell"}],
+                [{"text": "🔄 Перезапустить консоль", "callback_data": "action:restart"}],
             ]
             return {"inline_keyboard": rows}
 
@@ -2461,6 +2462,48 @@ def _menu_tg_bot_thread() -> None:
                                 {"inline_keyboard": [[{"text": "◀️ Назад",
                                                        "callback_data": "go:other"}]]})
                 return
+
+            if data == "action:restart":
+                await _ack(qid, "Перезапускаю консоль...")
+                result = "⏳ *Перезапуск консоли...*\n\n⚡ _Перезапускаю..._"
+                await _edit(cid, mid, result, {"inline_keyboard": []})
+                try:
+                    rf = Path(__file__).parent / "._restart_msg.json"
+                    rf.write_text(json.dumps({"chat_id": cid, "msg_id": mid,
+                                              "text": result}),
+                                  encoding="utf-8")
+                except Exception:
+                    pass
+                # Принудительно останавливаем запущенный процесс автоматизации
+                if _running():
+                    try:
+                        _proc[0].terminate()
+                        await asyncio.sleep(1)
+                        if _proc[0].returncode is None:
+                            _proc[0].kill()
+                    except Exception:
+                        pass
+                # Принудительно убиваем зависшие chrome.exe и python.exe (связанные с ботом)
+                try:
+                    if os.name == "nt":
+                        import subprocess as _sp
+                        mypid = os.getpid()
+                        # Убиваем зависшие chrome.exe, запущенные с профилями бота
+                        _sp.run('powershell -Command "Get-WmiObject Win32_Process -Filter \\"name=\'chrome.exe\' and commandline like \'%chrome_profiles%\'\\" | ForEach-Object { $_.Terminate() }"',
+                                shell=True, capture_output=True, timeout=10)
+                        # Убиваем другие процессы python.exe, выполняющие main.py или menu.py
+                        _sp.run(f'powershell -Command "Get-WmiObject Win32_Process -Filter \\"name=\'python.exe\' and (commandline like \'%main.py%\' or commandline like \'%menu.py%\')\\" | Where-Object {{ $_.ProcessId -ne {mypid} }} | ForEach-Object {{ $_.Terminate() }}"',
+                                shell=True, capture_output=True, timeout=10)
+                except Exception:
+                    pass
+                try:
+                    await client.get(f"{api}/getUpdates",
+                                     params={"offset": offset, "timeout": 0})
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+                import os as _os
+                _os._exit(42)
 
             # Управление процессом ─────────────────────────────────────────────
             if data in ("run:normal", "run:headless", "run:tg"):
