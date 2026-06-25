@@ -76,6 +76,7 @@ class GGSellBotHandler:
         self.card_order_mode:    dict = {}  # cid → True (ожидаем ввод порядка карт)
         self._auto_pending:      dict = {}  # invoice_id → order (ждём первого сообщения покупателя)
         self._hanging_prompted:  set  = set()  # invoice_id, по которым уже спросили выполнение
+        self._fulfill_cancel:    set  = set()  # invoice_id, выполнение которых отменено
         self._greeted_sent:      dict = {}     # invoice_id → строка времени отправки приветствия
 
     # ── GGSell client ────────────────────────────────────────────────────────
@@ -1397,19 +1398,27 @@ class GGSellBotHandler:
         hasdata.sort(key=lambda x: x.get("prepared_ts") or x.get("login_ts") or 0)
         return paid, hasdata, available
 
-    async def _notify_fulfill(self, cid, mid, text: str) -> None:
+    async def _notify_fulfill(self, cid, mid, text: str, cancel_inv=None) -> None:
         """Сообщение о ходе выдачи: редактируем карточку (кнопка «Выполнить»)
-        или шлём всем подписчикам (авто-выдача по сообщению покупателя)."""
+        или шлём всем подписчикам (авто-выдача по сообщению покупателя).
+        Если задан cancel_inv — добавляем кнопку «❌ Отмена»."""
+        if cancel_inv:
+            kb = {"inline_keyboard": [
+                [{"text": "❌ Отмена выполнения",
+                  "callback_data": f"ggsell:fulfill_cancel:{cancel_inv}"}],
+                [{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}],
+            ]}
+        else:
+            kb = {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]}
         if cid and mid:
             try:
-                await self._edit(cid, mid, text,
-                    {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+                await self._edit(cid, mid, text, kb)
                 return
             except Exception:
                 pass
         for c in list(self.subs):
             try:
-                await self._send(c, text)
+                await self._send(c, text, reply_markup=kb)
             except Exception:
                 pass
 
@@ -1480,7 +1489,8 @@ class GGSellBotHandler:
         phone = prof.get("username", prof["path"].name)
         await self._notify_fulfill(cid, mid,
             f"💳 *Заказ #{invoice_id}*: покупаю {months} мес на `{self._disp_phone(phone)}`"
-            + (f" (из «{source}»)" if source else "") + "...\n_Займёт несколько минут._")
+            + (f" (из «{source}»)" if source else "") + "...\n_Займёт несколько минут._",
+            cancel_inv=invoice_id)
         menu = importlib.import_module("menu")
         menu._override_email = buyer_email or ""
         try:
@@ -1554,6 +1564,16 @@ class GGSellBotHandler:
                            or order.get("email") or "")
         buyer_email = buyer_email.strip()
 
+        self._fulfill_cancel.discard(invoice_id)  # сброс возможной прошлой отмены
+
+        async def _cancelled() -> bool:
+            if invoice_id in self._fulfill_cancel:
+                self._fulfill_cancel.discard(invoice_id)
+                await self._notify_fulfill(cid, mid,
+                    f"🛑 *Заказ #{invoice_id}*: выполнение отменено.")
+                return True
+            return False
+
         paid, hasdata, available = self._categorize_profiles()
 
         # 1. Оплаченные с подходящим сроком и готовой ссылкой
@@ -1575,10 +1595,12 @@ class GGSellBotHandler:
 
         # 2. С данными — докупить срок (перебираем по очереди; OOS → следующий)
         for prof in hasdata:
+            if await _cancelled():
+                return
             await self._notify_fulfill(cid, mid,
                 f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
                 + self._profile_pick_info(prof, "С данными")
-                + "\n\n_Покупаю срок и выдаю ссылку..._")
+                + "\n\n_Покупаю срок и выдаю ссылку..._", cancel_inv=invoice_id)
             _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными")
             if _r == "ok":
                 return
@@ -1589,11 +1611,13 @@ class GGSellBotHandler:
 
         # 3. Доступные — заполнить данные → купить (перебираем; OOS → следующий)
         for prof in available:
+            if await _cancelled():
+                return
             phone = prof.get("username", prof["path"].name)
             await self._notify_fulfill(cid, mid,
                 f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
                 + self._profile_pick_info(prof, "Доступные")
-                + "\n\n_Заполняю данные..._")
+                + "\n\n_Заполняю данные..._", cancel_inv=invoice_id)
             addr = self._m("_gen_indian_address")()
             menu = importlib.import_module("menu")
             menu._override_email = buyer_email or ""
@@ -1615,15 +1639,19 @@ class GGSellBotHandler:
                     f"⚠️ *Заказ #{invoice_id}*: не удалось заполнить данные `{self._disp_phone(phone)}`.\n`{str(msg_fill)[:200]}` — пробую следующий.")
                 continue
             # Данные заполнены → покупаем; OOS на покупке → следующий профиль
+            if await _cancelled():
+                return
             _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
             if _r == "ok":
                 return
             continue
 
         # 4. Нет профилей ни в одной вкладке — создаём новый (логин + покупка)
+        if await _cancelled():
+            return
         await self._notify_fulfill(cid, mid,
             f"🔄 *Заказ #{invoice_id}*: свободных профилей нет — создаю новый "
-            f"(логин + покупка {months} мес)...\n_Это займёт время._")
+            f"(логин + покупка {months} мес)...\n_Это займёт время._", cancel_inv=invoice_id)
         menu = importlib.import_module("menu")
         menu._override_email = buyer_email or ""
         try:
@@ -2954,8 +2982,20 @@ class GGSellBotHandler:
             await self._edit(cid, mid,
                 f"⏳ *Выполняю заказ* `#{invoice_id}`\n\n_Подбираю профиль по приоритету:_\n"
                 f"_Оплаченные → С данными → Доступные → новый._",
-                {"inline_keyboard": []})
+                {"inline_keyboard": [[{"text": "❌ Отмена выполнения",
+                                       "callback_data": f"ggsell:fulfill_cancel:{invoice_id}"}]]})
             asyncio.create_task(self.bg_fulfill_order(invoice_id, _ord, cid, mid))
+            return
+
+        if data.startswith("ggsell:fulfill_cancel:"):
+            invoice_id = int(data.split(":")[2])
+            self._fulfill_cancel.add(invoice_id)
+            await self._ack(qid, "🛑 Отменяю выполнение...")
+            await self._edit(cid, mid,
+                f"🛑 *Заказ #{invoice_id}*: запрошена отмена.\n"
+                "_Остановлюсь перед следующим шагом._\n"
+                "_(Уже запущенная покупка в браузере может завершиться.)_",
+                {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
             return
 
         if data.startswith("ggsell:send:"):
