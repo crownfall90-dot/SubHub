@@ -109,24 +109,9 @@ def _menu_tg_bot_thread() -> None:
 
     # Токен только из secrets.yaml
     try:
-        import yaml as _y
-    except ImportError:
-        _tg_status = "error:pip install pyyaml"
-        return
-    try:
         token = (_m("_read_secrets")().get("telegram") or {}).get("token", "").strip()
     except Exception:
         token = ""
-    if not token:
-        # fallback: config.yaml (для совместимости при первом запуске до _init_secrets)
-        try:
-            cfg_path = _HERE / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _fh:
-                    _cfg_raw = _y.safe_load(_fh)
-                token = ((_cfg_raw or {}).get("telegram") or {}).get("token", "").strip()
-        except Exception:
-            pass
     if not token:
         return
     try:
