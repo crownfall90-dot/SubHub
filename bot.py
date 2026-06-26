@@ -875,7 +875,15 @@ def _menu_tg_bot_thread() -> None:
         _usd_cache   = [0.0, 0.0]  # [rate_rub_per_usd, timestamp]
 
         def _get_usd_rate() -> float:
-            """Курс USD→RUB по данным ЦБ РФ. Кешируется на 1 час."""
+            """Курс USD→RUB. Приоритет: ручной из конфига → ЦБ РФ (кеш 1 час)."""
+            # Ручной курс из конфига
+            try:
+                manual = _load_scfg().get("usd_rate", 0)
+                if manual and float(manual) > 0:
+                    return float(manual)
+            except Exception:
+                pass
+            # ЦБ РФ с кешем
             import time as _t
             if _usd_cache[0] > 0 and _t.time() - _usd_cache[1] < 3600:
                 return _usd_cache[0]
@@ -2200,15 +2208,25 @@ def _menu_tg_bot_thread() -> None:
                 c12 = scfg.get("cost_12m", "не задана")
                 c3s  = _rub_plain(c3)  if isinstance(c3,  (int, float)) else str(c3)
                 c12s = _rub_plain(c12) if isinstance(c12, (int, float)) else str(c12)
+                _manual_rate = scfg.get("usd_rate", 0)
+                _cbr_rate    = _usd_cache[0]
+                if _manual_rate and float(_manual_rate) > 0:
+                    _rate_str = f"₽{float(_manual_rate):,.2f} (ручной)"
+                elif _cbr_rate > 0:
+                    _rate_str = f"₽{_cbr_rate:,.2f} (ЦБ РФ)"
+                else:
+                    _rate_str = "не получен"
                 txt = (
                     "⚙️ *Себестоимость*\n\n"
                     f"▸ 3 месяца: *{c3s}*\n"
-                    f"▸ 12 месяцев: *{c12s}*\n\n"
+                    f"▸ 12 месяцев: *{c12s}*\n"
+                    f"▸ Курс $1 = *{_rate_str}*\n\n"
                     "_Нажмите кнопку для изменения:_"
                 )
                 kb = {"inline_keyboard": [
                     [{"text": f"✏️ 3 мес ({c3s})",  "callback_data": "sales:set_cost:3m"}],
                     [{"text": f"✏️ 12 мес ({c12s})", "callback_data": "sales:set_cost:12m"}],
+                    [{"text": f"💱 Курс USD ({_rate_str})", "callback_data": "sales:set_usd_rate"}],
                     [{"text": "◀️ Назад", "callback_data": "go:sales"}],
                 ]}
                 await _edit(cid, mid, txt, kb)
@@ -2220,6 +2238,19 @@ def _menu_tg_bot_thread() -> None:
                 _sales_cost_waiting[cid] = plan
                 label = "3 месяца" if plan == "3m" else "12 месяцев"
                 await _send(cid, f"💬 Введите себестоимость для *{label}* (в рублях):",
+                            parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
+                                                                "callback_data": "sales:config"}]]})
+                return
+
+            if data == "sales:set_usd_rate":
+                await _ack(qid)
+                _sales_cost_waiting[cid] = "usd_rate"
+                cur = _get_usd_rate()
+                cur_s = f"сейчас: ₽{cur:,.2f}" if cur > 0 else "не задан"
+                await _send(cid,
+                            f"💱 Введите курс $1 в рублях ({cur_s}):\n\n"
+                            "_Оставьте `0` чтобы использовать курс ЦБ РФ._",
                             parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
                                                                 "callback_data": "sales:config"}]]})
@@ -3248,25 +3279,39 @@ def _menu_tg_bot_thread() -> None:
                                                                     "callback_data": f"profile:menu:{phone}:active"}]]})
                 return
 
-            # Ввод себестоимости
+            # Ввод себестоимости / курса USD
             if _sales_cost_waiting.get(cid):
-                plan = _sales_cost_waiting.pop(cid)
+                key = _sales_cost_waiting.pop(cid)
                 try:
-                    cost = float(text.replace(",", ".").replace("₹", "").strip())
-                    if cost < 0:
+                    val = float(text.replace(",", ".").replace("₽", "").replace("₹", "").strip())
+                    if val < 0:
                         raise ValueError("negative")
                     scfg = _load_scfg()
-                    scfg[f"cost_{plan}"] = cost
-                    _save_scfg(scfg)
-                    label = "3 месяца" if plan == "3m" else "12 месяцев"
-                    await _send(cid,
-                        f"✅ Себестоимость *{label}* сохранена: *{_rub_plain(cost)}*",
-                        parse_mode="Markdown",
-                        reply_markup={"inline_keyboard": [
-                            [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
-                        ]})
+                    if key == "usd_rate":
+                        if val == 0:
+                            scfg.pop("usd_rate", None)
+                            _usd_cache[0] = 0.0  # сбросить кеш
+                            _save_scfg(scfg)
+                            await _send(cid, "✅ Курс сброшен — будет использоваться ЦБ РФ",
+                                        reply_markup={"inline_keyboard": [[{"text": "⚙️ Настройки", "callback_data": "sales:config"}]]})
+                        else:
+                            scfg["usd_rate"] = val
+                            _save_scfg(scfg)
+                            await _send(cid, f"✅ Курс сохранён: *$1 = ₽{val:,.2f}*",
+                                        parse_mode="Markdown",
+                                        reply_markup={"inline_keyboard": [[{"text": "⚙️ Настройки", "callback_data": "sales:config"}]]})
+                    else:
+                        scfg[f"cost_{key}"] = val
+                        _save_scfg(scfg)
+                        label = "3 месяца" if key == "3m" else "12 месяцев"
+                        await _send(cid,
+                            f"✅ Себестоимость *{label}* сохранена: *{_rub_plain(val)}*",
+                            parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [
+                                [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
+                            ]})
                 except (ValueError, TypeError):
-                    await _send(cid, "❌ Некорректная сумма. Введите число.",
+                    await _send(cid, "❌ Некорректное значение. Введите число.",
                                 reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
                                                                     "callback_data": "sales:config"}]]})
                 return
