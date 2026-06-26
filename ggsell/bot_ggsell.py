@@ -1386,7 +1386,7 @@ class GGSellBotHandler:
     # ── Единая выдача заказа по приоритету профилей ──────────────────────────
 
     def _order_months(self, order: dict) -> int:
-        """Срок подписки из ВЫБРАННОЙ опции заказа: 3 или 12 месяцев.
+        """Срок подписки из ВЫБРАННОЙ опции заказа: 3, 6 или 12 месяцев.
         Название товара не смотрим — там всегда оба срока. По умолчанию 3."""
         try:
             p = self.parse_order(order)
@@ -1397,7 +1397,11 @@ class GGSellBotHandler:
                     n = int(m.group(1))
                     if m.group(2) in ("год", "year"):
                         n *= 12
-                    return 12 if n >= 12 else 3
+                    if n >= 12:
+                        return 12
+                    if n >= 6:
+                        return 6
+                    return 3
         except Exception:
             pass
         return 3
@@ -1494,13 +1498,19 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-    async def _send_link_and_bind(self, invoice_id, link, profile_path, phone, cid, mid, source="") -> None:
+    async def _send_link_and_bind(self, invoice_id, link, profile_path, phone, cid, mid, source="", gg_months=3) -> None:
         """Отправляет ссылку покупателю шаблоном и привязывает профиль к заказу."""
         from ggsell.monitor import get_template
         cli = self.get_client()
         ok = False
         try:
-            ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
+            buyer_msg = get_template("msg_template").format(link=link)
+            if gg_months >= 6:
+                buyer_msg += (
+                    "\n\n⚠️ При покупке 6 месяцев нужно будет через 3 месяца заново активировать подписку.\n"
+                    "Обратитесь ко мне в чат — скажите, что первые 3 месяца прошли. Выдам новую ссылку на активацию."
+                )
+            ok = await cli.send_message(invoice_id, buyer_msg)
         except Exception as exc:
             logger.error(f"GGSell fulfill #{invoice_id}: ошибка отправки ссылки: {exc}")
         if ok:
@@ -1555,12 +1565,13 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
-    async def _buy_and_deliver(self, prof, months, invoice_id, buyer_email, cid, mid, source="") -> str:
+    async def _buy_and_deliver(self, prof, months, invoice_id, buyer_email, cid, mid, source="", gg_months=3) -> str:
         """Покупает срок, выдаёт ссылку и привязывает. Возвращает 'ok' | 'oos' | 'fail' | 'cancelled'."""
         import functools, importlib
         phone = prof.get("username", prof["path"].name)
+        _label = f"{gg_months} мес (покупаю {months})" if gg_months != months else f"{months} мес"
         await self._notify_fulfill(cid, mid,
-            f"💳 *Заказ #{invoice_id}*: покупаю {months} мес на `{self._disp_phone(phone)}`"
+            f"💳 *Заказ #{invoice_id}*: покупаю {_label} на `{self._disp_phone(phone)}`"
             + (f" (из «{source}»)" if source else "") + "...\n_Займёт несколько минут._",
             cancel_inv=invoice_id)
         menu = importlib.import_module("menu")
@@ -1588,7 +1599,7 @@ class GGSellBotHandler:
             await self._notify_fulfill(cid, mid,
                 f"⚠️ *Заказ #{invoice_id}*: покупка прошла, но ссылка не получена (`{self._disp_phone(phone)}`).")
             return "fail"
-        await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, source)
+        await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, source, gg_months=gg_months)
         return "ok"
 
     def _profile_pick_info(self, prof, status_label: str) -> str:
@@ -1623,7 +1634,11 @@ class GGSellBotHandler:
             await self._notify_fulfill(cid, mid, f"❌ GGSell не настроен (заказ #{invoice_id}).")
             return
 
-        months = await self._resolve_months(invoice_id, order)
+        gg_months = await self._resolve_months(invoice_id, order)
+        # 6 мес на GGSell = 2× 3 мес на Flipkart (3 сейчас + 3 через 3 мес вручную).
+        # 12 мес переименованы в 6 мес в GGSell — обрабатываем так же.
+        buy_months = 3 if gg_months >= 6 else gg_months
+        months = buy_months  # для совместимости с кодом ниже
         # Email для активации — из параметра заказа «почта для YouTube».
         # Если в заказе его нет — берём через API (тоже парсит этот параметр).
         buyer_email = self._order_youtube_email(order)
@@ -1659,6 +1674,8 @@ class GGSellBotHandler:
         paid, hasdata, available = self._categorize_profiles()
         _fail_reasons = []   # (phone, причина) — для диагностики в итоговом сообщении
 
+        _months_label = f"{gg_months} мес (покупаю {months})" if gg_months != months else f"{months} мес"
+
         # 1. Оплаченные с подходящим сроком и готовой ссылкой
         paid_match = [
             p for p in paid
@@ -1670,10 +1687,10 @@ class GGSellBotHandler:
             link = prof.get("black_short_link") or prof.get("black_activation_link")
             phone = prof.get("username", prof["path"].name)
             await self._notify_fulfill(cid, mid,
-                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
+                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({_months_label}):\n"
                 + self._profile_pick_info(prof, "Оплаченные")
                 + "\n\n_Отдаю готовую ссылку покупателю..._")
-            await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, "Оплаченные")
+            await self._send_link_and_bind(invoice_id, link, prof["path"], phone, cid, mid, "Оплаченные", gg_months=gg_months)
             return
 
         # 2. С данными — докупить срок (перебираем по очереди; OOS → следующий)
@@ -1681,10 +1698,10 @@ class GGSellBotHandler:
             if await _cancelled():
                 return
             await self._notify_fulfill(cid, mid,
-                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
+                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({_months_label}):\n"
                 + self._profile_pick_info(prof, "С данными")
                 + "\n\n_Покупаю срок и выдаю ссылку..._", cancel_inv=invoice_id)
-            _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными")
+            _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "С данными", gg_months=gg_months)
             if _r == "ok":
                 return
             if _r == "cancelled":
@@ -1707,10 +1724,10 @@ class GGSellBotHandler:
                 return
             phone = prof.get("username", prof["path"].name)
             await self._notify_fulfill(cid, mid,
-                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({months} мес):\n"
+                f"🔎 *Заказ #{invoice_id}* — подобран профиль ({_months_label}):\n"
                 + self._profile_pick_info(prof, "Доступные")
                 + "\n\n_Покупаю срок и выдаю ссылку..._", cancel_inv=invoice_id)
-            _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные")
+            _r = await self._buy_and_deliver(prof, months, invoice_id, buyer_email, cid, mid, "Доступные", gg_months=gg_months)
             if _r == "ok":
                 return
             if _r == "cancelled":
@@ -2038,7 +2055,8 @@ class GGSellBotHandler:
             return
 
         # 3. Порядок карт применяется внутри _do_buy_membership (единый card_order.json)
-        months = 3
+        gg_months = self._order_months(order)   # из заказа: 3, 6 или 12
+        months = 3                              # всегда покупаем 3 мес на Flipkart
         do_buy = self._m("_do_buy_membership")
 
         def _run_purchase_for(p_path):
@@ -2110,6 +2128,11 @@ class GGSellBotHandler:
                     buyer_msg = tpl.format(link=link)
                 except Exception:
                     buyer_msg = f"{tpl}\n\n{link}"
+                if gg_months >= 6:
+                    buyer_msg += (
+                        "\n\n⚠️ При покупке 6 месяцев нужно будет через 3 месяца заново активировать подписку.\n"
+                        "Обратитесь ко мне в чат — скажите, что первые 3 месяца прошли. Выдам новую ссылку на активацию."
+                    )
 
                 try:
                     await cli.send_message(invoice_id, buyer_msg)
