@@ -4458,13 +4458,14 @@ async def _handle_paytm_currency_page(page) -> bool:
                 print("  Скриншот: debug_pay_notfound.png")
             except Exception:
                 pass
-            # Fallback: кликаем на единственную/первую видимую кнопку Pay на странице
+            # Fallback: кликаем на единственную/первую видимую кнопку Pay (SGD/USD/др.)
+            # Только если нет INR — исключаем Apple Pay, Google Pay, "Pay in another currency"
             _fallback_clicked = False
             for _fr3 in [page.main_frame] + list(page.frames):
                 if _fallback_clicked:
                     break
                 try:
-                    _all_fb = _fr3.locator("button, [role='button'], a")
+                    _all_fb = _fr3.locator("button, [role='button']")
                     _fb_cnt = await _all_fb.count()
                     for _fi in range(_fb_cnt):
                         try:
@@ -4472,7 +4473,9 @@ async def _handle_paytm_currency_page(page) -> bool:
                             _ft = (await _fb.inner_text()).strip().lower()
                             if not _ft.startswith("pay"):
                                 continue
-                            if any(x in _ft for x in ("apple", "google")):
+                            if any(x in _ft for x in (
+                                "apple", "google", "in another", "another currency"
+                            )):
                                 continue
                             _fbb = await _fb.bounding_box()
                             if not _fbb or _fbb["width"] < 40 or _fbb["height"] < 12:
