@@ -4320,76 +4320,110 @@ async def _handle_paytm_currency_page(page) -> bool:
                     continue
                 print(f"  Найдена '{_cc_btn.get('txt','Change Currency')}' — кликаю...")
                 await page.mouse.click(_cc_btn["x"], _cc_btn["y"])
-                await page.wait_for_timeout(1_500)
-                # Ищем USD в раскрывшемся списке валют
-                # Ищем строку-элемент (li, div, tr) с текстом USD, высота < 100px
+                # Ждём появления модалки со списком валют (до 4 сек)
+                try:
+                    await page.wait_for_function("""() => {
+                        for (const el of document.querySelectorAll('*')) {
+                            const t = (el.innerText || el.textContent || '').trim().toUpperCase();
+                            if (t === 'USD' || t.includes('SELECT A CURRENCY')
+                                    || t.includes('US DOLLAR')) {
+                                const r = el.getBoundingClientRect();
+                                if (r.width > 10 && r.height > 8) return true;
+                            }
+                        }
+                        return false;
+                    }""", timeout=4_000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(500)
+                try:
+                    await page.screenshot(path="debug/debug_currency_modal.png")
+                    print("  Скриншот валютной модалки: debug_currency_modal.png")
+                except Exception:
+                    pass
+                # Ищем строку USD во всех фреймах
+                _USD_JS = """() => {
+                    // Приоритет: строки списка (li, [role=option] и др.)
+                    for (const el of document.querySelectorAll(
+                            'li, [role="option"], [role="listitem"], [role="row"], tr')) {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        if (!t.toUpperCase().includes('USD')) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 40 || r.height < 8 || r.height > 150) continue;
+                        const s = window.getComputedStyle(el);
+                        if (s.display === 'none' || s.visibility === 'hidden') continue;
+                        try { el.click(); } catch(e) {}
+                        return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
+                    }
+                    // Fallback: div/span/button с коротким текстом, содержащим USD
+                    for (const el of document.querySelectorAll('div, span, button, a, p')) {
+                        const t = (el.innerText || el.textContent || '').trim();
+                        if (!t.toUpperCase().includes('USD')) continue;
+                        if (t.length > 60) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 40 || r.height < 8 || r.height > 120) continue;
+                        const s = window.getComputedStyle(el);
+                        if (s.display === 'none' || s.visibility === 'hidden') continue;
+                        try { el.click(); } catch(e) {}
+                        return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
+                    }
+                    return null;
+                }"""
                 _usd_item = None
                 for _fr_usd in [page.main_frame] + list(page.frames):
                     try:
-                        _usd_item = await _fr_usd.evaluate("""() => {
-                            // Приоритет: строки-элементы списка с точным "USD"
-                            const ROW_TAGS = ['li','tr','[role="option"]','[role="row"]',
-                                              '[role="listitem"]','[role="radio"]'];
-                            for (const sel of ROW_TAGS) {
-                                for (const el of document.querySelectorAll(sel)) {
-                                    const t = (el.innerText || el.textContent || '').trim();
-                                    if (!t.toUpperCase().includes('USD')) continue;
-                                    const r = el.getBoundingClientRect();
-                                    if (r.width < 40 || r.height < 8 || r.height > 120) continue;
-                                    const s = window.getComputedStyle(el);
-                                    if (s.display === 'none' || s.visibility === 'hidden') continue;
-                                    try { el.click(); } catch(e) {}
-                                    return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
-                                }
-                            }
-                            // Fallback: любой видимый элемент с "USD" и разумным размером
-                            for (const el of document.querySelectorAll('div,span,button,a,p')) {
-                                const t = (el.innerText || el.textContent || '').trim();
-                                if (!t.toUpperCase().includes('USD')) continue;
-                                if (t.length > 60) continue;
-                                const r = el.getBoundingClientRect();
-                                if (r.width < 40 || r.height < 8 || r.height > 100) continue;
-                                const s = window.getComputedStyle(el);
-                                if (s.display === 'none' || s.visibility === 'hidden') continue;
-                                try { el.click(); } catch(e) {}
-                                return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
-                            }
-                            return null;
-                        }""")
+                        _usd_item = await _fr_usd.evaluate(_USD_JS)
                     except Exception:
                         pass
                     if _usd_item:
                         break
-                if _usd_item:
-                    print(f"  Выбираю USD: {_usd_item.get('txt','')!r}")
-                    await page.mouse.click(_usd_item["x"], _usd_item["y"])
-                    await page.wait_for_timeout(1_500)
-                else:
+                if not _usd_item:
                     print(f"  {Y}USD не найден в списке валют{RST}")
                     break
-                # Ищем кнопку Pay (в USD)
+                print(f"  Выбираю USD: {_usd_item.get('txt','')!r}")
+                await page.mouse.click(_usd_item["x"], _usd_item["y"])
+                # Ждём обновления кнопки Pay (до 3 сек)
+                try:
+                    await page.wait_for_function("""() => {
+                        for (const el of document.querySelectorAll('*')) {
+                            const raw = (el.innerText || '').trim();
+                            const lines = raw.split('\\n').slice(0,3)
+                                .map(l=>l.trim()).filter(l=>l);
+                            const t = lines.join(' ').toLowerCase();
+                            if (t.startsWith('pay') && !t.includes('another')
+                                    && !t.includes('change') && !t.includes('apple')
+                                    && !t.includes('google')) return true;
+                        }
+                        return false;
+                    }""", timeout=3_000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(500)
+                # Ищем кнопку Pay
+                _PAY_USD_JS = """() => {
+                    for (const el of document.querySelectorAll(
+                            'button, [role="button"], a, div')) {
+                        const raw = (el.innerText || '').trim();
+                        if (!raw) continue;
+                        const lines = raw.split('\\n').slice(0,4)
+                            .map(l=>l.trim()).filter(l=>l);
+                        const t = lines.join(' ').toLowerCase();
+                        if (!t.startsWith('pay')) continue;
+                        if (t.includes('apple') || t.includes('google')
+                                || t.includes('another') || t.includes('change')) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 40 || r.height < 12) continue;
+                        const s = window.getComputedStyle(el);
+                        if (s.display === 'none' || s.visibility === 'hidden') continue;
+                        return {x: r.x+r.width/2, y: r.y+r.height/2,
+                                txt: lines.join(' ').substring(0,60)};
+                    }
+                    return null;
+                }"""
                 _pay_usd = None
                 for _fr_pu in [page.main_frame] + list(page.frames):
                     try:
-                        _pay_usd = await _fr_pu.evaluate("""() => {
-                            for (const el of document.querySelectorAll('*')) {
-                                const raw = (el.innerText || '').trim();
-                                if (!raw) continue;
-                                const lines = raw.split('\\n').slice(0,4)
-                                    .map(l=>l.trim()).filter(l=>l);
-                                const t = lines.join(' ').toLowerCase();
-                                if (!t.startsWith('pay')) continue;
-                                if (t.includes('apple') || t.includes('google')
-                                        || t.includes('change')) continue;
-                                const r = el.getBoundingClientRect();
-                                if (r.width < 40 || r.height < 12) continue;
-                                const s = window.getComputedStyle(el);
-                                if (s.display === 'none' || s.visibility === 'hidden') continue;
-                                return {x: r.x+r.width/2, y: r.y+r.height/2,
-                                        txt: lines.join(' ').substring(0,60)};
-                            }
-                            return null;
-                        }""")
+                        _pay_usd = await _fr_pu.evaluate(_PAY_USD_JS)
                     except Exception:
                         pass
                     if _pay_usd:
@@ -8635,13 +8669,21 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 if card:
                     print(f"  {G}💳 Карта по порядку: {card.get('nickname') or card.get('name') or _mask_card(card.get('number',''))}{RST}")
 
-                # Передаём следующие карты для TG-кнопок во время ожидания 3DS OTP
+                # Передаём остальные карты для TG-кнопок во время ожидания 3DS OTP
                 try:
+                    _cur_card_num = (card or {}).get("number", "")
                     _3ds_card_options[:] = [
                         {"pos": _p, "card": _c}
                         for _p, (_, _c) in enumerate(_ordered_pay)
                         if _p != _cur_pay_pos
                     ][:4]
+                    # Если в порядке карт только одна — показываем все карты из cards.json
+                    if not _3ds_card_options:
+                        _3ds_card_options[:] = [
+                            {"pos": _pi, "card": _pc}
+                            for _pi, _pc in enumerate(_cards_av)
+                            if _pc.get("number", "") != _cur_card_num
+                        ][:4]
                     _switch_card_ev.clear()
                     _switch_card_choice[0] = -1
                 except Exception:
@@ -8666,11 +8708,18 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     print(f"  {G}💳 Смена карты → {_nm}{RST}")
                     _tg_send_direct(f"🔄 *Смена карты:* {_nm}")
                     try:
+                        _cur_card_num2 = card.get("number", "")
                         _3ds_card_options[:] = [
                             {"pos": _p, "card": _c}
                             for _p, (_, _c) in enumerate(_ordered_pay)
-                            if _p > _cur_pay_pos
-                        ][:3]
+                            if _p != _cur_pay_pos
+                        ][:4]
+                        if not _3ds_card_options:
+                            _3ds_card_options[:] = [
+                                {"pos": _pi, "card": _pc}
+                                for _pi, _pc in enumerate(_cards_av)
+                                if _pc.get("number", "") != _cur_card_num2
+                            ][:4]
                         _switch_card_ev.clear()
                         _switch_card_choice[0] = -1
                     except Exception:
