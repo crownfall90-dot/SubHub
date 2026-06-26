@@ -5039,12 +5039,26 @@ async def _handle_3ds_verification(page) -> bool:
         (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text("[]", encoding="utf-8")
     except Exception:
         pass
-    # Уведомляем пользователя что код отправлен банком
+    # Уведомляем пользователя что код отправлен банком (с кнопками смены карты)
     try:
-        _tg_send_direct(
-            "📲 *Код подтверждения отправлен на карту*\n\n"
-            "Перешлите код сюда — бот введёт его автоматически."
-        )
+        _otp_notify_rows = []
+        for _opt in _3ds_card_options[:3]:
+            _sw_nm = (_opt["card"].get("nickname")
+                      or _mask_card(_opt["card"].get("number", "")))
+            _otp_notify_rows.append([{"text": f"💳 {_sw_nm}",
+                                      "callback_data": f"pay:switch:{_opt['pos']}"}])
+        if _otp_notify_rows:
+            _tg_send_direct_kb(
+                "📲 *Код подтверждения отправлен на карту*\n\n"
+                "Перешлите код сюда — бот введёт его автоматически.\n\n"
+                "_Или выберите другую карту:_",
+                {"inline_keyboard": _otp_notify_rows},
+            )
+        else:
+            _tg_send_direct(
+                "📲 *Код подтверждения отправлен на карту*\n\n"
+                "Перешлите код сюда — бот введёт его автоматически."
+            )
     except Exception:
         pass
 
@@ -5119,25 +5133,6 @@ async def _handle_3ds_verification(page) -> bool:
             print(f"  {Y}  3DS OTP: введи код в браузере и нажми SUBMIT.  {RST}")
             print(f"  {Y}══════════════════════════════════════════════════{RST}")
             print()
-            # Уведомление в TG с кнопками смены карты
-            try:
-                if _3ds_card_options:
-                    _sw_rows = []
-                    for _opt in _3ds_card_options[:3]:
-                        _sw_nm = (_opt["card"].get("nickname")
-                                  or _mask_card(_opt["card"].get("number", "")))
-                        _sw_rows.append([{"text": f"💳 {_sw_nm}",
-                                          "callback_data": f"pay:switch:{_opt['pos']}"}])
-                    _tg_send_direct_kb(
-                        "📨 *Ждём OTP-код*\n\n"
-                        "Отправьте код сюда, когда получите его.\n\n"
-                        "_Или выберите другую карту:_",
-                        {"inline_keyboard": _sw_rows},
-                    )
-                else:
-                    _tg_send_direct("📨 *Ждём OTP-код* — отправьте его сюда")
-            except Exception:
-                pass
             _otp_tgt = asyncio.get_event_loop().time() + 900  # 15 мин
             import re as _re3d
             import json as _json3d
