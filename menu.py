@@ -5044,6 +5044,7 @@ async def _handle_3ds_verification(page) -> bool:
         _otp_notify_rows = []
         for _opt in _3ds_card_options[:3]:
             _sw_nm = (_opt["card"].get("nickname")
+                      or _opt["card"].get("name")
                       or _mask_card(_opt["card"].get("number", "")))
             _otp_notify_rows.append([{"text": f"💳 {_sw_nm}",
                                       "callback_data": f"pay:switch:{_opt['pos']}"}])
@@ -8476,7 +8477,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 if card is None and _ordered_pay:
                     card = _ordered_pay[0][1]
                 if card:
-                    print(f"  {G}💳 Карта по порядку: {card.get('nickname') or _mask_card(card.get('number',''))}{RST}")
+                    print(f"  {G}💳 Карта по порядку: {card.get('nickname') or card.get('name') or _mask_card(card.get('number',''))}{RST}")
 
                 # Передаём следующие карты для TG-кнопок во время ожидания 3DS OTP
                 try:
@@ -8505,7 +8506,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         _all_cards_exhausted = True
                         break
                     card = _ordered_pay[_cur_pay_pos][1]
-                    _nm = card.get("nickname") or _mask_card(card.get("number", ""))
+                    _nm = card.get("nickname") or card.get("name") or _mask_card(card.get("number", ""))
                     print(f"  {G}💳 Смена карты → {_nm}{RST}")
                     _tg_send_direct(f"🔄 *Смена карты:* {_nm}")
                     try:
