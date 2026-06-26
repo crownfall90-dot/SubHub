@@ -8623,7 +8623,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     _3ds_card_options[:] = [
                         {"pos": _p, "card": _c}
                         for _p, (_, _c) in enumerate(_ordered_pay)
-                        if _p > _cur_pay_pos
+                        if _p != _cur_pay_pos
                     ][:3]
                     _switch_card_ev.clear()
                     _switch_card_choice[0] = -1
