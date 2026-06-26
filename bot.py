@@ -875,24 +875,26 @@ def _menu_tg_bot_thread() -> None:
         _usd_cache   = [0.0, 0.0]  # [rate_rub_per_usd, timestamp]
 
         def _get_usd_rate() -> float:
-            """Возвращает курс USD→RUB. Кешируется на 1 час."""
+            """Курс USD→RUB по данным ЦБ РФ. Кешируется на 1 час."""
             import time as _t
             if _usd_cache[0] > 0 and _t.time() - _usd_cache[1] < 3600:
                 return _usd_cache[0]
             try:
-                import urllib.request as _ur, json as _jj
-                with _ur.urlopen(
-                    _ur.Request("https://open.er-api.com/v6/latest/USD",
-                                headers={"User-Agent": "Mozilla/5.0"}),
-                    timeout=5
-                ) as _resp:
-                    _data = _jj.loads(_resp.read())
-                rate = float(_data["rates"]["RUB"])
-                _usd_cache[0] = rate
-                _usd_cache[1] = _t.time()
-                return rate
+                import urllib.request as _ur, xml.etree.ElementTree as _ET
+                with _ur.urlopen("https://www.cbr.ru/scripts/XML_daily.asp", timeout=6) as _resp:
+                    _tree = _ET.fromstring(_resp.read())
+                for _v in _tree.findall("Valute"):
+                    if (_v.find("CharCode") is not None
+                            and _v.find("CharCode").text == "USD"):
+                        _val = float(_v.find("Value").text.replace(",", "."))
+                        _nom = int(_v.find("Nominal").text)
+                        rate = _val / _nom
+                        _usd_cache[0] = rate
+                        _usd_cache[1] = _t.time()
+                        return rate
             except Exception:
-                return _usd_cache[0] if _usd_cache[0] > 0 else 0.0
+                pass
+            return _usd_cache[0] if _usd_cache[0] > 0 else 0.0
 
         def _rub_fmt(amount: float) -> str:
             """₽1 234  (≈ $15)"""
