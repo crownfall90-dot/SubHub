@@ -210,6 +210,7 @@ def _menu_tg_bot_thread() -> None:
         _notify  = [set()]  # chat_ids для уведомления о завершении
         _ctrl    = [{}]     # {"chat_id": int, "msg_id": int} — живое сообщение
         _bg_ops: dict = {}  # phone → "running"
+        _pending_issued_archive: dict = {}  # cid → [phone, ...] — ожидают архивации после проверки
         _ggsel_cli      = [None]  # GGSell client (ленивая инициализация)
         _ggsel_orders: dict = {}  # {invoice_id: item из notify_queue}
         _ggsel_confirm: dict = {} # {invoice_id: link} — ждёт подтверждения от пользователя
@@ -539,6 +540,8 @@ def _menu_tg_bot_thread() -> None:
                     rows.append([{"text": label, "callback_data": f"profile:menu:{ph}:{list_type}"}])
                 if list_type == "noaddr" and pairs:
                     rows.append([{"text": "⚡ Заполнить все", "callback_data": "profiles:fill_all"}])
+                if list_type == "active" and pairs:
+                    rows.append([{"text": "🔍 Проверить все", "callback_data": "profiles:check_issued_all"}])
                 rows.append([{"text": "◀️ Назад", "callback_data": "go:profiles"}])
             except Exception:
                 rows = [[{"text": "◀️ Назад", "callback_data": "go:profiles"}]]
@@ -1057,8 +1060,10 @@ def _menu_tg_bot_thread() -> None:
                         ]})
                 else:
                     msgs = {
-                        "explore_now":  f"✅ <b>{phone}</b> — Explore Now",
-                        "not_logged_in":f"🔒 <b>{phone}</b> — не авторизован",
+                        "explore_now":   f"✅ <b>{phone}</b> — Explore Now",
+                        "not_logged_in": f"🔒 <b>{phone}</b> — не авторизован",
+                        "access_denied": f"🌐 <b>{phone}</b> — нет доступа\n<i>Проверьте подключение к интернету / VPN</i>",
+                        "unknown":       f"❓ <b>{phone}</b> — нет ответа от Flipkart\n<i>Проверьте подключение к интернету / VPN</i>",
                     }
                     await _send(cid, msgs.get(st,
                         f"❓ <b>{phone}</b> — {st}" + (f"\n{err_safe}" if err_safe else "")),
@@ -1073,6 +1078,66 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, f"❌ Ошибка проверки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
+
+        async def _bg_check_issued_all(cid):
+            """Проверяет активацию Black по всем Выданным профилям.
+            Активированные — предлагает перенести в архив.
+            Неактивированные — обновляет короткую ссылку в профиле."""
+            _, _, _, active = _get_profile_categories()
+            if not active:
+                await _send(cid, "🔵 _Выданных профилей нет_")
+                return
+            await _send(cid, f"🔍 *Проверяю {len(active)} выданных профилей...*\n_Это займёт время._")
+
+            activated_phones = []
+            link_updated = 0
+            no_link = 0
+            no_access = 0
+            errors = 0
+
+            for ph, pp, _ in active:
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(None, lambda pp=pp, ph=ph: asyncio.run(
+                        _m("_check_black_store_activation")(pp, username=ph, headless=True)))
+                    _save_activation_result(pp, result)
+                    st = result.get("status", "?") if isinstance(result, dict) else "?"
+
+                    if st == "activated":
+                        activated_phones.append(ph)
+                    elif st in ("unknown", "access_denied"):
+                        no_access += 1
+                    else:
+                        # Не активирован — проверяем, обновилась ли ссылка
+                        new_link = (result.get("short_link") or result.get("activation_url") or "") \
+                                   if isinstance(result, dict) else ""
+                        if new_link:
+                            link_updated += 1
+                        else:
+                            no_link += 1
+                except Exception:
+                    errors += 1
+
+            # Итог
+            lines = [
+                f"✅ *Проверка выданных завершена* ({len(active)} шт.)",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                f"✨ Активированы покупателем: *{len(activated_phones)}*",
+                f"🔗 Ссылка обновлена: *{link_updated}*",
+                f"⏳ Ещё не активированы: *{no_link}*",
+            ]
+            if no_access:
+                lines.append(f"🌐 Нет доступа к Flipkart: *{no_access}* _(проверьте интернет / VPN)_")
+            if errors:
+                lines.append(f"❓ Ошибки: *{errors}*")
+
+            kb_rows = []
+            if activated_phones:
+                _pending_issued_archive[cid] = activated_phones
+                kb_rows.append([{"text": f"📦 Перенести {len(activated_phones)} активированных в архив",
+                                  "callback_data": "profiles:archive_issued_all"}])
+            kb_rows.append([{"text": "◀️ К выданным", "callback_data": "profiles:list:active"}])
+            await _send(cid, "\n".join(lines), reply_markup={"inline_keyboard": kb_rows})
 
         async def _bg_refresh_link(cid, phone):
             """Проверяет активацию Black и обновляет короткую ссылку в профиле."""
@@ -2155,6 +2220,40 @@ def _menu_tg_bot_thread() -> None:
             if data == "profiles:fill_all":
                 await _ack(qid, "⏳ Запускаю заполнение всех доступных...")
                 asyncio.create_task(_bg_fill_all(cid))
+                return
+
+            if data == "profiles:check_issued_all":
+                await _ack(qid, "🔍 Проверяю все выданные...")
+                asyncio.create_task(_bg_check_issued_all(cid))
+                return
+
+            if data == "profiles:archive_issued_all":
+                phones = _pending_issued_archive.pop(cid, [])
+                if not phones:
+                    await _ack(qid, "⚠️ Нет профилей для архивации", alert=True)
+                    return
+                await _ack(qid, f"⏳ Архивирую {len(phones)} профилей...")
+                loop = asyncio.get_running_loop()
+                ok_cnt = fail_cnt = 0
+                for _ph in phones:
+                    _pp = _find_profile(_ph)
+                    if not _pp:
+                        fail_cnt += 1
+                        continue
+                    try:
+                        _arch_ok = await loop.run_in_executor(None, lambda pp=_pp: _m("_archive_profile")(pp))
+                        if _arch_ok:
+                            ok_cnt += 1
+                        else:
+                            fail_cnt += 1
+                    except Exception:
+                        fail_cnt += 1
+                lines = [f"📦 *Архивация завершена*", f"✅ Перенесено: *{ok_cnt}*"]
+                if fail_cnt:
+                    lines.append(f"❌ Ошибки: *{fail_cnt}*")
+                await _send(cid, "\n".join(lines),
+                            reply_markup={"inline_keyboard": [
+                                [{"text": "◀️ К выданным", "callback_data": "profiles:list:active"}]]})
                 return
 
             if data == "profiles:archive":
