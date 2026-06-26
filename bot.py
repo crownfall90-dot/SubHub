@@ -1030,6 +1030,18 @@ def _menu_tg_bot_thread() -> None:
             c3s  = _usd_disp(c3)  if isinstance(c3,  (int, float)) else str(c3)
             c12s = _usd_disp(c12) if isinstance(c12, (int, float)) else str(c12)
 
+            _rate     = _get_usd_rate()
+            _fp_rate  = _funpay_rate_cache[0]
+            _man_rate = float(scfg.get("usd_rate", 0) or 0)
+            if _man_rate > 0:
+                _rate_src = f"₽{_man_rate:,.2f} (ручной)"
+            elif _fp_rate > 0:
+                _rate_src = f"₽{_fp_rate:,.3f} (Funpay)"
+            elif _rate > 0:
+                _rate_src = f"₽{_rate:,.2f} (ЦБ РФ)"
+            else:
+                _rate_src = "не получен"
+
             lines = [
                 f"📊 *Продажи — {label}*",
                 "━━━━━━━━━━━━━━━━━━━━━━", "",
@@ -1041,6 +1053,7 @@ def _menu_tg_bot_thread() -> None:
                 "⚙️ *Себестоимость (настройки):*",
                 f"▸ 3 месяца: *{c3s}*",
                 f"▸ 12 месяцев: *{c12s}*",
+                f"▸ Курс $1 = *{_rate_src}*",
             ]
             return "\n".join(lines)
 
