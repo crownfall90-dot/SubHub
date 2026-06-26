@@ -5808,8 +5808,13 @@ async def _send_cookies_tg(ctx, profile_name: str, phone: str = "") -> None:
             return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         safe_json = escape_html(cookies_json_compact)
-        MAX_CHUNK = 4000
-        json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
+        header_base = f"Куки {label_phone} ({len(cookies_out)} шт.)"
+        # Telegram limit 4096; вычитаем header + теги <pre><code>...</code></pre>
+        _TAGS = len(f"{header_base}\n<pre><code class=\"language-json\"></code></pre>")
+        _TG_MAX = 4096 - _TAGS - 10  # запас 10 символов
+        text_msg = None
+        if len(safe_json) <= _TG_MAX:
+            text_msg = f"{header_base}\n<pre><code class=\"language-json\">{safe_json}</code></pre>"
 
         import httpx as _hx
         async with _hx.AsyncClient(timeout=15, trust_env=False) as _s:
@@ -5821,15 +5826,11 @@ async def _send_cookies_tg(ctx, profile_name: str, phone: str = "") -> None:
                         data={"chat_id": str(cid), "caption": caption, "parse_mode": "HTML"},
                         files={"document": (fname, io.BytesIO(cookies_json.encode("utf-8")), "application/json")})
 
-                    # 2. Отправка JSON кук текстом
-                    for i, chunk in enumerate(json_chunks):
-                        header = f"Куки {label_phone} ({len(cookies_out)} шт.)"
-                        if len(json_chunks) > 1:
-                            header += f" (часть {i+1}/{len(json_chunks)})"
-                        msg = f"{header}\n<pre><code class=\"language-json\">{chunk}</code></pre>"
+                    # 2. Текст — только если влезает в одно сообщение
+                    if text_msg:
                         await _s.post(f"{api}/sendMessage",
-                                      json={"chat_id": cid, "text": msg, "parse_mode": "HTML"})
-                    print(f"  TG cookies [{cid}]: файл + компактный JSON ({len(cookies_out)} кук)")
+                                      json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
+                    print(f"  TG cookies [{cid}]: файл + {'JSON текст' if text_msg else 'только файл (JSON слишком велик)'} ({len(cookies_out)} кук)")
                 except Exception as _ce:
                     print(f"  TG cookies [{cid}]: {_ce}")
     except Exception as _e:
