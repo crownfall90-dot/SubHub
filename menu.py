@@ -5098,8 +5098,9 @@ async def _handle_3ds_verification(page) -> bool:
                 "📲 *Код подтверждения отправлен на карту*\n\n"
                 "Перешлите код сюда — бот введёт его автоматически."
             )
-    except Exception:
-        pass
+        print("  3DS: уведомление TG отправлено")
+    except Exception as _otp_ntf_err:
+        print(f"  {R}3DS: ошибка отправки уведомления TG: {_otp_ntf_err}{RST}")
 
     # Ждём поле ввода OTP — ищем во всех фреймах (может быть в cross-origin iframe)
     otp_inp = None
@@ -8942,12 +8943,10 @@ def _notify_tg_update(commits: list[str]) -> None:
 def _tg_send_direct(text: str) -> None:
     """Шлёт сообщение всем подписчикам напрямую через urllib (без бота)."""
     try:
-        import yaml as _y2, urllib.request as _ur2, urllib.parse as _up2
-        _cfg_p = Path(__file__).parent / "config.yaml"
-        if not _cfg_p.exists() or not TG_SUBSCRIBERS_FILE.exists():
+        import urllib.request as _ur2, urllib.parse as _up2
+        if not TG_SUBSCRIBERS_FILE.exists():
             return
-        _tok = ((_y2.safe_load(_cfg_p.read_text(encoding="utf-8")) or {})
-                .get("telegram") or {}).get("token", "").strip()
+        _tok = _get_telegram_token()
         _subs = (json.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8")) or {}).get("chats", [])
         if not _tok or not _subs:
             return
@@ -8967,12 +8966,10 @@ def _tg_send_direct(text: str) -> None:
 def _tg_send_direct_kb(text: str, keyboard: dict) -> None:
     """Шлёт сообщение с inline keyboard всем подписчикам напрямую через urllib."""
     try:
-        import yaml as _y3, urllib.request as _ur3, urllib.parse as _up3, json as _jk
-        _cfg_p = Path(__file__).parent / "config.yaml"
-        if not _cfg_p.exists() or not TG_SUBSCRIBERS_FILE.exists():
+        import urllib.request as _ur3, urllib.parse as _up3
+        if not TG_SUBSCRIBERS_FILE.exists():
             return
-        _tok = ((_y3.safe_load(_cfg_p.read_text(encoding="utf-8")) or {})
-                .get("telegram") or {}).get("token", "").strip()
+        _tok = _get_telegram_token()
         _subs = (json.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8")) or {}).get("chats", [])
         if not _tok or not _subs:
             return
@@ -8984,7 +8981,7 @@ def _tg_send_direct_kb(text: str, keyboard: dict) -> None:
                     "chat_id": _cid,
                     "text": text,
                     "parse_mode": "Markdown",
-                    "reply_markup": _jk.dumps(keyboard),
+                    "reply_markup": json.dumps(keyboard),
                 }).encode()
                 _op3.open(_ur3.Request(f"{_api}/sendMessage", data=_payload), timeout=8)
             except Exception:
