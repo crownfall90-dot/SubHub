@@ -581,7 +581,7 @@ def _menu_tg_bot_thread() -> None:
             if is_issued:
                 # Выданные
                 rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
-                rows.append([{"text": "🟢 Выдан", "callback_data": "noop"}])
+                rows.append([{"text": "🔵 Выдан", "callback_data": "noop"}])
                 if _bound_inv:
                     rows.append([{"text": f"📋 Перейти к заказу #{_bound_inv}",
                                   "callback_data": f"ggsell:order:{_bound_inv}"}])
