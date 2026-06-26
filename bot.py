@@ -1539,7 +1539,8 @@ def _menu_tg_bot_thread() -> None:
                 _hdr = f"Куки {phone} ({len(cookies_out)} шт.)"
                 _tags_len = len(f"{_hdr}\n<pre><code class=\"language-json\"></code></pre>")
                 _tg_max = 4096 - _tags_len - 10
-                text_msg = f"{_hdr}\n<pre><code class=\"language-json\">{safe_json}</code></pre>" if len(safe_json) <= _tg_max else None
+                _body = safe_json if len(safe_json) <= _tg_max else safe_json[:_tg_max]
+                text_msg = f"{_hdr}\n<pre><code class=\"language-json\">{_body}</code></pre>"
 
                 import io
                 # 1. Отправка файла
@@ -1550,10 +1551,9 @@ def _menu_tg_bot_thread() -> None:
                 except Exception as fe:
                     await _send(cid, f"❌ Ошибка отправки файла кук: {fe}")
 
-                # 2. Текст — только если влезает в одно сообщение
-                if text_msg:
-                    await client.post(f"{api}/sendMessage",
-                                      json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
+                # 2. Текст одним сообщением (обрезается если длиннее лимита TG)
+                await client.post(f"{api}/sendMessage",
+                                  json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
             except Exception as e:
                 def escape_html(t: str) -> str:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1591,7 +1591,8 @@ def _menu_tg_bot_thread() -> None:
                 _hdr = f"Куки {phone} ({len(cookies_out)} шт.)"
                 _tags_len = len(f"{_hdr}\n<pre><code class=\"language-json\"></code></pre>")
                 _tg_max = 4096 - _tags_len - 10
-                text_msg = f"{_hdr}\n<pre><code class=\"language-json\">{safe_json}</code></pre>" if len(safe_json) <= _tg_max else None
+                _body = safe_json if len(safe_json) <= _tg_max else safe_json[:_tg_max]
+                text_msg = f"{_hdr}\n<pre><code class=\"language-json\">{_body}</code></pre>"
 
                 import io
                 # 1. Отправка файла
@@ -1602,10 +1603,9 @@ def _menu_tg_bot_thread() -> None:
                 except Exception as fe:
                     await _send(cid, f"❌ Ошибка отправки файла кук: {fe}")
 
-                # 2. Текст — только если влезает в одно сообщение
-                if text_msg:
-                    await client.post(f"{api}/sendMessage",
-                                      json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
+                # 2. Текст одним сообщением (обрезается если длиннее лимита TG)
+                await client.post(f"{api}/sendMessage",
+                                  json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
             except Exception as e:
                 def escape_html(t: str) -> str:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

