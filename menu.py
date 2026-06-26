@@ -4452,13 +4452,48 @@ async def _handle_paytm_currency_page(page) -> bool:
             await page.wait_for_timeout(2_000)
 
         if not pay_clicked:
-            print(f"  {Y}⚠ Кнопка Pay INR не найдена после всех попыток{RST}")
+            print(f"  {Y}⚠ Кнопка Pay INR не найдена — ищу любую Pay-кнопку (SGD/USD/др.)...{RST}")
             try:
                 await page.screenshot(path="debug/debug_pay_notfound.png")
                 print("  Скриншот: debug_pay_notfound.png")
             except Exception:
                 pass
-            return False
+            # Fallback: кликаем на единственную/первую видимую кнопку Pay на странице
+            _fallback_clicked = False
+            for _fr3 in [page.main_frame] + list(page.frames):
+                if _fallback_clicked:
+                    break
+                try:
+                    _all_fb = _fr3.locator("button, [role='button'], a")
+                    _fb_cnt = await _all_fb.count()
+                    for _fi in range(_fb_cnt):
+                        try:
+                            _fb = _all_fb.nth(_fi)
+                            _ft = (await _fb.inner_text()).strip().lower()
+                            if not _ft.startswith("pay"):
+                                continue
+                            if any(x in _ft for x in ("apple", "google")):
+                                continue
+                            _fbb = await _fb.bounding_box()
+                            if not _fbb or _fbb["width"] < 40 or _fbb["height"] < 12:
+                                continue
+                            print(f"  Fallback Pay-кнопка: {_ft[:50]!r}")
+                            await _fb.scroll_into_view_if_needed()
+                            await page.wait_for_timeout(300)
+                            await page.mouse.click(
+                                _fbb["x"] + _fbb["width"] / 2,
+                                _fbb["y"] + _fbb["height"] / 2
+                            )
+                            _fallback_clicked = True
+                            pay_clicked = True
+                            await page.wait_for_timeout(2_000)
+                            break
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+            if not pay_clicked:
+                return False
 
         # Шаг 3: ждём навигации после клика Pay INR (до 3 сек)
         try:
@@ -5618,7 +5653,7 @@ async def _send_cookies_tg(ctx, profile_name: str, phone: str = "") -> None:
             return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         safe_json = escape_html(cookies_json_compact)
-        MAX_CHUNK = 3800
+        MAX_CHUNK = 4000
         json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
 
         import httpx as _hx

@@ -597,7 +597,7 @@ async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = ""
             return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         safe_json = escape_html(cookies_json_compact)
-        MAX_CHUNK = 3800
+        MAX_CHUNK = 4000
         json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
 
         async with _hx.AsyncClient(timeout=15, trust_env=False) as _client:
