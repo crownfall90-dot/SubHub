@@ -5961,8 +5961,15 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
             print(f"  {Y}⚠ JS-клик ошибка: {_je}{RST}")
         return None
 
+    import time as _time_act
     activation_url = ""
-    for attempt in range(15):
+    _act_start = _time_act.time()
+    _act_timeout = 90  # секунд
+    while True:
+        _elapsed = int(_time_act.time() - _act_start)
+        if _elapsed >= _act_timeout:
+            break
+
         # Скролл для загрузки lazy-элементов
         for _sp in [0.3, 0.6, 1.0, 0.0]:
             try:
@@ -5987,7 +5994,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
             if "black-youtube-premium-benefit-faq-store" in _hp:
                 result["paid"] = True
                 result["button_seen"] = "Explore Now"
-                print(f"  «Explore Now» — обновляю страницу ({attempt+1}/15)...")
+                print(f"  «Explore Now» — обновляю страницу ({_elapsed} сек)...")
                 try:
                     await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
                 except Exception:
@@ -5997,12 +6004,12 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
         except Exception:
             pass
 
-        print(f"  Ожидание кнопки Activate Now... ({attempt+1}/15)")
+        print(f"  Ожидание кнопки Activate Now... ({_elapsed} сек / {_act_timeout} сек)")
         try:
             await black_page.reload(wait_until="domcontentloaded", timeout=15_000)
         except Exception:
             pass
-        await black_page.wait_for_timeout(2_000)
+        await black_page.wait_for_timeout(5_000)
 
     # ── 4. Сокращаем через clck.ru ────────────────────────────────────────────
     short_link = activation_url
