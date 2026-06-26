@@ -4292,11 +4292,108 @@ async def _handle_paytm_currency_page(page) -> bool:
             except Exception:
                 pass
 
+        # ── Change Currency → USD flow ────────────────────────────────────────
+        # Если на странице есть кнопка "Change Currency" — кликаем её,
+        # выбираем USD из списка и нажимаем Pay. Этот флоу полностью заменяет INR-путь.
+        pay_clicked = False
+        for _fr_cc in [page.main_frame] + list(page.frames):
+            if pay_clicked:
+                break
+            try:
+                _cc_btn = await _fr_cc.evaluate("""() => {
+                    for (const el of document.querySelectorAll('*')) {
+                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (!t.includes('change currency') && !t.includes('change curr')) continue;
+                        if (t.length > 60) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 20 || r.height < 8) continue;
+                        const s = window.getComputedStyle(el);
+                        if (s.display === 'none' || s.visibility === 'hidden') continue;
+                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                    }
+                    return null;
+                }""")
+                if not _cc_btn:
+                    continue
+                print(f"  Найдена 'Change Currency' — кликаю...")
+                await page.mouse.click(_cc_btn["x"], _cc_btn["y"])
+                await page.wait_for_timeout(1_500)
+                # Ищем USD в раскрывшемся списке
+                _usd_item = None
+                for _fr_usd in [page.main_frame] + list(page.frames):
+                    try:
+                        _usd_item = await _fr_usd.evaluate("""() => {
+                            for (const el of document.querySelectorAll('*')) {
+                                const t = (el.innerText || el.textContent || '').trim();
+                                const tl = t.toLowerCase();
+                                if (!tl.includes('usd') && !tl.includes('us dollar')
+                                        && !tl.includes('united states')) continue;
+                                if (t.length > 80) continue;
+                                const r = el.getBoundingClientRect();
+                                if (r.width < 20 || r.height < 8) continue;
+                                const s = window.getComputedStyle(el);
+                                if (s.display === 'none' || s.visibility === 'hidden') continue;
+                                try { el.click(); } catch(e) {}
+                                return {x: r.x + r.width/2, y: r.y + r.height/2, txt: t.substring(0,40)};
+                            }
+                            return null;
+                        }""")
+                    except Exception:
+                        pass
+                    if _usd_item:
+                        break
+                if _usd_item:
+                    print(f"  Выбираю USD: {_usd_item.get('txt','')!r}")
+                    await page.mouse.click(_usd_item["x"], _usd_item["y"])
+                    await page.wait_for_timeout(1_500)
+                else:
+                    print(f"  {Y}USD не найден в списке валют{RST}")
+                    break
+                # Ищем кнопку Pay (в USD)
+                _pay_usd = None
+                for _fr_pu in [page.main_frame] + list(page.frames):
+                    try:
+                        _pay_usd = await _fr_pu.evaluate("""() => {
+                            for (const el of document.querySelectorAll('*')) {
+                                const raw = (el.innerText || '').trim();
+                                if (!raw) continue;
+                                const lines = raw.split('\\n').slice(0,4)
+                                    .map(l=>l.trim()).filter(l=>l);
+                                const t = lines.join(' ').toLowerCase();
+                                if (!t.startsWith('pay')) continue;
+                                if (t.includes('apple') || t.includes('google')
+                                        || t.includes('change')) continue;
+                                const r = el.getBoundingClientRect();
+                                if (r.width < 40 || r.height < 12) continue;
+                                const s = window.getComputedStyle(el);
+                                if (s.display === 'none' || s.visibility === 'hidden') continue;
+                                return {x: r.x+r.width/2, y: r.y+r.height/2,
+                                        txt: lines.join(' ').substring(0,60)};
+                            }
+                            return null;
+                        }""")
+                    except Exception:
+                        pass
+                    if _pay_usd:
+                        break
+                if _pay_usd:
+                    print(f"  Нажимаю Pay USD: {_pay_usd.get('txt','')!r}")
+                    await page.mouse.click(_pay_usd["x"], _pay_usd["y"])
+                    pay_clicked = True
+                    await page.wait_for_timeout(2_000)
+                else:
+                    print(f"  {Y}Кнопка Pay не найдена после выбора USD{RST}")
+                break  # нашли Change Currency — больше фреймы не перебираем
+            except Exception:
+                continue
+
+        if pay_clicked:
+            break  # переходим к ожиданию 3DS / результата
+
         # Стратегия (frame-aware):
         # 1) СНАЧАЛА выбираем INDIAN RUPEE радио/строку (Paytm/PayU/PayGlocal)
         #    — ищем во всех фреймах через Playwright locators
         # 2) ПОТОМ кликаем Pay INR кнопку — тоже во всех фреймах
-        pay_clicked = False
         for attempt in range(3):
             # A: выбираем INDIAN RUPEE — ищем радио ИЛИ строку выбора валюты во всех фреймах
             _inr_selected = False
