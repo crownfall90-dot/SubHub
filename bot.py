@@ -1477,6 +1477,9 @@ def _menu_tg_bot_thread() -> None:
                     return
 
                 def _export():
+                    import grizzly as _gz
+                    _gz._kill_chrome_for_profile_standalone(pp)
+                    import time as _t; _t.sleep(1)
                     from playwright.sync_api import sync_playwright
                     with sync_playwright() as pw:
                         chrome = _m("_find_chrome")()
