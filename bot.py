@@ -220,6 +220,8 @@ def _menu_tg_bot_thread() -> None:
         _pool_pick_pending: dict = {} # {cid: link}      — ссылка из пула ждёт выбора покупателя
         _ggsel_done_links: dict  = {} # {invoice_id: link} — какая ссылка была выдана
         _card_order_waiting: dict = {} # {cid: True} — ждём ввода порядка карт для основного бота
+        _sale_input_waiting: dict = {}  # {cid: {"phone": str, "plan": str}} — ждём сумму продажи
+        _sales_cost_waiting: dict = {}  # {cid: "3m"|"12m"} — ждём ввод себестоимости
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -305,7 +307,8 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🚀 Запуск",    "callback_data": "go:launch"},
                  {"text": "📁 Профили",   "callback_data": "go:profiles"},
                  {"text": "⚙️ Другое",    "callback_data": "go:other"}],
-                [{"text": "💰 GGSell",    "callback_data": "go:ggsell"}],
+                [{"text": "💰 GGSell",    "callback_data": "go:ggsell"},
+                 {"text": "📊 Продажи",  "callback_data": "go:sales"}],
                 [{"text": "🔄 Перезапустить консоль", "callback_data": "action:restart"}],
             ]
             return {"inline_keyboard": rows}
@@ -587,6 +590,7 @@ def _menu_tg_bot_thread() -> None:
                                   "callback_data": f"ggsell:order:{_bound_inv}"}])
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
+                rows.append([{"text": "💰 Записать продажу", "callback_data": f"profile:record_sale:{phone}"}])
                 rows.append([{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}])
             elif is_paid:
                 # Оплаченные — покупка не нужна, есть ссылка/активация
@@ -595,6 +599,7 @@ def _menu_tg_bot_thread() -> None:
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
                     rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
+                rows.append([{"text": "💰 Записать продажу", "callback_data": f"profile:record_sale:{phone}"}])
             else:
                 # Доступные / С данными — ссылки ещё нет, нужно купить
                 rows.append([{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
@@ -863,6 +868,93 @@ def _menu_tg_bot_thread() -> None:
             if bal is not None:
                 lines += ["", f"💰 *Баланс GrizzlySMS: `${bal:.4f}`*"]
             return "\n".join(lines)
+
+        # ── Продажи ───────────────────────────────────────────────────────────
+        _SALES_FILE  = TG_STATS_FILE.parent / "sales_stats.json"
+        _SCFG_FILE   = TG_STATS_FILE.parent / "sales_config.json"
+
+        def _load_sales() -> list:
+            try:
+                return json.loads(_SALES_FILE.read_text(encoding="utf-8")) if _SALES_FILE.exists() else []
+            except Exception:
+                return []
+
+        def _save_sales(records: list) -> None:
+            _SALES_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        def _load_scfg() -> dict:
+            try:
+                return json.loads(_SCFG_FILE.read_text(encoding="utf-8")) if _SCFG_FILE.exists() else {}
+            except Exception:
+                return {}
+
+        def _save_scfg(cfg_s: dict) -> None:
+            _SCFG_FILE.write_text(json.dumps(cfg_s, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        def _record_sale(phone: str, plan: str, sell: float) -> None:
+            import time as _t
+            scfg = _load_scfg()
+            cost = float(scfg.get(f"cost_{plan}", 0))
+            records = _load_sales()
+            records.append({"ts": _t.time(), "phone": phone, "plan": plan,
+                            "sell": sell, "cost": cost})
+            _save_sales(records)
+
+        def _sales_text(period: str = "all") -> str:
+            from datetime import datetime, timedelta
+            records = _load_sales()
+            scfg    = _load_scfg()
+            now     = datetime.now(tz=MSK)
+            if period == "today":
+                cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                label  = f"Сегодня ({now.strftime('%d %b')})"
+            elif period == "week":
+                cutoff = (now - timedelta(days=7)).timestamp()
+                label  = "За 7 дней"
+            elif period == "month":
+                cutoff = (now - timedelta(days=30)).timestamp()
+                label  = "За 30 дней"
+            else:
+                cutoff = 0
+                label  = "Всё время"
+
+            rows = [r for r in records if r.get("ts", 0) >= cutoff]
+            cnt      = len(rows)
+            revenue  = sum(r.get("sell", 0) for r in rows)
+            costs    = sum(r.get("cost", 0) for r in rows)
+            profit   = revenue - costs
+            cnt_3m   = sum(1 for r in rows if r.get("plan") == "3m")
+            cnt_12m  = sum(1 for r in rows if r.get("plan") == "12m")
+
+            c3  = scfg.get("cost_3m",  "не задана")
+            c12 = scfg.get("cost_12m", "не задана")
+            c3s  = f"₹{c3}"  if isinstance(c3,  (int, float)) else str(c3)
+            c12s = f"₹{c12}" if isinstance(c12, (int, float)) else str(c12)
+
+            lines = [
+                f"📊 *Продажи — {label}*",
+                "━━━━━━━━━━━━━━━━━━━━━━", "",
+                f"🛍 Продаж: *{cnt}*" + (f"  _(3м: {cnt_3m}, 12м: {cnt_12m})_" if cnt else ""),
+                f"💵 Выручка: *₹{revenue:,.0f}*",
+                f"💸 Себестоимость: *₹{costs:,.0f}*",
+                f"📈 Прибыль: *₹{profit:,.0f}*",
+                "",
+                "⚙️ *Себестоимость (настройки):*",
+                f"▸ 3 месяца: *{c3s}*",
+                f"▸ 12 месяцев: *{c12s}*",
+            ]
+            return "\n".join(lines)
+
+        def _sales_kb(period: str = "all") -> dict:
+            def _btn(label, p):
+                return {"text": f"● {label}" if p == period else label,
+                        "callback_data": f"sales:period:{p}"}
+            return {"inline_keyboard": [
+                [_btn("Всё время", "all"),   _btn("Сегодня", "today")],
+                [_btn("7 дней",   "week"),   _btn("30 дней", "month")],
+                [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
+                [{"text": "◀️ Назад",          "callback_data": "go:main"}],
+            ]}
 
         # ── Клавиатуры для выбора количества и режима ─────────────────────────
         def _count_kb(mode, back="go:launch"):
@@ -2050,6 +2142,87 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, f"⚠️ Короткая ссылка для <code>{phone}</code> не найдена в метаданных", parse_mode="HTML")
                 return
 
+            # ── Продажи ───────────────────────────────────────────────────────
+            if data == "go:sales":
+                await _ack(qid)
+                await _edit(cid, mid, _sales_text("all"), _sales_kb("all"))
+                return
+
+            if data.startswith("sales:period:"):
+                period = data.split(":", 2)[2]
+                await _ack(qid)
+                await _edit(cid, mid, _sales_text(period), _sales_kb(period))
+                return
+
+            if data == "sales:config":
+                await _ack(qid)
+                scfg = _load_scfg()
+                c3  = scfg.get("cost_3m",  "не задана")
+                c12 = scfg.get("cost_12m", "не задана")
+                c3s  = f"₹{c3}"  if isinstance(c3,  (int, float)) else str(c3)
+                c12s = f"₹{c12}" if isinstance(c12, (int, float)) else str(c12)
+                txt = (
+                    "⚙️ *Себестоимость*\n\n"
+                    f"▸ 3 месяца: *{c3s}*\n"
+                    f"▸ 12 месяцев: *{c12s}*\n\n"
+                    "_Нажмите кнопку для изменения:_"
+                )
+                kb = {"inline_keyboard": [
+                    [{"text": f"✏️ 3 мес ({c3s})",  "callback_data": "sales:set_cost:3m"}],
+                    [{"text": f"✏️ 12 мес ({c12s})", "callback_data": "sales:set_cost:12m"}],
+                    [{"text": "◀️ Назад", "callback_data": "go:sales"}],
+                ]}
+                await _edit(cid, mid, txt, kb)
+                return
+
+            if data.startswith("sales:set_cost:"):
+                plan = data.split(":")[-1]  # "3m" или "12m"
+                await _ack(qid)
+                _sales_cost_waiting[cid] = plan
+                label = "3 месяца" if plan == "3m" else "12 месяцев"
+                await _send(cid, f"💬 Введите себестоимость для *{label}* (в рублях):",
+                            parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
+                                                                "callback_data": "sales:config"}]]})
+                return
+
+            if data.startswith("profile:record_sale:"):
+                phone = data.split(":", 2)[2]
+                await _ack(qid)
+                scfg = _load_scfg()
+                c3  = scfg.get("cost_3m",  0)
+                c12 = scfg.get("cost_12m", 0)
+                c3s  = f"₹{c3}"  if c3  else "₹?"
+                c12s = f"₹{c12}" if c12 else "₹?"
+                txt = (
+                    f"💰 *Записать продажу*\n\n"
+                    f"Профиль: `{_disp_phone(phone)}`\n\n"
+                    "Выберите тариф:"
+                )
+                kb = {"inline_keyboard": [
+                    [{"text": f"🥈 3 месяца (себ. {c3s})",
+                      "callback_data": f"profile:sale:3m:{phone}"}],
+                    [{"text": f"🥇 12 месяцев (себ. {c12s})",
+                      "callback_data": f"profile:sale:12m:{phone}"}],
+                    [{"text": "❌ Отмена", "callback_data": f"profile:menu:{phone}:active"}],
+                ]}
+                await _send(cid, txt, parse_mode="Markdown", reply_markup=kb)
+                return
+
+            if data.startswith("profile:sale:"):
+                parts = data.split(":", 3)  # profile sale 3m/12m phone
+                plan  = parts[2]
+                phone = parts[3]
+                await _ack(qid)
+                _sale_input_waiting[cid] = {"phone": phone, "plan": plan}
+                label = "3 месяца" if plan == "3m" else "12 месяцев"
+                await _send(cid,
+                            f"💬 Введите сумму продажи для *{label}* (в рублях):",
+                            parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
+                                                                "callback_data": f"profile:menu:{phone}:active"}]]})
+                return
+
             if data.startswith("profile:archive_one:"):
                 phone = data.split(":", 2)[2]
                 pp = _find_profile(phone)
@@ -3002,6 +3175,61 @@ def _menu_tg_bot_thread() -> None:
                                             ]}})
                 except Exception as ex:
                     await client.post(f"{api}/sendMessage", json={"chat_id": cid, "text": f"❌ Ошибка: {ex}"})
+                return
+
+            # Ввод суммы продажи
+            if _sale_input_waiting.get(cid):
+                info = _sale_input_waiting.pop(cid)
+                phone = info["phone"]
+                plan  = info["plan"]
+                try:
+                    sell = float(text.replace(",", ".").replace("₹", "").strip())
+                    if sell <= 0:
+                        raise ValueError("negative")
+                    _record_sale(phone, plan, sell)
+                    scfg = _load_scfg()
+                    cost = float(scfg.get(f"cost_{plan}", 0))
+                    profit = sell - cost
+                    label = "3 мес" if plan == "3m" else "12 мес"
+                    await _send(cid,
+                        f"✅ *Продажа записана*\n\n"
+                        f"📱 Профиль: `{_disp_phone(phone)}`\n"
+                        f"📦 Тариф: *{label}*\n"
+                        f"💵 Выручка: *₹{sell:,.0f}*\n"
+                        f"💸 Себестоимость: *₹{cost:,.0f}*\n"
+                        f"📈 Прибыль: *₹{profit:,.0f}*",
+                        parse_mode="Markdown",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "📊 Продажи", "callback_data": "go:sales"}],
+                        ]})
+                except (ValueError, TypeError):
+                    await _send(cid, "❌ Некорректная сумма. Введите число (например: `800`)",
+                                parse_mode="Markdown",
+                                reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
+                                                                    "callback_data": f"profile:menu:{phone}:active"}]]})
+                return
+
+            # Ввод себестоимости
+            if _sales_cost_waiting.get(cid):
+                plan = _sales_cost_waiting.pop(cid)
+                try:
+                    cost = float(text.replace(",", ".").replace("₹", "").strip())
+                    if cost < 0:
+                        raise ValueError("negative")
+                    scfg = _load_scfg()
+                    scfg[f"cost_{plan}"] = cost
+                    _save_scfg(scfg)
+                    label = "3 месяца" if plan == "3m" else "12 месяцев"
+                    await _send(cid,
+                        f"✅ Себестоимость *{label}* сохранена: *₹{cost:,.0f}*",
+                        parse_mode="Markdown",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
+                        ]})
+                except (ValueError, TypeError):
+                    await _send(cid, "❌ Некорректная сумма. Введите число.",
+                                reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
+                                                                    "callback_data": "sales:config"}]]})
                 return
 
             is_new = cid not in subs
