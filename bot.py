@@ -872,6 +872,43 @@ def _menu_tg_bot_thread() -> None:
         # ── Продажи ───────────────────────────────────────────────────────────
         _SALES_FILE  = TG_STATS_FILE.parent / "sales_stats.json"
         _SCFG_FILE   = TG_STATS_FILE.parent / "sales_config.json"
+        _usd_cache   = [0.0, 0.0]  # [rate_rub_per_usd, timestamp]
+
+        def _get_usd_rate() -> float:
+            """Возвращает курс USD→RUB. Кешируется на 1 час."""
+            import time as _t
+            if _usd_cache[0] > 0 and _t.time() - _usd_cache[1] < 3600:
+                return _usd_cache[0]
+            try:
+                import urllib.request as _ur, json as _jj
+                with _ur.urlopen(
+                    _ur.Request("https://open.er-api.com/v6/latest/USD",
+                                headers={"User-Agent": "Mozilla/5.0"}),
+                    timeout=5
+                ) as _resp:
+                    _data = _jj.loads(_resp.read())
+                rate = float(_data["rates"]["RUB"])
+                _usd_cache[0] = rate
+                _usd_cache[1] = _t.time()
+                return rate
+            except Exception:
+                return _usd_cache[0] if _usd_cache[0] > 0 else 0.0
+
+        def _rub_fmt(amount: float) -> str:
+            """₽1 234  (≈ $15)"""
+            s = f"₽{amount:,.0f}"
+            rate = _get_usd_rate()
+            if rate > 0:
+                s += f"  _(≈ ${amount / rate:,.0f})_"
+            return s
+
+        def _rub_plain(amount: float) -> str:
+            """₽1 234 (≈ $15) без Markdown-курсива."""
+            s = f"₽{amount:,.0f}"
+            rate = _get_usd_rate()
+            if rate > 0:
+                s += f" (≈ ${amount / rate:,.0f})"
+            return s
 
         def _load_sales() -> list:
             try:
@@ -928,16 +965,16 @@ def _menu_tg_bot_thread() -> None:
 
             c3  = scfg.get("cost_3m",  "не задана")
             c12 = scfg.get("cost_12m", "не задана")
-            c3s  = f"₹{c3}"  if isinstance(c3,  (int, float)) else str(c3)
-            c12s = f"₹{c12}" if isinstance(c12, (int, float)) else str(c12)
+            c3s  = _rub_plain(c3)  if isinstance(c3,  (int, float)) else str(c3)
+            c12s = _rub_plain(c12) if isinstance(c12, (int, float)) else str(c12)
 
             lines = [
                 f"📊 *Продажи — {label}*",
                 "━━━━━━━━━━━━━━━━━━━━━━", "",
                 f"🛍 Продаж: *{cnt}*" + (f"  _(3м: {cnt_3m}, 12м: {cnt_12m})_" if cnt else ""),
-                f"💵 Выручка: *₹{revenue:,.0f}*",
-                f"💸 Себестоимость: *₹{costs:,.0f}*",
-                f"📈 Прибыль: *₹{profit:,.0f}*",
+                f"💵 Выручка: *{_rub_plain(revenue)}*",
+                f"💸 Себестоимость: *{_rub_plain(costs)}*",
+                f"📈 Прибыль: *{_rub_plain(profit)}*",
                 "",
                 "⚙️ *Себестоимость (настройки):*",
                 f"▸ 3 месяца: *{c3s}*",
@@ -2159,8 +2196,8 @@ def _menu_tg_bot_thread() -> None:
                 scfg = _load_scfg()
                 c3  = scfg.get("cost_3m",  "не задана")
                 c12 = scfg.get("cost_12m", "не задана")
-                c3s  = f"₹{c3}"  if isinstance(c3,  (int, float)) else str(c3)
-                c12s = f"₹{c12}" if isinstance(c12, (int, float)) else str(c12)
+                c3s  = _rub_plain(c3)  if isinstance(c3,  (int, float)) else str(c3)
+                c12s = _rub_plain(c12) if isinstance(c12, (int, float)) else str(c12)
                 txt = (
                     "⚙️ *Себестоимость*\n\n"
                     f"▸ 3 месяца: *{c3s}*\n"
@@ -2192,8 +2229,8 @@ def _menu_tg_bot_thread() -> None:
                 scfg = _load_scfg()
                 c3  = scfg.get("cost_3m",  0)
                 c12 = scfg.get("cost_12m", 0)
-                c3s  = f"₹{c3}"  if c3  else "₹?"
-                c12s = f"₹{c12}" if c12 else "₹?"
+                c3s  = _rub_plain(c3)  if c3  else "₽?"
+                c12s = _rub_plain(c12) if c12 else "₽?"
                 txt = (
                     f"💰 *Записать продажу*\n\n"
                     f"Профиль: `{_disp_phone(phone)}`\n\n"
@@ -3195,9 +3232,9 @@ def _menu_tg_bot_thread() -> None:
                         f"✅ *Продажа записана*\n\n"
                         f"📱 Профиль: `{_disp_phone(phone)}`\n"
                         f"📦 Тариф: *{label}*\n"
-                        f"💵 Выручка: *₹{sell:,.0f}*\n"
-                        f"💸 Себестоимость: *₹{cost:,.0f}*\n"
-                        f"📈 Прибыль: *₹{profit:,.0f}*",
+                        f"💵 Выручка: *{_rub_plain(sell)}*\n"
+                        f"💸 Себестоимость: *{_rub_plain(cost)}*\n"
+                        f"📈 Прибыль: *{_rub_plain(profit)}*",
                         parse_mode="Markdown",
                         reply_markup={"inline_keyboard": [
                             [{"text": "📊 Продажи", "callback_data": "go:sales"}],
@@ -3221,7 +3258,7 @@ def _menu_tg_bot_thread() -> None:
                     _save_scfg(scfg)
                     label = "3 месяца" if plan == "3m" else "12 месяцев"
                     await _send(cid,
-                        f"✅ Себестоимость *{label}* сохранена: *₹{cost:,.0f}*",
+                        f"✅ Себестоимость *{label}* сохранена: *{_rub_plain(cost)}*",
                         parse_mode="Markdown",
                         reply_markup={"inline_keyboard": [
                             [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
