@@ -4321,23 +4321,38 @@ async def _handle_paytm_currency_page(page) -> bool:
                 print(f"  Найдена '{_cc_btn.get('txt','Change Currency')}' — кликаю...")
                 await page.mouse.click(_cc_btn["x"], _cc_btn["y"])
                 await page.wait_for_timeout(1_500)
-                # Ищем USD в раскрывшемся списке
+                # Ищем USD в раскрывшемся списке валют
+                # Ищем строку-элемент (li, div, tr) с текстом USD, высота < 100px
                 _usd_item = None
                 for _fr_usd in [page.main_frame] + list(page.frames):
                     try:
                         _usd_item = await _fr_usd.evaluate("""() => {
-                            for (const el of document.querySelectorAll('*')) {
+                            // Приоритет: строки-элементы списка с точным "USD"
+                            const ROW_TAGS = ['li','tr','[role="option"]','[role="row"]',
+                                              '[role="listitem"]','[role="radio"]'];
+                            for (const sel of ROW_TAGS) {
+                                for (const el of document.querySelectorAll(sel)) {
+                                    const t = (el.innerText || el.textContent || '').trim();
+                                    if (!t.toUpperCase().includes('USD')) continue;
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width < 40 || r.height < 8 || r.height > 120) continue;
+                                    const s = window.getComputedStyle(el);
+                                    if (s.display === 'none' || s.visibility === 'hidden') continue;
+                                    try { el.click(); } catch(e) {}
+                                    return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
+                                }
+                            }
+                            // Fallback: любой видимый элемент с "USD" и разумным размером
+                            for (const el of document.querySelectorAll('div,span,button,a,p')) {
                                 const t = (el.innerText || el.textContent || '').trim();
-                                const tl = t.toLowerCase();
-                                if (!tl.includes('usd') && !tl.includes('us dollar')
-                                        && !tl.includes('united states')) continue;
-                                if (t.length > 80) continue;
+                                if (!t.toUpperCase().includes('USD')) continue;
+                                if (t.length > 60) continue;
                                 const r = el.getBoundingClientRect();
-                                if (r.width < 20 || r.height < 8) continue;
+                                if (r.width < 40 || r.height < 8 || r.height > 100) continue;
                                 const s = window.getComputedStyle(el);
                                 if (s.display === 'none' || s.visibility === 'hidden') continue;
                                 try { el.click(); } catch(e) {}
-                                return {x: r.x + r.width/2, y: r.y + r.height/2, txt: t.substring(0,40)};
+                                return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
                             }
                             return null;
                         }""")
@@ -5180,7 +5195,9 @@ async def _handle_3ds_verification(page) -> bool:
     # Уведомляем пользователя что код отправлен банком (с кнопками смены карты)
     try:
         _otp_notify_rows = []
-        for _opt in _3ds_card_options[:3]:
+        _opts_src = _3ds_card_options[:]
+        print(f"  3DS: _3ds_card_options = {len(_opts_src)} карт(ы)")
+        for _opt in _opts_src:
             _sw_nm = (_opt["card"].get("nickname")
                       or _opt["card"].get("name")
                       or _mask_card(_opt["card"].get("number", "")))
@@ -8623,8 +8640,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     _3ds_card_options[:] = [
                         {"pos": _p, "card": _c}
                         for _p, (_, _c) in enumerate(_ordered_pay)
-                        if _p != _cur_pay_pos
-                    ][:3]
+                    ][:4]
                     _switch_card_ev.clear()
                     _switch_card_choice[0] = -1
                 except Exception:
