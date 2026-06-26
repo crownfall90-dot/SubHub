@@ -905,19 +905,19 @@ def _menu_tg_bot_thread() -> None:
             return _usd_cache[0] if _usd_cache[0] > 0 else 0.0
 
         def _rub_fmt(amount: float) -> str:
-            """₽1 234  (≈ $15)"""
+            """₽1 234  (≈ $15.50)"""
             s = f"₽{amount:,.0f}"
             rate = _get_usd_rate()
             if rate > 0:
-                s += f"  _(≈ ${amount / rate:,.0f})_"
+                s += f"  _(≈ ${amount / rate:,.2f})_"
             return s
 
         def _rub_plain(amount: float) -> str:
-            """₽1 234 (≈ $15) без Markdown-курсива."""
+            """₽1 234 (≈ $15.50) без Markdown-курсива."""
             s = f"₽{amount:,.0f}"
             rate = _get_usd_rate()
             if rate > 0:
-                s += f" (≈ ${amount / rate:,.0f})"
+                s += f" (≈ ${amount / rate:,.2f})"
             return s
 
         def _load_sales() -> list:
