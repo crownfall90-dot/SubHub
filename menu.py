@@ -224,14 +224,16 @@ def _send_tg_activation(phone: str, act_url: str, short_url: str = "",
             f"{_till_line}"
             f"{_url_lines}"
         )
-        reply_markup = _j.dumps({
-            "inline_keyboard": [
-                [{"text": "👤 Перейти в профиль",
-                  "callback_data": f"profile:menu:{phone}:active"}],
-                [{"text": "📤 Отправить получателю",
-                  "callback_data": f"profile:send_to_buyer:{phone}:0"}],
-            ]
-        })
+        _kb_rows = [
+            [{"text": "👤 Перейти в профиль",
+              "callback_data": f"profile:menu:{phone}:active"}],
+            [{"text": "📤 Отправить получателю",
+              "callback_data": f"profile:send_to_buyer:{phone}:0"}],
+        ]
+        if not _link:
+            _kb_rows.insert(0, [{"text": "🔍 Проверить активацию",
+                                  "callback_data": f"profile:activate:{phone}"}])
+        reply_markup = _j.dumps({"inline_keyboard": _kb_rows})
 
         for cid in chat_ids:
             try:
@@ -5035,6 +5037,14 @@ async def _handle_3ds_verification(page) -> bool:
     # прошлой операции, и дальше уже не очищаем.
     try:
         (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text("[]", encoding="utf-8")
+    except Exception:
+        pass
+    # Уведомляем пользователя что код отправлен банком
+    try:
+        _tg_send_direct(
+            "📲 *Код подтверждения отправлен на карту*\n\n"
+            "Перешлите код сюда — бот введёт его автоматически."
+        )
     except Exception:
         pass
 
