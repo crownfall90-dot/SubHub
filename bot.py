@@ -307,8 +307,7 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🚀 Запуск",    "callback_data": "go:launch"},
                  {"text": "📁 Профили",   "callback_data": "go:profiles"},
                  {"text": "⚙️ Другое",    "callback_data": "go:other"}],
-                [{"text": "💰 GGSell",    "callback_data": "go:ggsell"},
-                 {"text": "📊 Продажи",  "callback_data": "go:sales"}],
+                [{"text": "💰 GGSell",    "callback_data": "go:ggsell"}],
                 [{"text": "🔄 Перезапустить консоль", "callback_data": "action:restart"}],
             ]
             return {"inline_keyboard": rows}
@@ -701,6 +700,7 @@ def _menu_tg_bot_thread() -> None:
                  {"text": "🌐 Прокси",      "callback_data": "show:proxy"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
                  {"text": "📊 Статистика",  "callback_data": "show:stats"}],
+                [{"text": "💰 Продажи",    "callback_data": "go:sales"}],
                 [{"text": "📦 Зависимости", "callback_data": "deps:install"},
                  {"text": upd_b,            "callback_data": "update:check"}],
                 [{"text": buy_b,            "callback_data": "t:buy_number"},
@@ -953,7 +953,7 @@ def _menu_tg_bot_thread() -> None:
                 [_btn("Всё время", "all"),   _btn("Сегодня", "today")],
                 [_btn("7 дней",   "week"),   _btn("30 дней", "month")],
                 [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
-                [{"text": "◀️ Назад",          "callback_data": "go:main"}],
+                [{"text": "◀️ Назад",          "callback_data": "go:other"}],
             ]}
 
         # ── Клавиатуры для выбора количества и режима ─────────────────────────
