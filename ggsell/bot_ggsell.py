@@ -987,6 +987,7 @@ class GGSellBotHandler:
             1 for o in yt_orders
             if int(o.get("invoice_id") or o.get("id") or 0) not in done
             and int(o.get("invoice_id") or o.get("id") or 0) not in self.confirm
+            and int(o.get("invoice_id") or o.get("id") or 0) > 0
         )
         top_rows = []
         if green_count > 0:

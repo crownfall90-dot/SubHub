@@ -872,10 +872,48 @@ def _menu_tg_bot_thread() -> None:
         # ── Продажи ───────────────────────────────────────────────────────────
         _SALES_FILE  = TG_STATS_FILE.parent / "sales_stats.json"
         _SCFG_FILE   = TG_STATS_FILE.parent / "sales_config.json"
-        _usd_cache   = [0.0, 0.0]  # [rate_rub_per_usd, timestamp]
+        _usd_cache         = [0.0, 0.0]  # [rate_rub_per_usd, timestamp]
+        _funpay_rate_cache = [0.0, 0.0]  # [rate_rub_per_usd, timestamp]
+
+        def _get_funpay_rate() -> float:
+            """Курс USDT/RUB с Funpay (кеш 30 мин). Требует funpay_golden_key в конфиге."""
+            import time as _t, re as _re, urllib.request as _ur
+            if _funpay_rate_cache[0] > 0 and _t.time() - _funpay_rate_cache[1] < 1800:
+                return _funpay_rate_cache[0]
+            try:
+                gk = _load_scfg().get("funpay_golden_key", "")
+                if not gk:
+                    return 0.0
+                req = _ur.Request(
+                    "https://funpay.com/account/balance",
+                    headers={
+                        "Cookie": f"golden_key={gk}",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "ru-RU,ru;q=0.9",
+                    }
+                )
+                with _ur.urlopen(req, timeout=10) as _resp:
+                    _html = _resp.read().decode("utf-8", errors="replace")
+                for _pat in [
+                    r'data-rate=["\']?([\d]+[.,][\d]+)',
+                    r'"rate"\s*:\s*([\d]+[.,][\d]+)',
+                    r'[кК]урс\s+([\d]+[.,][\d]+)',
+                    r'usdt[_\-]trc[^>]*data-[^>]*>([\d]+[.,][\d]+)',
+                ]:
+                    _m = _re.search(_pat, _html, _re.IGNORECASE)
+                    if _m:
+                        _r = float(_m.group(1).replace(",", "."))
+                        if _r > 10:
+                            _funpay_rate_cache[0] = _r
+                            _funpay_rate_cache[1] = _t.time()
+                            return _r
+            except Exception:
+                pass
+            return 0.0
 
         def _get_usd_rate() -> float:
-            """Курс USD→RUB. Приоритет: ручной из конфига → ЦБ РФ (кеш 1 час)."""
+            """Курс USD→RUB. Приоритет: ручной → Funpay USDT → ЦБ РФ (кеш 1 час)."""
             # Ручной курс из конфига
             try:
                 manual = _load_scfg().get("usd_rate", 0)
@@ -883,6 +921,10 @@ def _menu_tg_bot_thread() -> None:
                     return float(manual)
             except Exception:
                 pass
+            # Funpay USDT-курс
+            _fp = _get_funpay_rate()
+            if _fp > 0:
+                return _fp
             # ЦБ РФ с кешем
             import time as _t
             if _usd_cache[0] > 0 and _t.time() - _usd_cache[1] < 3600:
@@ -920,6 +962,14 @@ def _menu_tg_bot_thread() -> None:
                 s += f" (≈ ${amount / rate:,.2f})"
             return s
 
+        def _usd_disp(amount_usd: float) -> str:
+            """$4.50 (≈ ₽360) — для себестоимости в долларах."""
+            s = f"${amount_usd:,.2f}"
+            rate = _get_usd_rate()
+            if rate > 0:
+                s += f" (≈ ₽{amount_usd * rate:,.0f})"
+            return s
+
         def _load_sales() -> list:
             try:
                 return json.loads(_SALES_FILE.read_text(encoding="utf-8")) if _SALES_FILE.exists() else []
@@ -941,7 +991,9 @@ def _menu_tg_bot_thread() -> None:
         def _record_sale(phone: str, plan: str, sell: float) -> None:
             import time as _t
             scfg = _load_scfg()
-            cost = float(scfg.get(f"cost_{plan}", 0))
+            cost_usd = float(scfg.get(f"cost_{plan}", 0))
+            rate = _get_usd_rate()
+            cost = cost_usd * rate if (cost_usd > 0 and rate > 0) else 0.0
             records = _load_sales()
             records.append({"ts": _t.time(), "phone": phone, "plan": plan,
                             "sell": sell, "cost": cost})
@@ -975,8 +1027,8 @@ def _menu_tg_bot_thread() -> None:
 
             c3  = scfg.get("cost_3m",  "не задана")
             c12 = scfg.get("cost_12m", "не задана")
-            c3s  = _rub_plain(c3)  if isinstance(c3,  (int, float)) else str(c3)
-            c12s = _rub_plain(c12) if isinstance(c12, (int, float)) else str(c12)
+            c3s  = _usd_disp(c3)  if isinstance(c3,  (int, float)) else str(c3)
+            c12s = _usd_disp(c12) if isinstance(c12, (int, float)) else str(c12)
 
             lines = [
                 f"📊 *Продажи — {label}*",
@@ -2206,27 +2258,34 @@ def _menu_tg_bot_thread() -> None:
                 scfg = _load_scfg()
                 c3  = scfg.get("cost_3m",  "не задана")
                 c12 = scfg.get("cost_12m", "не задана")
-                c3s  = _rub_plain(c3)  if isinstance(c3,  (int, float)) else str(c3)
-                c12s = _rub_plain(c12) if isinstance(c12, (int, float)) else str(c12)
+                c3s  = _usd_disp(c3)  if isinstance(c3,  (int, float)) else str(c3)
+                c12s = _usd_disp(c12) if isinstance(c12, (int, float)) else str(c12)
                 _manual_rate = scfg.get("usd_rate", 0)
+                _fp_rate     = _funpay_rate_cache[0]
                 _cbr_rate    = _usd_cache[0]
+                _gk          = scfg.get("funpay_golden_key", "")
                 if _manual_rate and float(_manual_rate) > 0:
                     _rate_str = f"₽{float(_manual_rate):,.2f} (ручной)"
+                elif _fp_rate > 0:
+                    _rate_str = f"₽{_fp_rate:,.2f} (Funpay)"
                 elif _cbr_rate > 0:
                     _rate_str = f"₽{_cbr_rate:,.2f} (ЦБ РФ)"
                 else:
                     _rate_str = "не получен"
+                _gk_status = f"***{_gk[-4:]}" if _gk else "не задан"
                 txt = (
                     "⚙️ *Себестоимость*\n\n"
                     f"▸ 3 месяца: *{c3s}*\n"
                     f"▸ 12 месяцев: *{c12s}*\n"
-                    f"▸ Курс $1 = *{_rate_str}*\n\n"
+                    f"▸ Курс $1 = *{_rate_str}*\n"
+                    f"▸ Funpay key: `{_gk_status}`\n\n"
                     "_Нажмите кнопку для изменения:_"
                 )
                 kb = {"inline_keyboard": [
                     [{"text": f"✏️ 3 мес ({c3s})",  "callback_data": "sales:set_cost:3m"}],
                     [{"text": f"✏️ 12 мес ({c12s})", "callback_data": "sales:set_cost:12m"}],
                     [{"text": f"💱 Курс USD ({_rate_str})", "callback_data": "sales:set_usd_rate"}],
+                    [{"text": f"🔑 Funpay golden_key", "callback_data": "sales:set_funpay_key"}],
                     [{"text": "◀️ Назад", "callback_data": "go:sales"}],
                 ]}
                 await _edit(cid, mid, txt, kb)
@@ -2237,7 +2296,7 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid)
                 _sales_cost_waiting[cid] = plan
                 label = "3 месяца" if plan == "3m" else "12 месяцев"
-                await _send(cid, f"💬 Введите себестоимость для *{label}* (в рублях):",
+                await _send(cid, f"💬 Введите себестоимость для *{label}* (в долларах, $):",
                             parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
                                                                 "callback_data": "sales:config"}]]})
@@ -2250,7 +2309,24 @@ def _menu_tg_bot_thread() -> None:
                 cur_s = f"сейчас: ₽{cur:,.2f}" if cur > 0 else "не задан"
                 await _send(cid,
                             f"💱 Введите курс $1 в рублях ({cur_s}):\n\n"
-                            "_Оставьте `0` чтобы использовать курс ЦБ РФ._",
+                            "_Оставьте `0` чтобы использовать курс Funpay/ЦБ РФ._",
+                            parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
+                                                                "callback_data": "sales:config"}]]})
+                return
+
+            if data == "sales:set_funpay_key":
+                await _ack(qid)
+                _sales_cost_waiting[cid] = "funpay_key"
+                scfg = _load_scfg()
+                _gk_cur = scfg.get("funpay_golden_key", "")
+                _gk_s = f"задан (***{_gk_cur[-4:]})" if _gk_cur else "не задан"
+                await _send(cid,
+                            f"🔑 *Funpay golden_key* ({_gk_s})\n\n"
+                            "Откройте браузер, войдите на funpay.com, зайдите в DevTools → "
+                            "Application → Cookies → funpay.com и скопируйте значение "
+                            "cookie `golden_key`.\n\n"
+                            "Введите значение сюда. Пришлите `0` чтобы удалить.",
                             parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
                                                                 "callback_data": "sales:config"}]]})
@@ -2262,8 +2338,8 @@ def _menu_tg_bot_thread() -> None:
                 scfg = _load_scfg()
                 c3  = scfg.get("cost_3m",  0)
                 c12 = scfg.get("cost_12m", 0)
-                c3s  = _rub_plain(c3)  if c3  else "₽?"
-                c12s = _rub_plain(c12) if c12 else "₽?"
+                c3s  = _usd_disp(c3)  if c3  else "$?"
+                c12s = _usd_disp(c12) if c12 else "$?"
                 txt = (
                     f"💰 *Записать продажу*\n\n"
                     f"Профиль: `{_disp_phone(phone)}`\n\n"
@@ -3279,9 +3355,37 @@ def _menu_tg_bot_thread() -> None:
                                                                     "callback_data": f"profile:menu:{phone}:active"}]]})
                 return
 
-            # Ввод себестоимости / курса USD
+            # Ввод себестоимости / курса USD / Funpay key
             if _sales_cost_waiting.get(cid):
                 key = _sales_cost_waiting.pop(cid)
+                # Funpay golden_key — отдельная ветка (не число)
+                if key == "funpay_key":
+                    scfg = _load_scfg()
+                    if text.strip() == "0":
+                        scfg.pop("funpay_golden_key", None)
+                        _funpay_rate_cache[0] = 0.0
+                        _funpay_rate_cache[1] = 0.0
+                        _save_scfg(scfg)
+                        await _send(cid, "✅ Funpay golden_key удалён — курс будет браться с ЦБ РФ",
+                                    reply_markup={"inline_keyboard": [[{"text": "⚙️ Настройки", "callback_data": "sales:config"}]]})
+                    else:
+                        scfg["funpay_golden_key"] = text.strip()
+                        _funpay_rate_cache[0] = 0.0  # сбросить кеш — обновится при следующем запросе
+                        _funpay_rate_cache[1] = 0.0
+                        _save_scfg(scfg)
+                        # Сразу проверяем, работает ли ключ
+                        _test_rate = _get_funpay_rate()
+                        if _test_rate > 0:
+                            await _send(cid,
+                                        f"✅ Funpay golden_key сохранён. Курс: *₽{_test_rate:,.3f}*",
+                                        parse_mode="Markdown",
+                                        reply_markup={"inline_keyboard": [[{"text": "⚙️ Настройки", "callback_data": "sales:config"}]]})
+                        else:
+                            await _send(cid,
+                                        "⚠️ Ключ сохранён, но курс получить не удалось.\n"
+                                        "Проверьте правильность golden_key.",
+                                        reply_markup={"inline_keyboard": [[{"text": "⚙️ Настройки", "callback_data": "sales:config"}]]})
+                    return
                 try:
                     val = float(text.replace(",", ".").replace("₽", "").replace("₹", "").strip())
                     if val < 0:
@@ -3292,7 +3396,7 @@ def _menu_tg_bot_thread() -> None:
                             scfg.pop("usd_rate", None)
                             _usd_cache[0] = 0.0  # сбросить кеш
                             _save_scfg(scfg)
-                            await _send(cid, "✅ Курс сброшен — будет использоваться ЦБ РФ",
+                            await _send(cid, "✅ Курс сброшен — будет использоваться Funpay/ЦБ РФ",
                                         reply_markup={"inline_keyboard": [[{"text": "⚙️ Настройки", "callback_data": "sales:config"}]]})
                         else:
                             scfg["usd_rate"] = val
@@ -3305,7 +3409,7 @@ def _menu_tg_bot_thread() -> None:
                         _save_scfg(scfg)
                         label = "3 месяца" if key == "3m" else "12 месяцев"
                         await _send(cid,
-                            f"✅ Себестоимость *{label}* сохранена: *{_rub_plain(val)}*",
+                            f"✅ Себестоимость *{label}* сохранена: *{_usd_disp(val)}*",
                             parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [
                                 [{"text": "⚙️ Себестоимость", "callback_data": "sales:config"}],
