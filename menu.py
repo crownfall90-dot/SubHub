@@ -4292,9 +4292,9 @@ async def _handle_paytm_currency_page(page) -> bool:
             except Exception:
                 pass
 
-        # ── Change Currency → USD flow ────────────────────────────────────────
-        # Если на странице есть кнопка "Change Currency" — кликаем её,
-        # выбираем USD из списка и нажимаем Pay. Этот флоу полностью заменяет INR-путь.
+        # ── Change Currency / Pay in another currency → USD flow ─────────────
+        # Если на странице есть "Change Currency" или "Pay in another currency" —
+        # кликаем, выбираем USD, нажимаем Pay. Заменяет INR-путь.
         pay_clicked = False
         for _fr_cc in [page.main_frame] + list(page.frames):
             if pay_clicked:
@@ -4303,19 +4303,22 @@ async def _handle_paytm_currency_page(page) -> bool:
                 _cc_btn = await _fr_cc.evaluate("""() => {
                     for (const el of document.querySelectorAll('*')) {
                         const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                        if (!t.includes('change currency') && !t.includes('change curr')) continue;
-                        if (t.length > 60) continue;
+                        const ok = t.includes('change currency') || t.includes('change curr')
+                                   || t.includes('pay in another currency')
+                                   || t.includes('in another currency');
+                        if (!ok) continue;
+                        if (t.length > 80) continue;
                         const r = el.getBoundingClientRect();
                         if (r.width < 20 || r.height < 8) continue;
                         const s = window.getComputedStyle(el);
                         if (s.display === 'none' || s.visibility === 'hidden') continue;
-                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                        return {x: r.x + r.width/2, y: r.y + r.height/2, txt: t.substring(0,50)};
                     }
                     return null;
                 }""")
                 if not _cc_btn:
                     continue
-                print(f"  Найдена 'Change Currency' — кликаю...")
+                print(f"  Найдена '{_cc_btn.get('txt','Change Currency')}' — кликаю...")
                 await page.mouse.click(_cc_btn["x"], _cc_btn["y"])
                 await page.wait_for_timeout(1_500)
                 # Ищем USD в раскрывшемся списке
