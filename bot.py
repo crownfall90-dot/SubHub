@@ -2796,6 +2796,16 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid, "🛑 Останавливаю...")
                 return
 
+            if data.startswith("pay:switch:"):
+                try:
+                    _pos = int(data.split(":")[-1])
+                    _m("_switch_card_choice")[0] = _pos
+                    _m("_switch_card_ev").set()
+                except Exception:
+                    pass
+                await _ack(qid, "🔄 Переключаю карту...")
+                return
+
             if data == "run:status":
                 if _running():
                     lbl = _mode_label(_mode[0])

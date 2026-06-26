@@ -3632,6 +3632,11 @@ def _to_gmail(email: str) -> str:
 import threading as _threading_pc
 _purchase_cancel = _threading_pc.Event()
 
+# Переключение карты во время ожидания 3DS OTP (TG-кнопка → бот устанавливает флаг)
+_switch_card_choice: list = [-1]  # [0] — позиция карты в _ordered_pay
+_switch_card_ev = _threading_pc.Event()
+_3ds_card_options: list = []      # список {"pos": int, "card": dict} для TG-кнопок
+
 
 class _PurchaseCancelled(Exception):
     """Выполнение прервано пользователем."""
@@ -4760,9 +4765,17 @@ async def _handle_paytm_currency_page(page) -> bool:
         except Exception:
             pass
         declined = False
+        _insufficient_funds = False
         try:
             cur_url = page.url
             if "/retry" in cur_url or "/error" in cur_url:
+                try:
+                    _bl = await page.evaluate("() => document.body.innerText.toLowerCase()")
+                    if "insufficient fund" in _bl:
+                        _insufficient_funds = True
+                        print(f"  {Y}⚠ Недостаточно средств на карте (PayGlocal){RST}")
+                except Exception:
+                    pass
                 declined = True
             elif "uiscoop.flipkart.com" in cur_url and (
                     "errorMessage" in cur_url or "retryAllowed" in cur_url):
@@ -4794,7 +4807,8 @@ async def _handle_paytm_currency_page(page) -> bool:
             pass
 
         if declined:
-            print(f"  {Y}⚠ Платёж отклонён — нажимаю ← пока не flipkart.com...{RST}")
+            _reason = "Недостаточно средств" if _insufficient_funds else "Платёж отклонён"
+            print(f"  {Y}⚠ {_reason} — нажимаю ← пока не flipkart.com...{RST}")
             for _bi in range(8):
                 cur = page.url
                 print(f"    back {_bi}: {cur[:70]}")
@@ -4805,7 +4819,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                 except Exception:
                     pass
                 await page.wait_for_timeout(800)
-            return "declined"
+            return "insufficient_funds" if _insufficient_funds else "declined"
         else:
             break  # успешно нажали Pay или 3DS
 
@@ -4813,6 +4827,17 @@ async def _handle_paytm_currency_page(page) -> bool:
     _3ds_res = await _handle_3ds_verification(page)
     if _3ds_res == "otp_timeout":
         return "otp_timeout"
+    if _3ds_res == "switch_card":
+        print(f"  {Y}⚠ Смена карты — возвращаюсь на payments...{RST}")
+        for _sbi in range(10):
+            if "flipkart.com" in page.url:
+                break
+            try:
+                await page.go_back(wait_until="domcontentloaded", timeout=8_000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(800)
+        return "switch_card"
 
     # Проверяем что платёж завершился и вернулись на Flipkart
     if "flipkart.com" not in page.url:
@@ -5084,6 +5109,25 @@ async def _handle_3ds_verification(page) -> bool:
             print(f"  {Y}  3DS OTP: введи код в браузере и нажми SUBMIT.  {RST}")
             print(f"  {Y}══════════════════════════════════════════════════{RST}")
             print()
+            # Уведомление в TG с кнопками смены карты
+            try:
+                if _3ds_card_options:
+                    _sw_rows = []
+                    for _opt in _3ds_card_options[:3]:
+                        _sw_nm = (_opt["card"].get("nickname")
+                                  or _mask_card(_opt["card"].get("number", "")))
+                        _sw_rows.append([{"text": f"💳 {_sw_nm}",
+                                          "callback_data": f"pay:switch:{_opt['pos']}"}])
+                    _tg_send_direct_kb(
+                        "📨 *Ждём OTP-код*\n\n"
+                        "Отправьте код сюда, когда получите его.\n\n"
+                        "_Или выберите другую карту:_",
+                        {"inline_keyboard": _sw_rows},
+                    )
+                else:
+                    _tg_send_direct("📨 *Ждём OTP-код* — отправьте его сюда")
+            except Exception:
+                pass
             _otp_tgt = asyncio.get_event_loop().time() + 900  # 15 мин
             import re as _re3d
             import json as _json3d
@@ -5093,6 +5137,10 @@ async def _handle_3ds_verification(page) -> bool:
             _otp_submitted = False
             while asyncio.get_event_loop().time() < _otp_tgt:
                 _ckcancel()
+                # Пользователь выбрал другую карту через TG
+                if _switch_card_ev.is_set():
+                    print(f"  {Y}⚠ Смена карты из TG — прерываю ожидание OTP{RST}")
+                    return "switch_card"
                 if "flipkart.com" in page.url:
                     print(f"  {G}✅ 3DS подтверждён — Flipkart{RST}")
                     _tg_send_direct("✅ *3DS подтверждён* — возврат на Flipkart")
@@ -5472,6 +5520,10 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
             return await _enter_card_on_payments(page, card, _decline_attempt + 1)
         print(f"  {Y}⚠ Не удалось вернуться на Flipkart после отклонения{RST}")
         return False
+
+    # Недостаточно средств на карте — передаём выше для смены карты
+    if gw_result == "insufficient_funds":
+        return "insufficient_funds"
 
     # OTP-верификация — карта принята, ждём ручного подтверждения
     if gw_result == "otp_required":
@@ -8397,21 +8449,75 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                 # ── 8. Payments: Continue → жёлтая кнопка → email → Continue ─
                 print(f"  {DIM}Страница оплаты — заполняю...{RST}")
-                # Карта берётся по единому порядку (data/card_order.json), если не задана
-                if card is None:
-                    _cards_av = _load_cards()
-                    _ord = _load_card_order()
-                    if _cards_av:
-                        if _ord and isinstance(_ord, list):
-                            for _i in _ord:
-                                if isinstance(_i, int) and 0 <= _i < len(_cards_av):
-                                    card = _cards_av[_i]
-                                    break
-                        if card is None:
-                            card = _cards_av[0]
-                    if card:
-                        print(f"  {G}💳 Карта по порядку: {card.get('nickname') or _mask_card(card.get('number',''))}{RST}")
-                await _do_payments_page(page, card=card)
+                # Строим полный упорядоченный список карт
+                _cards_av = _load_cards()
+                _ord = _load_card_order()
+                _ordered_pay: list = []  # [(raw_idx, card_dict), ...]
+                if _cards_av and _ord and isinstance(_ord, list):
+                    for _oi in _ord:
+                        if isinstance(_oi, int) and 0 <= _oi < len(_cards_av):
+                            _ordered_pay.append((_oi, _cards_av[_oi]))
+                if not _ordered_pay and _cards_av:
+                    _ordered_pay = list(enumerate(_cards_av))
+
+                _cur_pay_pos = 0
+                if card is None and _ordered_pay:
+                    card = _ordered_pay[0][1]
+                if card:
+                    print(f"  {G}💳 Карта по порядку: {card.get('nickname') or _mask_card(card.get('number',''))}{RST}")
+
+                # Передаём следующие карты для TG-кнопок во время ожидания 3DS OTP
+                try:
+                    _3ds_card_options[:] = [
+                        {"pos": _p, "card": _c}
+                        for _p, (_, _c) in enumerate(_ordered_pay)
+                        if _p > _cur_pay_pos
+                    ][:3]
+                    _switch_card_ev.clear()
+                    _switch_card_choice[0] = -1
+                except Exception:
+                    pass
+
+                _pay_res = await _do_payments_page(page, card=card)
+
+                # Цикл смены карты при недостатке средств или выборе из TG
+                _all_cards_exhausted = False
+                for _sw_attempt in range(len(_ordered_pay)):
+                    if _pay_res not in ("insufficient_funds", "switch_card"):
+                        break
+                    if _pay_res == "switch_card" and 0 <= _switch_card_choice[0] < len(_ordered_pay):
+                        _cur_pay_pos = _switch_card_choice[0]
+                    else:
+                        _cur_pay_pos += 1
+                    if _cur_pay_pos >= len(_ordered_pay):
+                        _all_cards_exhausted = True
+                        break
+                    card = _ordered_pay[_cur_pay_pos][1]
+                    _nm = card.get("nickname") or _mask_card(card.get("number", ""))
+                    print(f"  {G}💳 Смена карты → {_nm}{RST}")
+                    _tg_send_direct(f"🔄 *Смена карты:* {_nm}")
+                    try:
+                        _3ds_card_options[:] = [
+                            {"pos": _p, "card": _c}
+                            for _p, (_, _c) in enumerate(_ordered_pay)
+                            if _p > _cur_pay_pos
+                        ][:3]
+                        _switch_card_ev.clear()
+                        _switch_card_choice[0] = -1
+                    except Exception:
+                        pass
+                    if "payments" not in page.url:
+                        try:
+                            await _viewcheckout_to_payments(page)
+                        except Exception:
+                            pass
+                    _pay_res = await _do_payments_page(page, card=card)
+
+                if _all_cards_exhausted:
+                    print(f"  {R}❌ Все карты исчерпаны — прекращаю оплату{RST}")
+                    _tg_send_direct("❌ *Все карты исчерпаны* — оплата не прошла")
+                    _try_next = True
+                    continue
                 try:
                     await _handle_post_payment(page, ctx, profile_path, phone_number=phone_10)
                 except Exception as _pp_e:
@@ -8801,6 +8907,35 @@ def _tg_send_direct(text: str) -> None:
                 _op.open(_ur2.Request(f"{_api}/sendMessage",
                     data=_up2.urlencode({"chat_id": _cid, "text": text,
                                          "parse_mode": "Markdown"}).encode()), timeout=8)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _tg_send_direct_kb(text: str, keyboard: dict) -> None:
+    """Шлёт сообщение с inline keyboard всем подписчикам напрямую через urllib."""
+    try:
+        import yaml as _y3, urllib.request as _ur3, urllib.parse as _up3, json as _jk
+        _cfg_p = Path(__file__).parent / "config.yaml"
+        if not _cfg_p.exists() or not TG_SUBSCRIBERS_FILE.exists():
+            return
+        _tok = ((_y3.safe_load(_cfg_p.read_text(encoding="utf-8")) or {})
+                .get("telegram") or {}).get("token", "").strip()
+        _subs = (json.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8")) or {}).get("chats", [])
+        if not _tok or not _subs:
+            return
+        _api = f"https://api.telegram.org/bot{_tok}"
+        _op3 = _ur3.build_opener(_ur3.ProxyHandler({}))
+        for _cid in _subs:
+            try:
+                _payload = _up3.urlencode({
+                    "chat_id": _cid,
+                    "text": text,
+                    "parse_mode": "Markdown",
+                    "reply_markup": _jk.dumps(keyboard),
+                }).encode()
+                _op3.open(_ur3.Request(f"{_api}/sendMessage", data=_payload), timeout=8)
             except Exception:
                 pass
     except Exception:
