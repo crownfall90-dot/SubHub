@@ -982,10 +982,59 @@ class GGSellBotHandler:
             btn_rows.append([{"text": f"Показать следующие 5 ›",
                               "callback_data": f"ggsell:orders:{offset + PAGE_SIZE}"}])
 
-        kb_rows = btn_rows + [
+        # Кнопка "Выполнить все" если есть невыданные заказы
+        green_count = sum(
+            1 for o in yt_orders
+            if int(o.get("invoice_id") or o.get("id") or 0) not in done
+            and int(o.get("invoice_id") or o.get("id") or 0) not in self.confirm
+        )
+        top_rows = []
+        if green_count > 0:
+            top_rows = [[{"text": f"✅ Выполнить все ({green_count})",
+                          "callback_data": "ggsell:fulfill_all"}]]
+
+        kb_rows = top_rows + btn_rows + [
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
+
+    async def bg_fulfill_all(self, cid, mid):
+        """Запускает параллельное выполнение всех невыданных заказов."""
+        cli = self.get_client()
+        if cli is None:
+            await self._edit(cid, mid, "❌ GGSell не настроен.",
+                {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+            return
+        try:
+            orders_v1 = await cli.get_orders_v1(limit=30)
+            yt_orders = [o for o in orders_v1
+                         if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+        except Exception as exc:
+            await self._edit(cid, mid, f"❌ Ошибка загрузки заказов: {exc}",
+                {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+            return
+
+        done = self.get_done()
+        green = [
+            (int(o.get("invoice_id") or o.get("id") or 0), o)
+            for o in yt_orders
+            if int(o.get("invoice_id") or o.get("id") or 0) not in done
+            and int(o.get("invoice_id") or o.get("id") or 0) not in self.confirm
+            and int(o.get("invoice_id") or o.get("id") or 0) > 0
+        ]
+
+        if not green:
+            await self._edit(cid, mid, "✅ Все заказы уже выданы.",
+                {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+            return
+
+        await self._edit(cid, mid,
+            f"🚀 *Запускаю {len(green)} заказов параллельно...*",
+            {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+
+        for inv_i, o in green:
+            self._fulfill_cancel.discard(inv_i)
+            asyncio.create_task(self.bg_fulfill_order(inv_i, o))
 
     async def bg_chats_page(self, cid, mid):
         cli = self.get_client()
@@ -2971,6 +3020,14 @@ class GGSellBotHandler:
                              {"inline_keyboard": [[{"text": "◀️ Заказы",
                                                      "callback_data": "ggsell:orders"}]]})
             asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
+            return
+
+        if data == "ggsell:fulfill_all":
+            await self._ack(qid, "🚀 Запускаю все...")
+            await self._edit(cid, mid,
+                "🚀 *Загружаю невыданные заказы...*",
+                {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
+            asyncio.create_task(self.bg_fulfill_all(cid, mid))
             return
 
         if data.startswith("ggsell:run:"):

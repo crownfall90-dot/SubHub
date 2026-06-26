@@ -1484,7 +1484,7 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, "📁 _Готовых профилей нет_")
                 return
             await _send(cid, f"⏳ *Проверяю {len(profiles)} профилей...*\n_Это займёт время._")
-            activated = activate_now = explore = not_logged = access_denied = errors = 0
+            activated = activate_now = explore = not_logged = no_access = errors = 0
             error_details = []
             for pp in profiles:
                 phone = pp.name.replace("profile_", "")
@@ -1495,11 +1495,11 @@ def _menu_tg_bot_thread() -> None:
                     _save_activation_result(pp, result)
                     st  = result.get("status", "?") if isinstance(result, dict) else "?"
                     err = result.get("error") if isinstance(result, dict) else None
-                    if st == "activated":       activated     += 1
-                    elif st == "activate_now":  activate_now  += 1
-                    elif st == "explore_now":   explore       += 1
-                    elif st == "not_logged_in": not_logged    += 1
-                    elif st == "access_denied": access_denied += 1
+                    if st == "activated":                  activated    += 1
+                    elif st == "activate_now":             activate_now += 1
+                    elif st == "explore_now":              explore      += 1
+                    elif st == "not_logged_in":            not_logged   += 1
+                    elif st in ("access_denied", "unknown"): no_access  += 1
                     else:
                         errors += 1
                         if err:
@@ -1515,8 +1515,8 @@ def _menu_tg_bot_thread() -> None:
                 f"🔵 Explore Now: *{explore}*",
                 f"🔒 Не авторизованы: *{not_logged}*",
             ]
-            if access_denied:
-                lines.append(f"🌐 Нет индийского IP: *{access_denied}* _(включите VPN или прокси)_")
+            if no_access:
+                lines.append(f"🌐 Нет доступа к Flipkart: *{no_access}* _(проверьте подключение к интернету / VPN)_")
             if errors:
                 lines.append(f"❓ Ошибки: *{errors}*")
                 for d in error_details[:3]:
