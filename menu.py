@@ -7180,6 +7180,18 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                     except Exception:
                         pass
 
+            # Заполняем кнопки смены карты для 3DS OTP уведомления
+            try:
+                _3ds_card_options[:] = [
+                    {"pos": _pi, "card": _pc}
+                    for _pi, _pc in enumerate(_cards_seq)
+                    if _pi != _ci and _pc
+                ][:4]
+                _switch_card_ev.clear()
+                _switch_card_choice[0] = -1
+            except Exception:
+                pass
+
             _pay_done = await _do_payments_page(page, card=_ctry)
 
             if _pay_done == "otp_required":
