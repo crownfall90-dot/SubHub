@@ -1035,12 +1035,14 @@ class GGSellBotHandler:
             return
 
         await self._edit(cid, mid,
-            f"🚀 *Запускаю {len(green)} заказов параллельно...*",
+            f"🚀 *Выполняю {len(green)} заказов по очереди...*",
             {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
 
-        for inv_i, o in green:
+        for idx, (inv_i, o) in enumerate(green, 1):
+            if inv_i in self._fulfill_cancel:
+                break
             self._fulfill_cancel.discard(inv_i)
-            asyncio.create_task(self.bg_fulfill_order(inv_i, o))
+            await self.bg_fulfill_order(inv_i, o)
 
     async def bg_chats_page(self, cid, mid):
         cli = self.get_client()
