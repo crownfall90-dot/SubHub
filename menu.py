@@ -10218,18 +10218,8 @@ def _startup_cleanup() -> None:
         except Exception:
             pass
 
-    # Использованные профили
-    deleted_profiles = 0
-    if USED_PROFILES_DIR.exists():
-        for profile in list(USED_PROFILES_DIR.iterdir()):
-            try:
-                shutil.rmtree(profile, ignore_errors=True)
-                deleted_profiles += 1
-            except Exception:
-                pass
-
-    if deleted_logs or deleted_profiles:
-        print(f"  {DIM}[Очистка] удалено логов: {deleted_logs}, профилей: {deleted_profiles}{RST}")
+    if deleted_logs:
+        print(f"  {DIM}[Очистка] удалено логов: {deleted_logs}{RST}")
 
 
 # ── Точка входа ───────────────────────────────────────────────────────────────
