@@ -9788,10 +9788,10 @@ def _migrate_config() -> None:
 
 def _startup_cleanup() -> None:
     """При каждом запуске: удаляем старые логи, использованные профили, убиваем Chrome."""
-    import grizzly as _gz
+    import grizzly as _gz, threading as _thr
 
-    # Убиваем все Chrome-процессы бота от предыдущего сеанса
-    _gz.kill_all_bot_chrome()
+    # Убиваем Chrome в фоне — не блокирует запуск меню
+    _thr.Thread(target=_gz.kill_all_bot_chrome, daemon=True, name="chrome-kill").start()
 
     # Логи (automation*.log, test_run.log и любые *.log рядом со скриптом)
     script_dir = Path(__file__).parent
