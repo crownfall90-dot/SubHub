@@ -78,6 +78,7 @@ class GGSellBotHandler:
         self._hanging_prompted:  set  = set()  # invoice_id, по которым уже спросили выполнение
         self._fulfill_cancel:    set  = set()  # invoice_id, выполнение которых отменено
         self._greeted_sent:      dict = {}     # invoice_id → строка времени отправки приветствия
+        self._buy_lock           = asyncio.Lock()  # одновременно только одна покупка
 
     # ── GGSell client ────────────────────────────────────────────────────────
 
@@ -1574,21 +1575,30 @@ class GGSellBotHandler:
         import functools, importlib
         phone = prof.get("username", prof["path"].name)
         _label = f"{gg_months} мес (покупаю {months})" if gg_months != months else f"{months} мес"
-        await self._notify_fulfill(cid, mid,
-            f"💳 *Заказ #{invoice_id}*: покупаю {_label} на `{self._disp_phone(phone)}`"
-            + (f" (из «{source}»)" if source else "") + "...\n_Займёт несколько минут._",
-            cancel_inv=invoice_id)
-        menu = importlib.import_module("menu")
-        menu._override_email = buyer_email or ""
-        try:
-            ok, msg = await asyncio.get_event_loop().run_in_executor(
-                None, functools.partial(
-                    self._run_menu_coro,
-                    lambda: self._m("_do_buy_membership")(prof["path"], months, None)))
-        except Exception as exc:
-            ok, msg = False, str(exc)
-        finally:
-            menu._override_email = ""
+        # Ждём своей очереди — одновременно только одна покупка во избежание конфликтов профилей
+        if self._buy_lock.locked():
+            await self._notify_fulfill(cid, mid,
+                f"⏳ *Заказ #{invoice_id}*: покупаю {_label} на `{self._disp_phone(phone)}`"
+                + (f" (из «{source}»)" if source else "") + "...\n_Ожидаю завершения предыдущей покупки..._",
+                cancel_inv=invoice_id)
+        async with self._buy_lock:
+            if invoice_id in self._fulfill_cancel:
+                return "cancelled"
+            await self._notify_fulfill(cid, mid,
+                f"💳 *Заказ #{invoice_id}*: покупаю {_label} на `{self._disp_phone(phone)}`"
+                + (f" (из «{source}»)" if source else "") + "...\n_Займёт несколько минут._",
+                cancel_inv=invoice_id)
+            menu = importlib.import_module("menu")
+            menu._override_email = buyer_email or ""
+            try:
+                ok, msg = await asyncio.get_event_loop().run_in_executor(
+                    None, functools.partial(
+                        self._run_menu_coro,
+                        lambda: self._m("_do_buy_membership")(prof["path"], months, None)))
+            except Exception as exc:
+                ok, msg = False, str(exc)
+            finally:
+                menu._override_email = ""
         if not ok:
             if str(msg) == "CANCELLED":
                 return "cancelled"
