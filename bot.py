@@ -2935,17 +2935,12 @@ def _menu_tg_bot_thread() -> None:
                             _proc[0].kill()
                     except Exception:
                         pass
-                # Принудительно убиваем зависшие chrome.exe и python.exe (связанные с ботом)
+                # Убиваем Chrome-процессы бота в фоне (не блокируем перезапуск)
                 try:
-                    if os.name == "nt":
-                        import subprocess as _sp
-                        mypid = os.getpid()
-                        # Убиваем зависшие chrome.exe, запущенные с профилями бота
-                        _sp.run('powershell -Command "Get-WmiObject Win32_Process -Filter \\"name=\'chrome.exe\' and commandline like \'%chrome_profiles%\'\\" | ForEach-Object { $_.Terminate() }"',
-                                shell=True, capture_output=True, timeout=10)
-                        # Убиваем другие процессы python.exe, выполняющие main.py или menu.py
-                        _sp.run(f'powershell -Command "Get-WmiObject Win32_Process -Filter \\"name=\'python.exe\' and (commandline like \'%main.py%\' or commandline like \'%menu.py%\')\\" | Where-Object {{ $_.ProcessId -ne {mypid} }} | ForEach-Object {{ $_.Terminate() }}"',
-                                shell=True, capture_output=True, timeout=10)
+                    import threading as _thr_rs
+                    import grizzly as _gz_rs
+                    _thr_rs.Thread(target=_gz_rs.kill_all_bot_chrome,
+                                   daemon=True, name="chrome-kill-restart").start()
                 except Exception:
                     pass
                 try:
