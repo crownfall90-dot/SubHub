@@ -6794,10 +6794,11 @@ async def _viewcheckout_to_payments(page) -> bool:
                     const r = el.getBoundingClientRect();
                     return r.width >= 40 && r.height >= 15;
                 });
-                // 3. includes() — кнопка с дополнительным текстом (напр. "399\\nContinue")
+                // 3. includes() — кнопка с дополнительным текстом внутри (напр. "399\\nContinue")
                 if (!found) found = all.find(el => {
-                    const lines = (el.innerText || '').trim().toLowerCase().split('\\n').map(s => s.trim());
-                    if (!lines.some(l => kw.some(k => l === k))) return false;
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    if (!kw.some(k => t.includes(k))) return false;
+                    if (kw.some(k => t === k)) return false; // уже проверили точное совпадение
                     const r = el.getBoundingClientRect();
                     if (r.width < 60 || r.height < 20) return false;
                     const bg = window.getComputedStyle(el).backgroundColor;
@@ -7092,6 +7093,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
 
         # ── Шаг A: сразу попали на форму адреса ─────────────────────────────
         if "changeShippingAddress" in page.url or "add/form" in page.url:
+            print(f"  Заполняю форму адреса...")
             if not await _fill_addr_bm():
                 return False, "Кнопка Save Address не найдена"
 
@@ -7145,8 +7147,25 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             if reached == "OUT_OF_STOCK":
                 return False, f"OUT_OF_STOCK|{addr_msg}"
 
+            # Set Location увёл на address-map, но навигация назад не завершилась
+            if not reached and "address-map" in page.url:
+                print(f"  Всё ещё на address-map — жду возврата на viewcheckout...")
+                try:
+                    await page.wait_for_url("**/viewcheckout**", timeout=10_000)
+                    reached = await _viewcheckout_to_payments(page)
+                except Exception:
+                    if "address-map" in page.url:
+                        print(f"  address-map: нажимаю Back...")
+                        await page.go_back()
+                        await page.wait_for_timeout(3_000)
+                        reached = await _viewcheckout_to_payments(page)
+            if reached == "OUT_OF_STOCK":
+                return False, f"OUT_OF_STOCK|{addr_msg}"
+
             # После Continue мог появиться запрос адреса
-            if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url):
+            if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url) \
+                    and "address-map" not in page.url:
+                print(f"  Flipkart запросил адрес после Continue — заполняю...")
                 if not await _fill_addr_bm():
                     return False, "Кнопка Save Address не найдена (после Continue)"
                 reached = await _viewcheckout_to_payments(page)
