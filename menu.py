@@ -9018,7 +9018,28 @@ def screen_logs():
         subprocess.Popen(["notepad.exe", str(log_path)])
 
 
+def _deps_ok() -> bool:
+    """Быстрая проверка без сети: все пакеты импортируются и Chromium установлен."""
+    try:
+        import playwright, loguru, yaml, httpx  # noqa: F401
+    except ImportError:
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as _pw:
+            _exe = _pw.chromium.executable_path
+        import os
+        if not os.path.exists(_exe):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def screen_install(auto: bool = False):
+    if auto and _deps_ok():
+        return  # всё уже установлено — пропускаем без очистки экрана
+
     cls()
     header("УСТАНОВКА ЗАВИСИМОСТЕЙ", M)
 
