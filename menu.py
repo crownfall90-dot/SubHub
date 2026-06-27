@@ -5042,6 +5042,8 @@ async def _handle_paytm_currency_page(page) -> bool:
     _3ds_res = await _handle_3ds_verification(page)
     if _3ds_res == "otp_timeout":
         return "otp_timeout"
+    if _3ds_res == "declined":
+        return "declined"
     if _3ds_res == "switch_card":
         print(f"  {Y}⚠ Смена карты — возвращаюсь на payments...{RST}")
         for _sbi in range(10):
@@ -5411,27 +5413,39 @@ async def _handle_3ds_verification(page) -> bool:
                 print(f"  {R}❌ Оплата не прошла — время ожидания OTP (15 мин) истекло{RST}")
                 return "otp_timeout"
     else:
-        print(f"  {Y}⚠ Поле ввода OTP не найдено — действуй вручную.{RST}")
-        # Проверяем — карта отклонена или просто OTP ещё не появился
-        try:
-            _body_low = (await page.evaluate(
-                "() => (document.body && document.body.innerText || '').toLowerCase()")) or ""
-            _is_declined = any(d in _body_low for d in (
-                "declined", "payment failed", "was declined", "card provider",
-                "try another", "contact your bank"))
-        except Exception:
-            _is_declined = False
+        print(f"  {Y}⚠ Поле ввода OTP не найдено — проверяю отказ карты...{RST}")
+        # URL /retry или /error от PayGlocal — однозначный признак отказа
+        _h3ds_url = page.url
+        _is_declined = "/retry" in _h3ds_url or "/error" in _h3ds_url
+        if not _is_declined:
+            try:
+                _body_low = ""
+                for _fr in [page] + list(page.frames):
+                    try:
+                        _body_low += (await _fr.evaluate(
+                            "() => (document.body && document.body.innerText || '').toLowerCase()")) or ""
+                    except Exception:
+                        pass
+                _is_declined = any(d in _body_low for d in (
+                    "declined", "payment failed", "was declined", "card provider",
+                    "try another", "contact your bank"))
+            except Exception:
+                pass
         if _is_declined:
+            print(f"  {Y}⚠ Карта отклонена банком (URL: {_h3ds_url[:60]}){RST}")
             try:
                 _card_rows = _build_card_rows()
-                _msg_declined = "❌ *Карта отклонена банком*\n\nВыберите другую карту для повторной попытки:"
+                _msg_declined = "❌ *Карта отклонена банком*\n\nБот автоматически повторит попытку."
                 if _card_rows:
+                    _msg_declined += "\n\n_Доступные карты:_"
                     _tg_send_direct_kb(_msg_declined, {"inline_keyboard": _card_rows})
                 else:
                     _tg_send_direct(_msg_declined)
                 print("  3DS: уведомление об отказе карты отправлено в TG")
             except Exception as _ntf_err2:
-                print(f"  {R}3DS: ошибка отправки уведомления об отказе: {_ntf_err2}{RST}")
+                print(f"  {R}3DS: ошибка уведомления об отказе: {_ntf_err2}{RST}")
+            return "declined"
+        print(f"  {Y}⚠ Действуй вручную.{RST}")
 
     # Ждём возврата на Flipkart (до 60 сек), если ещё не там
     if "flipkart.com" not in page.url:
