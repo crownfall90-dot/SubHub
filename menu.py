@@ -4342,20 +4342,57 @@ async def _handle_paytm_currency_page(page) -> bool:
             if pay_clicked:
                 break
             try:
-                # Ищем через Playwright locator — он сам переводит координаты iframe
                 _cc_loc = None
                 for _phrase in _CC_PHRASES:
-                    _loc = _fr_cc.locator(f"text='{_phrase}'").first
-                    try:
-                        if await _loc.is_visible(timeout=300):
-                            _cc_loc = _loc
-                            print(f"  Найдена кнопка '{_phrase}' — кликаю...")
-                            break
-                    except Exception:
-                        pass
+                    # Ищем именно кликабельные элементы (a/button/span/role=button)
+                    import re as _re_cc
+                    _pat = _re_cc.compile(_phrase, _re_cc.I)
+                    for _sel_cc in [
+                        f"a", "button", "[role='link']", "[role='button']", "span", "p"
+                    ]:
+                        _loc = _fr_cc.locator(_sel_cc).filter(has_text=_pat).first
+                        try:
+                            if await _loc.is_visible(timeout=200):
+                                _cc_loc = _loc
+                                print(f"  Найден '{_phrase}' ({_sel_cc}) — кликаю...")
+                                break
+                        except Exception:
+                            pass
+                    if _cc_loc:
+                        break
                 if _cc_loc is None:
-                    continue
-                await _cc_loc.click(timeout=5_000)
+                    # JS-фолбэк: ищем напрямую в DOM фрейма
+                    try:
+                        _bbox = await _fr_cc.evaluate("""() => {
+                            for (const el of document.querySelectorAll(
+                                    'a,button,span,[role="button"],[role="link"]')) {
+                                const t = (el.textContent || '').toLowerCase();
+                                if (t.includes('another currency') || t.includes('change currency'))
+                                {
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width > 10 && r.height > 5)
+                                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                                }
+                            }
+                            return null;
+                        }""")
+                        if _bbox:
+                            print(f"  JS-клик по 'another currency' в фрейме {_fr_cc.url[:40]}...")
+                            await _fr_cc.evaluate("""() => {
+                                for (const el of document.querySelectorAll(
+                                        'a,button,span,[role="button"],[role="link"]')) {
+                                    const t = (el.textContent || '').toLowerCase();
+                                    if (t.includes('another currency') || t.includes('change currency'))
+                                    { el.click(); return; }
+                                }
+                            }""")
+                            await page.wait_for_timeout(1_500)
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                else:
+                    await _cc_loc.click(timeout=5_000)
                 # Ждём появления модалки со списком валют (до 5 сек)
                 try:
                     await _fr_cc.wait_for_function("""() => {
