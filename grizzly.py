@@ -204,11 +204,16 @@ def kill_all_bot_chrome() -> int:
     killed = 0
     try:
         import psutil
-        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        # Сначала берём только chrome-процессы (без cmdline — быстро)
+        chrome_pids = [
+            p.pid for p in psutil.process_iter(["pid", "name"])
+            if "chrome" in (p.info.get("name") or "").lower()
+        ]
+        # Затем проверяем cmdline только у chrome (не у всех процессов)
+        for pid in chrome_pids:
             try:
-                if "chrome" not in (proc.info.get("name") or "").lower():
-                    continue
-                cmdline = " ".join(proc.info.get("cmdline") or [])
+                proc = psutil.Process(pid)
+                cmdline = " ".join(proc.cmdline())
                 if any(m in cmdline for m in markers):
                     proc.kill()
                     killed += 1
