@@ -3566,18 +3566,49 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
         except Exception as e:
             return f"Ошибка клика по 'Buy now': {e}"
 
-    # Ждём навигации после клика
+    # Ждём навигации после клика — URL или checkout-контент на странице
+    _CHECKOUT_DOM = """() => {
+        const url = location.href;
+        if (url.includes('viewcheckout') || url.includes('payments') ||
+                url.includes('changeShippingAddress') || url.includes('add/form'))
+            return true;
+        const text = (document.body && document.body.innerText || '').toLowerCase();
+        return text.includes('delivery address') || text.includes('select delivery')
+            || text.includes('order summary') || text.includes('place order')
+            || text.includes('payment') || text.includes('add new address');
+    }"""
     try:
-        await page.wait_for_function(
-            "u => location.href !== u", arg=landed, timeout=20_000
-        )
+        await page.wait_for_function(_CHECKOUT_DOM, timeout=20_000)
     except Exception:
         pass
-    await page.wait_for_timeout(1_000)
+    await page.wait_for_timeout(500)
 
-    # Успех: страница изменилась ИЛИ уже на checkout/payments
+    # Успех: URL изменился, ИЛИ уже на checkout, ИЛИ checkout-контент в DOM
     if page.url != landed or any(s in page.url for s in _SUCCESS_PARTS):
         return None
+    try:
+        on_checkout = await page.evaluate(_CHECKOUT_DOM)
+        if on_checkout:
+            return None
+    except Exception:
+        pass
+
+    # Повторный клик — иногда первый клик попадает в неактивное состояние кнопки
+    clicked2 = (
+        await _try_click(page.locator(_BUY_CSS))
+        or await _try_click(page.get_by_role("button", name=_re.compile(r"buy\s*now", _re.I)))
+    )
+    if clicked2:
+        try:
+            await page.wait_for_function(_CHECKOUT_DOM, timeout=15_000)
+            await page.wait_for_timeout(500)
+            if page.url != landed or any(s in page.url for s in _SUCCESS_PARTS):
+                return None
+            if await page.evaluate(_CHECKOUT_DOM):
+                return None
+        except Exception:
+            pass
+
     if await _page_logged_out(page):
         return _NOT_LOGGED_IN_MSG
     return "Клик по 'Buy now' не дал навигации"
