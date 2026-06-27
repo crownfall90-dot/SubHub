@@ -928,6 +928,35 @@ class GGSellBotHandler:
         PAGE_SIZE = 5
         page_orders = yt_orders[offset:offset + PAGE_SIZE]
 
+        # Для заказов без email — запрашиваем через API параллельно
+        def _has_email(o: dict, inv_i: int) -> bool:
+            p = self.parse_order(o)
+            if (chat_email_map.get(inv_i) or p["email"]
+                    or o.get("buyer_email") or o.get("email")
+                    or (o.get("buyer") or {}).get("email")
+                    or (o.get("buyer_info") or {}).get("email")):
+                return True
+            cached = self.orders.get(inv_i, {})
+            if isinstance(cached, dict):
+                if (cached.get("buyer_email")
+                        or self.parse_order(cached.get("order", {})).get("email", "")):
+                    return True
+            return bool(self._done_buyer_emails.get(inv_i, ""))
+
+        missing_ids = [
+            int(o.get("invoice_id") or o.get("id") or 0)
+            for o in page_orders
+            if int(o.get("invoice_id") or o.get("id") or 0)
+            and not _has_email(o, int(o.get("invoice_id") or o.get("id") or 0))
+        ]
+        if missing_ids:
+            fetched = await asyncio.gather(
+                *[cli.get_buyer_email(i) for i in missing_ids],
+                return_exceptions=True)
+            for inv_i, res in zip(missing_ids, fetched):
+                if isinstance(res, str) and res:
+                    self._done_buyer_emails[inv_i] = res
+
         for o in page_orders:
             inv   = o.get("invoice_id") or o.get("id") or "?"
             inv_i = int(inv) if str(inv).isdigit() else 0
