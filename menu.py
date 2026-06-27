@@ -7106,6 +7106,20 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         if err:
             return False, err
 
+        # После Buy Now страница ещё может быть в переходе — ждём чекаут URL
+        _CHECKOUT_PARTS = ("viewcheckout", "changeShippingAddress", "payments", "add/form")
+        if not any(s in page.url for s in _CHECKOUT_PARTS):
+            print(f"  {DIM}Страница после Buy Now ещё загружается, жду чекаут...{RST}")
+            try:
+                await page.wait_for_function("""() => {
+                    const url = location.href;
+                    return url.includes('viewcheckout') || url.includes('changeShippingAddress') ||
+                           url.includes('payments') || url.includes('add/form');
+                }""", timeout=20_000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1_000)
+
         addr_msg = ""
 
         async def _fill_addr_bm():
