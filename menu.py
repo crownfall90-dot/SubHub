@@ -7234,6 +7234,13 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             pass
 
         # ── Шаг C: проверяем что попали на payments ──────────────────────────
+        # Если URL ещё в переходе — ждём до 15 сек пока не появится payments
+        if "payments" not in page.url:
+            print(f"  {DIM}Ждём загрузки страницы оплаты...{RST}")
+            try:
+                await page.wait_for_url("**/payments**", timeout=15_000)
+            except Exception:
+                pass
         if "payments" not in page.url:
             _keep_open = not _auto_close
             _send_tg_error(_pp_phone, f"Не удалось перейти на страницу оплаты ({page.url.split('?')[0].split('/')[-1]})")
