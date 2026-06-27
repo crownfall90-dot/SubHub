@@ -1010,6 +1010,10 @@ class GGSellBotHandler:
             orders_v1 = await cli.get_orders_v1(limit=30)
             yt_orders = [o for o in orders_v1
                          if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
+            if not yt_orders:
+                orders_fb = await cli.get_last_orders()
+                yt_orders = [o for o in orders_fb
+                             if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID]
         except Exception as exc:
             await self._edit(cid, mid, f"❌ Ошибка загрузки заказов: {exc}",
                 {"inline_keyboard": [[{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}]]})
