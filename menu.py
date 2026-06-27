@@ -5252,33 +5252,6 @@ async def _handle_3ds_verification(page) -> bool:
         (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text("[]", encoding="utf-8")
     except Exception:
         pass
-    # Уведомляем пользователя что код отправлен банком (с кнопками смены карты)
-    try:
-        _otp_notify_rows = []
-        _opts_src = _3ds_card_options[:]
-        print(f"  3DS: _3ds_card_options = {len(_opts_src)} карт(ы)")
-        for _opt in _opts_src:
-            _sw_nm = (_opt["card"].get("nickname")
-                      or _opt["card"].get("name")
-                      or _mask_card(_opt["card"].get("number", "")))
-            _otp_notify_rows.append([{"text": f"💳 {_sw_nm}",
-                                      "callback_data": f"pay:switch:{_opt['pos']}"}])
-        if _otp_notify_rows:
-            _tg_send_direct_kb(
-                "📲 *Код подтверждения отправлен на карту*\n\n"
-                "Перешлите код сюда — бот введёт его автоматически.\n\n"
-                "_Или выберите другую карту:_",
-                {"inline_keyboard": _otp_notify_rows},
-            )
-        else:
-            _tg_send_direct(
-                "📲 *Код подтверждения отправлен на карту*\n\n"
-                "Перешлите код сюда — бот введёт его автоматически."
-            )
-        print("  3DS: уведомление TG отправлено")
-    except Exception as _otp_ntf_err:
-        print(f"  {R}3DS: ошибка отправки уведомления TG: {_otp_ntf_err}{RST}")
-
     # Ждём поле ввода OTP — ищем во всех фреймах (может быть в cross-origin iframe)
     otp_inp = None
     _otp_frame_found = None
@@ -5300,7 +5273,35 @@ async def _handle_3ds_verification(page) -> bool:
             break
         await page.wait_for_timeout(500)
 
+    def _build_card_rows() -> list:
+        rows = []
+        for _opt in _3ds_card_options[:]:
+            _nm = (_opt["card"].get("nickname") or _opt["card"].get("name")
+                   or _mask_card(_opt["card"].get("number", "")))
+            rows.append([{"text": f"💳 {_nm}", "callback_data": f"pay:switch:{_opt['pos']}"}])
+        return rows
+
     if otp_inp:
+        # OTP-поле найдено → уведомляем что код отправлен банком
+        try:
+            _card_rows = _build_card_rows()
+            print(f"  3DS: _3ds_card_options = {len(_card_rows)} карт(ы)")
+            if _card_rows:
+                _tg_send_direct_kb(
+                    "📲 *Код подтверждения отправлен на карту*\n\n"
+                    "Перешлите код сюда — бот введёт его автоматически.\n\n"
+                    "_Или выберите другую карту:_",
+                    {"inline_keyboard": _card_rows},
+                )
+            else:
+                _tg_send_direct(
+                    "📲 *Код подтверждения отправлен на карту*\n\n"
+                    "Перешлите код сюда — бот введёт его автоматически."
+                )
+            print("  3DS: уведомление TG отправлено")
+        except Exception as _ntf_err:
+            print(f"  {R}3DS: ошибка отправки уведомления TG: {_ntf_err}{RST}")
+
         # Пробуем получить OTP автоматически из Telegram
         otp_code = await _get_3ds_otp_from_telegram()
 
@@ -5411,6 +5412,26 @@ async def _handle_3ds_verification(page) -> bool:
                 return "otp_timeout"
     else:
         print(f"  {Y}⚠ Поле ввода OTP не найдено — действуй вручную.{RST}")
+        # Проверяем — карта отклонена или просто OTP ещё не появился
+        try:
+            _body_low = (await page.evaluate(
+                "() => (document.body && document.body.innerText || '').toLowerCase()")) or ""
+            _is_declined = any(d in _body_low for d in (
+                "declined", "payment failed", "was declined", "card provider",
+                "try another", "contact your bank"))
+        except Exception:
+            _is_declined = False
+        if _is_declined:
+            try:
+                _card_rows = _build_card_rows()
+                _msg_declined = "❌ *Карта отклонена банком*\n\nВыберите другую карту для повторной попытки:"
+                if _card_rows:
+                    _tg_send_direct_kb(_msg_declined, {"inline_keyboard": _card_rows})
+                else:
+                    _tg_send_direct(_msg_declined)
+                print("  3DS: уведомление об отказе карты отправлено в TG")
+            except Exception as _ntf_err2:
+                print(f"  {R}3DS: ошибка отправки уведомления об отказе: {_ntf_err2}{RST}")
 
     # Ждём возврата на Flipkart (до 60 сек), если ещё не там
     if "flipkart.com" not in page.url:
