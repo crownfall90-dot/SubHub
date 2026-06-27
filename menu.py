@@ -6881,6 +6881,36 @@ async def _viewcheckout_to_payments(page) -> bool:
         if "viewcheckout" not in page.url:
             break  # ушли на add/form или другую страницу
 
+        # Кнопка Continue не найдена — обновляем страницу (F5) и ждём снова
+        if not clicked and "viewcheckout" in page.url:
+            print(f"  {DIM}Кнопка Continue не найдена — обновляю страницу (F5)...{RST}")
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15_000)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_function("""() => {
+                    if (location.href.includes('changeShippingAddress') || location.href.includes('add/form')) return true;
+                    const body = (document.body?.textContent || '').toLowerCase();
+                    if (body.includes('currently out of stock') || body.includes('out of stock for') ||
+                        body.includes('not deliverable') || body.includes('try another address')) return true;
+                    for (const el of document.querySelectorAll('button, div, a, span, [role="button"]')) {
+                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (t === 'set location') return true;
+                    }
+                    const kw = ['continue', 'place order'];
+                    for (const el of document.querySelectorAll('div, button, a, span, [role="button"]')) {
+                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (!kw.some(k => t === k)) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width >= 40 && r.height >= 15) return true;
+                    }
+                    return false;
+                }""", timeout=20_000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1_000)
+
         # Ещё на viewcheckout — подождём и повторим
         await page.wait_for_timeout(_r.uniform(600, 1_000))
 
