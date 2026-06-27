@@ -207,6 +207,7 @@ def _menu_tg_bot_thread() -> None:
         _card_order_waiting: dict = {} # {cid: True} — ждём ввода порядка карт для основного бота
         _sale_input_waiting: dict = {}  # {cid: {"phone": str, "plan": str}} — ждём сумму продажи
         _sales_cost_waiting: dict = {}  # {cid: "3m"|"12m"} — ждём ввод себестоимости
+        _note_waiting: dict = {}        # {cid: phone} — ждём текст примечания к профилю
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -592,6 +593,8 @@ def _menu_tg_bot_thread() -> None:
                 rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
 
             rows.append([{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}])
+            _note_lbl = ("📝 Примечание: " + (m.get("note") or "")[:20]) if m.get("note") else "📝 Добавить примечание"
+            rows.append([{"text": _note_lbl, "callback_data": f"profile:note:{phone}"}])
             rows.append([{"text": "◀️ Назад", "callback_data": back_callback}])
             return {"inline_keyboard": rows}
 
@@ -765,44 +768,58 @@ def _menu_tg_bot_thread() -> None:
         def _cards_order_page(cid):
             try:
                 if not CARDS_FILE.exists():
-                    return "💳 *Порядок карт для авто-оплаты*\n\n_Файл cards.json не найден_", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
+                    return "💳 *Карты*\n\n_Файл cards.json не найден_", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
                 cards = json.loads(CARDS_FILE.read_text(encoding="utf-8"))
                 if not cards:
-                    return "💳 *Порядок карт для авто-оплаты*\n\n_Список пуст_", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
-                
+                    return "💳 *Карты*\n\n_Список пуст_", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
+
                 order = _load_card_order()
-                lines = ["💳 *Порядок карт для авто-оплаты*", "", "*Доступные карты:*"]
+                num_icons = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+                medal_icons = ["🥇", "🥈", "🥉"] + ["▫️"] * 10
+
+                lines = ["💳 *Карты для авто-оплаты*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+
+                lines.append("📋 *Все карты:*")
                 for i, c in enumerate(cards):
-                    lines.append(f"  `{_card_label(c, i + 1)}`")
+                    num = str(c.get("number", "")).replace(" ", "").replace("-", "")
+                    mask = f"****{num[-4:]}" if len(num) >= 4 else "****"
+                    name = c.get("nickname") or c.get("name") or ""
+                    exp = c.get("expiry") or c.get("exp") or ""
+                    icon = num_icons[i] if i < len(num_icons) else f"{i+1}."
+                    parts = [icon, f"`{mask}`"]
+                    if name:
+                        parts.insert(1, f"*{name}*")
+                    if exp:
+                        parts.append(f"_{exp}_")
+                    lines.append("  " + "  ·  ".join(p for p in parts if p))
                 lines.append("")
 
                 if order:
-                    order_labels = []
-                    for idx in order:
+                    lines.append("🔄 *Порядок при авто-оплате:*")
+                    for pos, idx in enumerate(order):
                         if 0 <= idx < len(cards):
-                            num = str(cards[idx].get("number", "")).replace(" ", "")[-4:]
-                            name = cards[idx].get("nickname") or cards[idx].get("name") or "Карта"
-                            order_labels.append(f"*{idx + 1}*  _{name}_ (*{num})")
-                    if order_labels:
-                        lines.append("*Текущий порядок попытки:*")
-                        for pos, lbl in enumerate(order_labels, 1):
-                            lines.append(f"  {pos}. {lbl}")
-                        lines.append("")
+                            c = cards[idx]
+                            num = str(c.get("number", "")).replace(" ", "")[-4:]
+                            name = c.get("nickname") or c.get("name") or ""
+                            medal = medal_icons[pos] if pos < len(medal_icons) else "▫️"
+                            card_str = f"*{name}*  `****{num}`" if name else f"`****{num}`"
+                            lines.append(f"  {medal}  {card_str}  _{f'(карта {idx+1})'}_")
+                    lines.append("")
                 else:
                     lines.append("_Порядок не задан — карты берутся по умолчанию_")
                     lines.append("")
 
-                lines.append("_Нажми кнопку ниже и отправь порядок числами через пробел._")
-                lines.append("_Например:_ `1 3 2`  _(попробует 1-ю, затем 3-ю, затем 2-ю)_")
+                lines.append("_Отправь номера карт через пробел для задания порядка._")
+                lines.append(f"_Пример:_ `2 1 3`")
 
                 kb_rows = []
                 if order:
-                    kb_rows.append([{"text": "🔄 Сбросить к умолчанию", "callback_data": "cards:order_reset"}])
-                kb_rows.append([{"text": "✏️ Изменить порядок", "callback_data": "cards:order_edit"}])
+                    kb_rows.append([{"text": "🔄 Сбросить порядок", "callback_data": "cards:order_reset"}])
+                kb_rows.append([{"text": "✏️ Задать порядок", "callback_data": "cards:order_edit"}])
                 kb_rows.append([{"text": "◀️ Назад", "callback_data": "go:other"}])
                 return "\n".join(lines), {"inline_keyboard": kb_rows}
             except Exception as e:
-                return f"💳 *Порядок карт*\n\n❌ Ошибка: {e}", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
+                return f"💳 *Карты*\n\n❌ Ошибка: {e}", {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:other"}]]}
 
         # ── Логи ──────────────────────────────────────────────────────────────
         def _logs_text(n=40):
@@ -2201,9 +2218,31 @@ def _menu_tg_bot_thread() -> None:
                     _info += f"\n⏳ До:       <b>{_pm_vt}</b>"
                 if _pm_slink:
                     _info += f"\n🔗 <a href=\"{_pm_slink}\">{_pm_slink}</a>"
+                _pm_note = _pm.get("note") or ""
+                if _pm_note:
+                    _info += f"\n📝 <i>{_pm_note}</i>"
                 txt = (_info + "\n\n" +
                        ("⏳ <i>Операция выполняется...</i>" if busy else "Выберите действие:"))
                 await _edit(cid, mid, txt, _profile_menu_kb(phone, list_type, rec_file), parse_mode="HTML")
+                return
+
+            if data.startswith("profile:note:"):
+                phone = data.split(":", 2)[2]
+                pp = _find_profile(phone)
+                cur_note = ""
+                if pp:
+                    try:
+                        cur_note = _m("_read_profile_meta")(pp).get("note") or ""
+                    except Exception:
+                        pass
+                _note_waiting[cid] = phone
+                await _ack(qid, "")
+                _note_hint = f"Текущее: «{cur_note}»\n\n" if cur_note else ""
+                await _send(cid,
+                    f"📝 <b>Примечание к профилю</b> <code>{_disp_phone(phone)}</code>\n\n"
+                    f"{_note_hint}"
+                    f"Отправьте текст примечания или <code>-</code> для удаления.",
+                    parse_mode="HTML")
                 return
 
             if data.startswith("profile:shownum:"):
@@ -3107,7 +3146,39 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid, "🛑 Останавливаю...")
                 return
 
-            if data.startswith("pay:switch:"):
+            if data.startswith("pay:switch:") and not data.startswith("pay:switch_confirm:"):
+                try:
+                    _pos = int(data.split(":")[-1])
+                    # Ищем имя карты в _3ds_card_options
+                    _card_name = ""
+                    try:
+                        for _opt in _m("_3ds_card_options"):
+                            if _opt.get("pos") == _pos:
+                                _c = _opt.get("card", {})
+                                _card_name = (_c.get("nickname") or _c.get("name")
+                                              or _m("_mask_card")(_c.get("number", "")))
+                                break
+                    except Exception:
+                        pass
+                    _card_display = f"*{_card_name}*" if _card_name else f"карту №{_pos + 1}"
+                    _kb_confirm = {"inline_keyboard": [
+                        [{"text": "✅ Да, сменить карту",
+                          "callback_data": f"pay:switch_confirm:{_pos}"}],
+                        [{"text": "❌ Нет, продолжить ожидание OTP",
+                          "callback_data": "pay:switch_cancel"}],
+                    ]}
+                    await _edit(cid, mid,
+                        f"❓ *Сменить карту?*\n\n"
+                        f"Продолжить оплату с карты {_card_display}?\n\n"
+                        f"_Текущее ожидание OTP будет прервано._",
+                        kb=_kb_confirm)
+                except Exception as _sw_err:
+                    await _ack(qid, f"Ошибка: {_sw_err}", alert=True)
+                    return
+                await _ack(qid, "")
+                return
+
+            if data.startswith("pay:switch_confirm:"):
                 try:
                     _pos = int(data.split(":")[-1])
                     _m("_switch_card_choice")[0] = _pos
@@ -3115,6 +3186,28 @@ def _menu_tg_bot_thread() -> None:
                 except Exception:
                     pass
                 await _ack(qid, "🔄 Переключаю карту...")
+                return
+
+            if data == "pay:switch_cancel":
+                await _ack(qid, "✅ Продолжаю ожидание OTP", alert=True)
+                return
+
+            if data.startswith("fill:orders_ok:"):
+                try:
+                    _m("_orders_confirm_choice")[0] = True
+                    _m("_orders_confirm_ev").set()
+                except Exception:
+                    pass
+                await _ack(qid, "✅ Продолжаю заполнение...")
+                return
+
+            if data.startswith("fill:orders_del:"):
+                try:
+                    _m("_orders_confirm_choice")[0] = False
+                    _m("_orders_confirm_ev").set()
+                except Exception:
+                    pass
+                await _ack(qid, "🗑 Удаляю профиль...")
                 return
 
             if data == "run:status":
@@ -3242,6 +3335,28 @@ def _menu_tg_bot_thread() -> None:
             # Режим ввода порядка карт GGSell
             if _ggsel_handler[0] and _ggsel_handler[0].check_card_order_mode(cid, text):
                 asyncio.create_task(_ggsel_handler[0].bg_card_order_save(cid, text))
+                return
+
+            # Режим ввода примечания к профилю
+            if _note_waiting.get(cid):
+                _note_phone = _note_waiting.pop(cid)
+                _new_note = "" if text == "-" else text
+                _saved = False
+                try:
+                    pp = _find_profile(_note_phone)
+                    if pp:
+                        _m("_save_meta_field")(pp, note=_new_note)
+                        _saved = True
+                except Exception:
+                    pass
+                if _saved:
+                    if _new_note:
+                        await _send(cid, f"✅ Примечание сохранено:\n<i>{_new_note}</i>",
+                                    parse_mode="HTML")
+                    else:
+                        await _send(cid, "✅ Примечание удалено")
+                else:
+                    await _send(cid, "❌ Не удалось сохранить примечание")
                 return
 
             # Режим ввода порядка карт для основного бота

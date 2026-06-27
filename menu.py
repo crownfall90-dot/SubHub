@@ -2309,6 +2309,9 @@ def screen_profiles():
             print(f"  Даты     : {_info_line}")
             if _sel_slink:
                 print(f"  Ссылка   : {C}{_sel_slink}{RST}")
+            _sel_note = selected.get("note") or ""
+            if _sel_note:
+                print(f"  Примечание: {Y}{_sel_note}{RST}")
             print()
 
             opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)
@@ -2321,6 +2324,7 @@ def screen_profiles():
                 opt("2 / В", "Пометить «Выдан»        (активен, передан клиенту)", B)
             opt("3 / И", "Пометить «Использован»   (завершён, перенести в архив)", M)
             opt("К",     "Восстановить сессию из JSON куков (cookies_backup/)", C)
+            opt("Н",     f"Примечание{'  «' + _sel_note[:30] + '»' if _sel_note else '  (нет)'}", Y)
             opt("9",     "Удалить профиль навсегда", R)
             print()
             opt("0", "Назад к списку", R)
@@ -2502,6 +2506,28 @@ def screen_profiles():
                         print(f"\n  {R}Ошибка архивирования.{RST}")
                     time.sleep(2)
                     break   # выйти из подменю, обновить список
+
+            elif action in ("Н", "N"):
+                cls()
+                header("ПРИМЕЧАНИЕ К ПРОФИЛЮ", Y)
+                _cur_note = selected.get("note") or ""
+                print(f"  Профиль  : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
+                if _cur_note:
+                    print(f"  Текущее  : {Y}{_cur_note}{RST}")
+                else:
+                    print(f"  Текущее  : {DIM}(нет){RST}")
+                print()
+                try:
+                    new_note = input(f"  {BLD}Новое примечание (Enter = очистить): {RST}").strip()
+                except EOFError:
+                    new_note = _cur_note
+                _save_meta_field(selected["path"], note=new_note)
+                selected["note"] = new_note
+                if new_note:
+                    print(f"\n  {G}✅ Примечание сохранено: {Y}{new_note}{RST}")
+                else:
+                    print(f"\n  {DIM}Примечание очищено.{RST}")
+                time.sleep(1.5)
 
             elif action in ("К", "K"):
                 cls()
@@ -2809,6 +2835,50 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
         return True  # при ошибке не удаляем
 
 
+async def _check_recent_black_orders(page) -> list:
+    """
+    Открывает страницу заказов и ищет ЛЮБЫЕ заказы Flipkart BLACK.
+    Возвращает список найденных строк с описанием заказа.
+    """
+    import re as _re_ord
+    found = []
+    try:
+        await page.goto("https://www.flipkart.com/account/orders?link=home_orders",
+                        wait_until="domcontentloaded", timeout=15_000)
+        await page.wait_for_timeout(2_000)
+        try:
+            await page.wait_for_function(
+                "() => document.body.innerText.toLowerCase().includes('order')",
+                timeout=8_000)
+        except Exception:
+            pass
+        page_text = ""
+        try:
+            page_text = await page.evaluate("() => document.body.innerText")
+        except Exception:
+            pass
+        lines = page_text.splitlines()
+        for i, line in enumerate(lines):
+            if "flipkart black" not in line.lower():
+                continue
+            context_text = " ".join(lines[max(0, i-3):i+6])
+            # Ищем статус доставки или дату в контексте
+            status = ""
+            m_date = _re_ord.search(
+                r"(delivered|ordered|cancelled|return)\s+(?:on\s+)?([A-Za-z]+\s+\d{1,2})",
+                context_text, _re_ord.I)
+            if m_date:
+                status = f"{m_date.group(1)} {m_date.group(2)}"
+            if line.strip():
+                desc = f"{line.strip()[:60]}"
+                if status:
+                    desc += f" ({status})"
+                found.append(desc)
+    except Exception:
+        pass
+    return found
+
+
 async def _do_fill_address(profile_path: Path, addr: dict,
                            _skip_proxies: set | None = None,
                            _retry_n: int = 0,
@@ -2861,6 +2931,57 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         # Повторяем grant ПОСЛЕ навигации — в persistent context важен порядок
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         await page.wait_for_timeout(2_000)
+
+        # Проверяем — нет ли уже купленного Black Membership
+        _phone_label = _phone_from_path(profile_path)
+        _recent_orders = await _check_recent_black_orders(page)
+        if _recent_orders:
+            _order_info = "; ".join(_recent_orders[:3])
+            print(f"\n  {Y}╔══ ВНИМАНИЕ: уже куплено! ════════════════════════════════╗{RST}")
+            print(f"  {Y}║  {_order_info[:70]}{RST}")
+            print(f"  {Y}╚═══════════════════════════════════════════════════════════╝{RST}")
+            _orders_confirm_ev.clear()
+            _orders_confirm_choice[0] = None
+            _tg_send_direct_kb(
+                f"⚠️ *Уже куплено!*\n\n"
+                f"Профиль `{_phone_label}` — найден заказ *Flipkart BLACK*:\n"
+                f"_{_order_info[:200]}_\n\n"
+                f"Что делать?",
+                {"inline_keyboard": [
+                    [{"text": "✅ Продолжить заполнение", "callback_data": f"fill:orders_ok:{_phone_label}"}],
+                    [{"text": "🗑 Удалить профиль", "callback_data": f"fill:orders_del:{_phone_label}"}],
+                ]}
+            )
+            print(f"  {Y}Жду ответа в Telegram (60 сек)...{RST}")
+            _wait_dl = asyncio.get_event_loop().time() + 60
+            while asyncio.get_event_loop().time() < _wait_dl:
+                if _orders_confirm_ev.is_set():
+                    break
+                await asyncio.sleep(1)
+            if _orders_confirm_choice[0] is False:
+                # Удаляем профиль
+                print(f"  {R}Удаляю профиль {_phone_label}...{RST}")
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+                import shutil as _shutil
+                try:
+                    _shutil.rmtree(str(profile_path), ignore_errors=True)
+                except Exception:
+                    pass
+                _tg_send_direct(f"🗑 Профиль `{_phone_label}` удалён (дубль заказа)")
+                return False, "Профиль удалён — дублирующий заказ"
+            else:
+                print(f"  {G}Продолжаю заполнение...{RST}")
+                # Возвращаемся на главную для Buy Now
+                await page.goto("https://www.flipkart.com",
+                                wait_until="domcontentloaded", timeout=15_000)
+                await page.wait_for_timeout(1_000)
 
         # Buy Now создаёт реальную сессию чекаута (прямой URL формы не работает)
         err = await _click_buy_now(page, _BLACK_URLS[3])
@@ -3676,6 +3797,10 @@ _switch_card_choice: list = [-1]  # [0] — позиция карты в _ordere
 _switch_card_ev = _threading_pc.Event()
 _3ds_card_options: list = []      # список {"pos": int, "card": dict} для TG-кнопок
 
+# Подтверждение при найденных дублях заказов (TG Да/Нет → menu.py ждёт ответа)
+_orders_confirm_ev = _threading_pc.Event()
+_orders_confirm_choice: list = [None]  # True=продолжить, False=удалить профиль
+
 
 class _PurchaseCancelled(Exception):
     """Выполнение прервано пользователем."""
@@ -4179,6 +4304,58 @@ async def _handle_paytm_currency_page(page) -> bool:
         return best;
     }"""
 
+    # 3DS-домены + хелпер (определяем ДО цикла, чтобы не было UnboundLocalError)
+    _3DS_DOMS = ("cardinalcommerce.com", "3dsecure", "verify.visa.com",
+                 "mastercard.com/ac", "payvision.com", "acspage", "cruise",
+                 "hitrust.com", "acs-auth", "challenge/brw", "threeDSecure", "threedsecure")
+
+    def _is_3ds_page(url: str) -> bool:
+        return (any(d in url for d in _3DS_DOMS)
+                or "StepUp" in url or "stepup" in url.lower()
+                or "3ds" in url.lower())
+
+    def _has_otp_text(body: str) -> bool:
+        b = body.lower()
+        return ("otp" in b or "one-time" in b or "verification code" in b
+                or "authentication" in b or "please get" in b
+                or "enter the code" in b or "enter code" in b
+                or "security code" in b or "passcode" in b
+                or "sent to your" in b or "sent to mobile" in b)
+
+    async def _page_all_text() -> str:
+        parts = []
+        try:
+            parts.append(await page.evaluate("() => document.body.innerText || ''"))
+        except Exception:
+            pass
+        for fr in page.frames:
+            try:
+                parts.append(await fr.evaluate("() => document.body.innerText || ''"))
+            except Exception:
+                pass
+        return " ".join(parts)
+
+    async def _has_otp_input() -> bool:
+        _otp_inp_js = """() => {
+            const sels = [
+                'input[name*="otp" i]', 'input[name*="code" i]',
+                'input[placeholder*="otp" i]', 'input[placeholder*="code" i]',
+                'input[type="tel"]', 'input[type="number"][maxlength]',
+                'input[maxlength="6"]', 'input[maxlength="4"]',
+            ];
+            return sels.some(s => {
+                const el = document.querySelector(s);
+                return el && el.offsetParent !== null;
+            });
+        }"""
+        for fr in [page] + list(page.frames):
+            try:
+                if await fr.evaluate(_otp_inp_js):
+                    return True
+            except Exception:
+                pass
+        return False
+
     # Внешний цикл: до 3 попыток (на случай отклонения платежа и возврата)
     pay_clicked = False
     for pay_attempt in range(3):
@@ -4398,8 +4575,8 @@ async def _handle_paytm_currency_page(page) -> bool:
                     await _fr_cc.wait_for_function("""() => {
                         for (const el of document.querySelectorAll('*')) {
                             const t = (el.innerText || el.textContent || '').trim().toUpperCase();
-                            if ((t === 'USD' || t.includes('SELECT A CURRENCY')
-                                    || t.includes('US DOLLAR') || t.includes('UNITED STATES'))
+                            if ((t.includes('INR') || t.includes('INDIAN RUPEE')
+                                    || t.includes('SELECT A CURRENCY'))
                                     && el.getBoundingClientRect().width > 10) return true;
                         }
                         return false;
@@ -4412,31 +4589,54 @@ async def _handle_paytm_currency_page(page) -> bool:
                     print("  Скриншот валютной модалки: debug_currency_modal.png")
                 except Exception:
                     pass
-                # Ищем и кликаем USD через locator в том же фрейме
-                _usd_clicked = False
+                # Ищем и кликаем INR (следующий по списку после дефолтной валюты)
+                _inr_clicked = False
                 for _sel in [
-                    "li:has-text('USD')", "li:has-text('US Dollar')",
-                    "[role='option']:has-text('USD')", "[role='listitem']:has-text('USD')",
-                    "tr:has-text('USD')",
-                    "div:has-text('USD')", "span:has-text('USD')", "button:has-text('USD')",
+                    "li:has-text('INR')", "li:has-text('Indian Rupee')", "li:has-text('INDIAN RUPEE')",
+                    "[role='option']:has-text('INR')", "[role='listitem']:has-text('INR')",
+                    "tr:has-text('INR')", "tr:has-text('Indian Rupee')",
+                    "div:has-text('Indian Rupee')", "span:has-text('Indian Rupee')",
+                    "button:has-text('INR')", "div:has-text('INR')", "span:has-text('INR')",
                 ]:
                     try:
-                        _usd_loc = _fr_cc.locator(_sel).first
-                        if await _usd_loc.is_visible(timeout=500):
-                            _txt = (await _usd_loc.inner_text()).strip()[:40]
-                            print(f"  Выбираю USD: {_txt!r}")
-                            await _usd_loc.click(timeout=3_000)
-                            _usd_clicked = True
+                        _inr_loc = _fr_cc.locator(_sel).filter(has_not_text="Pay").first
+                        if await _inr_loc.is_visible(timeout=500):
+                            _txt = (await _inr_loc.inner_text()).strip()[:40]
+                            print(f"  Выбираю INR: {_txt!r}")
+                            await _inr_loc.click(timeout=3_000)
+                            _inr_clicked = True
                             break
                     except Exception:
                         pass
-                if not _usd_clicked:
-                    print(f"  {Y}USD не найден в списке валют{RST}")
+                if not _inr_clicked:
+                    # JS-фолбэк: ищем INR/Indian Rupee в списке
+                    try:
+                        _inr_bb = await _fr_cc.evaluate("""() => {
+                            for (const el of document.querySelectorAll('li,tr,[role="option"],[role="listitem"],div,span')) {
+                                const t = (el.textContent || '').trim().toLowerCase();
+                                if ((t.includes('indian rupee') || t === 'inr') && t.length < 60) {
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width > 20 && r.height > 8) {
+                                        el.click();
+                                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                                    }
+                                }
+                            }
+                            return null;
+                        }""")
+                        if _inr_bb:
+                            print(f"  Выбираю INR (JS-фолбэк)")
+                            await page.mouse.click(_inr_bb["x"], _inr_bb["y"])
+                            _inr_clicked = True
+                    except Exception:
+                        pass
+                if not _inr_clicked:
+                    print(f"  {Y}INR не найден в списке валют — пропускаем{RST}")
                     break
                 # Ждём обновления кнопки Pay (до 3 сек)
                 await page.wait_for_timeout(1_000)
                 # Ищем кнопку Pay через locator в том же фрейме
-                _pay_usd_loc = None
+                _pay_inr_loc = None
                 for _psel in [
                     "button:has-text('Pay')", "[role='button']:has-text('Pay')",
                     "a:has-text('Pay')",
@@ -4448,18 +4648,18 @@ async def _handle_paytm_currency_page(page) -> bool:
                             has_not_text="Google"
                         ).filter(has_not_text="Change").first
                         if await _ploc.is_visible(timeout=500):
-                            _pay_usd_loc = _ploc
+                            _pay_inr_loc = _ploc
                             break
                     except Exception:
                         pass
-                if _pay_usd_loc:
-                    _ptxt = (await _pay_usd_loc.inner_text()).strip()[:60]
-                    print(f"  Нажимаю Pay USD: {_ptxt!r}")
-                    await _pay_usd_loc.click(timeout=5_000)
+                if _pay_inr_loc:
+                    _ptxt = (await _pay_inr_loc.inner_text()).strip()[:60]
+                    print(f"  Нажимаю Pay INR: {_ptxt!r}")
+                    await _pay_inr_loc.click(timeout=5_000)
                     pay_clicked = True
                     await page.wait_for_timeout(2_000)
                 else:
-                    print(f"  {Y}Кнопка Pay не найдена после выбора USD{RST}")
+                    print(f"  {Y}Кнопка Pay не найдена после выбора INR{RST}")
                 break  # нашли Change Currency — больше фреймы не перебираем
             except Exception as _cc_ex:
                 print(f"  {Y}Change Currency фрейм: {_cc_ex}{RST}")
@@ -4678,61 +4878,6 @@ async def _handle_paytm_currency_page(page) -> bool:
             await page.wait_for_load_state("domcontentloaded", timeout=3_000)
         except Exception:
             pass
-
-        # 3DS промежуточные страницы (cardinalcommerce StepUp и др.)
-        # Появление этой страницы = карта принята банком, нужна OTP-верификация
-        _3DS_DOMS = ("cardinalcommerce.com", "3dsecure", "verify.visa.com",
-                     "mastercard.com/ac", "payvision.com", "acspage", "cruise",
-                     "hitrust.com", "acs-auth", "challenge/brw", "threeDSecure", "threedsecure")
-
-        def _is_3ds_page(url: str) -> bool:
-            return (any(d in url for d in _3DS_DOMS)
-                    or "StepUp" in url or "stepup" in url.lower()
-                    or "3ds" in url.lower())
-
-        def _has_otp_text(body: str) -> bool:
-            b = body.lower()
-            return ("otp" in b or "one-time" in b or "verification code" in b
-                    or "authentication" in b or "please get" in b
-                    or "enter the code" in b or "enter code" in b
-                    or "security code" in b or "passcode" in b
-                    or "sent to your" in b or "sent to mobile" in b)
-
-        async def _page_all_text() -> str:
-            """Собирает текст со страницы + все iframe."""
-            parts = []
-            try:
-                parts.append(await page.evaluate("() => document.body.innerText || ''"))
-            except Exception:
-                pass
-            for fr in page.frames:
-                try:
-                    parts.append(await fr.evaluate("() => document.body.innerText || ''"))
-                except Exception:
-                    pass
-            return " ".join(parts)
-
-        async def _has_otp_input() -> bool:
-            """Есть ли поле ввода OTP на странице или в iframe."""
-            _otp_inp_js = """() => {
-                const sels = [
-                    'input[name*="otp" i]', 'input[name*="code" i]',
-                    'input[placeholder*="otp" i]', 'input[placeholder*="code" i]',
-                    'input[type="tel"]', 'input[type="number"][maxlength]',
-                    'input[maxlength="6"]', 'input[maxlength="4"]',
-                ];
-                return sels.some(s => {
-                    const el = document.querySelector(s);
-                    return el && el.offsetParent !== null;
-                });
-            }"""
-            for fr in [page] + list(page.frames):
-                try:
-                    if await fr.evaluate(_otp_inp_js):
-                        return True
-                except Exception:
-                    pass
-            return False
 
         _otp_required = False
 
@@ -4964,21 +5109,23 @@ async def _handle_paytm_currency_page(page) -> bool:
                 print(f"  {Y}⚠ Timeout ожидания OTP — считаю отклонённым{RST}")
                 return "otp_required"
 
-        try:
-            await page.wait_for_function(
-                "() => location.pathname.includes('/retry') || "
-                "      location.pathname.includes('/challenge') || "
-                "      location.pathname.includes('/error') || "
-                "      location.hostname.includes('flipkart.com') || "
-                "      location.hostname.includes('cardinalcommerce.com') || "
-                "      location.pathname.includes('StepUp') || "
-                "      location.pathname.includes('stepup') || "
-                "      location.hostname.includes('3dsecure') || "
-                "      (document.body && document.body.innerText.toLowerCase().includes('declined'))",
-                timeout=45_000,
-            )
-        except Exception:
-            pass
+        # Ждём результата платежа (до 45 сек) с проверкой кнопки «Остановить»
+        _pay_wait_dl = asyncio.get_event_loop().time() + 45
+        while asyncio.get_event_loop().time() < _pay_wait_dl:
+            _ckcancel()
+            try:
+                _cur = page.url
+                if ("flipkart.com" in _cur or "/retry" in _cur or "/error" in _cur
+                        or "cardinalcommerce.com" in _cur or "StepUp" in _cur
+                        or "3dsecure" in _cur or "stepup" in _cur.lower()):
+                    break
+                _body_chk = await page.evaluate(
+                    "() => document.body ? document.body.innerText.toLowerCase() : ''")
+                if "declined" in _body_chk:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
         declined = False
         _insufficient_funds = False
         try:
@@ -5126,21 +5273,65 @@ async def _handle_3ds_verification(page) -> bool:
     """
     import random as _r
 
+    def _build_card_rows_3ds() -> list:
+        rows = []
+        for _opt in _3ds_card_options[:]:
+            _nm = (_opt["card"].get("nickname") or _opt["card"].get("name")
+                   or _mask_card(_opt["card"].get("number", "")))
+            rows.append([{"text": f"💳 {_nm}", "callback_data": f"pay:switch:{_opt['pos']}"}])
+        return rows
+
+    # Ранняя проверка: PayGlocal /retry или /error = карта отклонена банком сразу
+    _cur_url_early = page.url
+    if ("payglocal" in _cur_url_early and
+            ("/retry" in _cur_url_early or "/error" in _cur_url_early)):
+        print(f"  {Y}⚠ PayGlocal: карта отклонена банком ({_cur_url_early[:70]}){RST}")
+        try:
+            _card_rows = _build_card_rows_3ds()
+            _msg = "❌ *Карта отклонена банком*\n\nБот автоматически повторит попытку."
+            if _card_rows:
+                _msg += "\n\n_Доступные карты:_"
+                _tg_send_direct_kb(_msg, {"inline_keyboard": _card_rows})
+            else:
+                _tg_send_direct(_msg)
+        except Exception:
+            pass
+        return "declined"
+
     # Если уже на 3DS/ACS странице — не ждём навигации
     _3ds_doms = ("cardinalcommerce.com", "3dsecure", "verify.visa.com",
                  "mastercard.com/ac", "hitrust.com", "acs-auth", "challenge",
                  "threeDSecure", "threedsecure", "StepUp", "stepup")
     _on_3ds = any(d in page.url for d in _3ds_doms) or "3ds" in page.url.lower()
     if not _on_3ds:
-        # Ждём 3DS страницы (hitrust, visa, mastercard ACS) — до 15 сек
+        # Ждём 3DS страницы (hitrust, visa, mastercard ACS) — до 15 сек, с проверкой /retry
         try:
             _3ds_patterns = ("cardinalcommerce", "3dsecure", "verify.visa", "mastercard",
                              "hitrust", "acs-auth", "challenge", "threeDSecure", "threedsecure", "StepUp", "stepup")
             await page.wait_for_url(
-                lambda u: any(pat in u for pat in _3ds_patterns) or "3ds" in u.lower(),
+                lambda u: (any(pat in u for pat in _3ds_patterns) or "3ds" in u.lower()
+                           or ("payglocal" in u and ("/retry" in u or "/error" in u))),
                 timeout=15_000
             )
         except Exception:
+            pass
+        # Повторная проверка после ожидания: попали на /retry?
+        _cur_url_after = page.url
+        if ("payglocal" in _cur_url_after and
+                ("/retry" in _cur_url_after or "/error" in _cur_url_after)):
+            print(f"  {Y}⚠ PayGlocal /retry после навигации — карта отклонена{RST}")
+            try:
+                _card_rows = _build_card_rows_3ds()
+                _msg = "❌ *Карта отклонена банком*\n\nБот автоматически повторит попытку."
+                if _card_rows:
+                    _msg += "\n\n_Доступные карты:_"
+                    _tg_send_direct_kb(_msg, {"inline_keyboard": _card_rows})
+                else:
+                    _tg_send_direct(_msg)
+            except Exception:
+                pass
+            return "declined"
+        if not (any(pat in page.url for pat in _3ds_patterns) or "3ds" in page.url.lower()):
             try:
                 await page.wait_for_function(
                     "() => document.title.includes('Verification') || "
@@ -5275,18 +5466,10 @@ async def _handle_3ds_verification(page) -> bool:
             break
         await page.wait_for_timeout(500)
 
-    def _build_card_rows() -> list:
-        rows = []
-        for _opt in _3ds_card_options[:]:
-            _nm = (_opt["card"].get("nickname") or _opt["card"].get("name")
-                   or _mask_card(_opt["card"].get("number", "")))
-            rows.append([{"text": f"💳 {_nm}", "callback_data": f"pay:switch:{_opt['pos']}"}])
-        return rows
-
     if otp_inp:
         # OTP-поле найдено → уведомляем что код отправлен банком
         try:
-            _card_rows = _build_card_rows()
+            _card_rows = _build_card_rows_3ds()
             print(f"  3DS: _3ds_card_options = {len(_card_rows)} карт(ы)")
             if _card_rows:
                 _tg_send_direct_kb(
@@ -5306,6 +5489,9 @@ async def _handle_3ds_verification(page) -> bool:
 
         # Пробуем получить OTP автоматически из Telegram
         otp_code = await _get_3ds_otp_from_telegram()
+
+        if otp_code == "switch_card":
+            return "switch_card"
 
         if otp_code:
             print(f"  3DS OTP из Telegram: {otp_code}")
@@ -5434,7 +5620,7 @@ async def _handle_3ds_verification(page) -> bool:
         if _is_declined:
             print(f"  {Y}⚠ Карта отклонена банком (URL: {_h3ds_url[:60]}){RST}")
             try:
-                _card_rows = _build_card_rows()
+                _card_rows = _build_card_rows_3ds()
                 _msg_declined = "❌ *Карта отклонена банком*\n\nБот автоматически повторит попытку."
                 if _card_rows:
                     _msg_declined += "\n\n_Доступные карты:_"
@@ -5493,6 +5679,10 @@ async def _get_3ds_otp_from_telegram() -> str | None:
     # Основной путь: читаем из файла, который пишет bot.py
     while asyncio.get_running_loop().time() < deadline:
         _ckcancel()
+        # Пользователь выбрал другую карту через TG
+        if _switch_card_ev.is_set():
+            print(f"  {Y}⚠ Смена карты из TG — прерываю ожидание OTP{RST}")
+            return "switch_card"
         try:
             codes = _json.loads(_OTP_FILE.read_text(encoding="utf-8"))
             if codes:
