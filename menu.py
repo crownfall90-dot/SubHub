@@ -9385,6 +9385,47 @@ def screen_update() -> None:
     pause()
 
 
+def _prompt_update_if_available() -> None:
+    """При старте: если есть обновления — показывает список и предлагает Д/Н."""
+    # Ждём завершения фоновой проверки (до 5 сек после TG-ожидания)
+    for _ in range(10):
+        if _update_checked:
+            break
+        time.sleep(0.5)
+    if not _update_available:
+        return
+    commits = _update_commits or []
+    cls()
+    header("ДОСТУПНО ОБНОВЛЕНИЕ", Y)
+    print()
+    print(f"  {Y}Новых коммитов: {BLD}{len(commits)}{RST}")
+    print()
+    for c in commits[:15]:
+        print(f"  {DIM}  • {c}{RST}")
+    if len(commits) > 15:
+        print(f"  {DIM}  ...и ещё {len(commits) - 15} коммитов{RST}")
+    print()
+    try:
+        ans = input(f"  {BLD}Скачать обновление? [Д / Н]: {RST}").strip().upper()
+    except KeyboardInterrupt:
+        return
+    if ans not in ("Д", "ДА"):
+        return
+    print(f"\n  {DIM}Применяю обновление...{RST}")
+    ok, msg = _do_git_update()
+    if ok:
+        print(f"  {G}✅ Обновление применено! Перезапускаю...{RST}")
+        if msg:
+            for _line in msg.splitlines():
+                print(f"  {DIM}  {_line}{RST}")
+        time.sleep(2)
+        _exit_code[0] = 42
+        sys.exit(42)
+    else:
+        print(f"  {R}❌ Ошибка: {msg}{RST}")
+        time.sleep(3)
+
+
 # ── Карты ─────────────────────────────────────────────────────────────────────
 
 def _load_cards() -> list:
@@ -10235,6 +10276,7 @@ if __name__ == "__main__":
                     if _bot_module._tg_status != "starting":
                         break
                     time.sleep(0.5)
+                _prompt_update_if_available()
                 screen_main()
             except KeyboardInterrupt:
                 cls()
