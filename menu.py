@@ -832,6 +832,8 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
         "PasswordBubble,SavePasswordBubble",
         "--disable-renderer-backgrounding",
         "--disable-ipc-flooding-protection",
+        "--disable-session-crashed-bubble",
+        "--disable-infobars",
         f"--window-size={vp['width']},{vp['height'] + 74}",
     ]
     kw: dict = {
@@ -922,6 +924,10 @@ def _pre_inject_chrome_prefs(profile_path: Path) -> None:
     prefs.setdefault("autofill", {})["credit_card_enabled"] = False
     prefs["credentials_enable_service"] = False
     prefs.setdefault("profile", {})["password_manager_enabled"] = False
+
+    # Помечаем прошлый сеанс как нормально завершённый — убирает popup "Восстановить страницы?"
+    prefs.setdefault("profile", {})["exit_type"] = "Normal"
+    prefs.setdefault("profile", {})["exited_cleanly"] = True
 
     try:
         prefs_file.write_text(_json.dumps(prefs, ensure_ascii=False), encoding="utf-8")
@@ -6730,6 +6736,17 @@ async def _viewcheckout_to_payments(page) -> bool:
 
     async def _mouse_click_continue(page) -> bool:
         """Находит Continue/Place Order и кликает Playwright mouse (React реагирует на реальный click)."""
+        # Сначала пробуем Playwright locator — он точнее и не зависит от scrollY
+        _CONT_KW = ["Continue", "Place Order", "Place order", "PLACE ORDER", "Continue to payment"]
+        for _kw in _CONT_KW:
+            try:
+                _loc = page.get_by_role("button", name=_kw, exact=True)
+                if await _loc.count() > 0 and await _loc.last.is_visible(timeout=300):
+                    await _loc.last.click()
+                    return True
+            except Exception:
+                pass
+        # JS bbox fallback — ищем жёлтую кнопку по тексту и координатам
         try:
             bbox = await page.evaluate("""() => {
                 const kw = ['continue', 'place order', 'continue to payment'];
@@ -6751,11 +6768,10 @@ async def _viewcheckout_to_payments(page) -> bool:
                     const r = el.getBoundingClientRect();
                     return r.width >= 40 && r.height >= 15;
                 });
-                // 3. includes() — кнопка с дополнительным текстом внутри
+                // 3. includes() — кнопка с дополнительным текстом (напр. "399\\nContinue")
                 if (!found) found = all.find(el => {
-                    const t = (el.innerText || '').trim().toLowerCase();
-                    if (!kw.some(k => t.includes(k))) return false;
-                    if (kw.some(k => t === k)) return false; // уже проверили точное совпадение
+                    const lines = (el.innerText || '').trim().toLowerCase().split('\\n').map(s => s.trim());
+                    if (!lines.some(l => kw.some(k => l === k))) return false;
                     const r = el.getBoundingClientRect();
                     if (r.width < 60 || r.height < 20) return false;
                     const bg = window.getComputedStyle(el).backgroundColor;
