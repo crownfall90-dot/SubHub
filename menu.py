@@ -6674,11 +6674,20 @@ async def _viewcheckout_to_payments(page) -> bool:
     """
     import random as _r
 
+    _CHECKOUT_URL_PARTS = ("viewcheckout", "payments", "changeShippingAddress", "add/form")
     if "viewcheckout" not in page.url:
         if "changeShippingAddress" in page.url or "add/form" in page.url:
             print(f"  {DIM}Обнаружена страница адреса, ждём 5 секунд для прогрузки...{RST}")
             await page.wait_for_timeout(5_000)
-        return "payments" in page.url
+        if "payments" in page.url:
+            return True
+        # Новый формат Flipkart: /checkout/<hash> без 'viewcheckout' в URL
+        # Если URL содержит /checkout/ и ни одного известного сегмента — обрабатываем как viewcheckout
+        if "checkout" in page.url and not any(p in page.url for p in _CHECKOUT_URL_PARTS):
+            print(f"  {DIM}Новый формат checkout URL — обрабатываю как viewcheckout...{RST}")
+            # проваливаемся ниже для обработки Continue
+        else:
+            return "payments" in page.url
 
     # Ждём пока viewcheckout прогрузит контент — Continue на Flipkart это <DIV>, не <button>
     # Поэтому ждём через wait_for_function по точному innerText
@@ -7113,7 +7122,19 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             pass
 
         # ── Шаг C: проверяем что попали на payments ──────────────────────────
-        if "payments" not in page.url:
+        # Принимаем и новый формат Flipkart: /checkout/<hash> с карточными полями на странице
+        _on_pay_page = "payments" in page.url
+        if not _on_pay_page:
+            try:
+                _on_pay_page = await page.evaluate("""() => {
+                    const t = (document.body?.innerText || '').toLowerCase();
+                    return t.includes('credit') || t.includes('debit') || t.includes('card number')
+                        || t.includes('cvv') || t.includes('pay now') || t.includes('net banking')
+                        || document.querySelector('input[placeholder*="card"], input[id*="card"]') !== null;
+                }""")
+            except Exception:
+                pass
+        if not _on_pay_page:
             _keep_open = not _auto_close
             _send_tg_error(_pp_phone, f"Не удалось перейти на страницу оплаты ({page.url.split('?')[0].split('/')[-1]})")
             return True, (f"{'✅ ' + addr_msg if addr_msg else '✅ Адрес уже был сохранён'}"
