@@ -6641,9 +6641,8 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
         await page.mouse.click(loc_bbox["x"], loc_bbox["y"])
         await page.wait_for_timeout(_r.uniform(1_500, 2_500))
 
-        # На address-map: первые 2 попытки — только кнопки (старый флоу),
-        # с 3-й попытки — вводим пинкод через поиск на карте
-        if ("address-map" in page.url or "changeShipping" in page.url) and _outer >= 2:
+        # На address-map: сразу вводим пинкод через поиск на карте
+        if "address-map" in page.url or "changeShipping" in page.url:
             await _search_location_by_pincode(page)
 
         # Перед нажатием «Update address» чистим поле Alternate phone —
@@ -6773,17 +6772,7 @@ async def _viewcheckout_to_payments(page) -> bool:
 
     async def _mouse_click_continue(page) -> bool:
         """Находит Continue/Place Order и кликает Playwright mouse (React реагирует на реальный click)."""
-        # Сначала пробуем Playwright locator — он точнее и не зависит от scrollY
-        _CONT_KW = ["Continue", "Place Order", "Place order", "PLACE ORDER", "Continue to payment"]
-        for _kw in _CONT_KW:
-            try:
-                _loc = page.get_by_role("button", name=_kw, exact=True)
-                if await _loc.count() > 0 and await _loc.last.is_visible(timeout=300):
-                    await _loc.last.click()
-                    return True
-            except Exception:
-                pass
-        # JS bbox fallback — ищем жёлтую кнопку по тексту и координатам
+        # JS bbox — ищем жёлтую кнопку по тексту и координатам
         try:
             bbox = await page.evaluate("""() => {
                 const kw = ['continue', 'place order', 'continue to payment'];
@@ -7175,19 +7164,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             pass
 
         # ── Шаг C: проверяем что попали на payments ──────────────────────────
-        # Принимаем и новый формат Flipkart: /checkout/<hash> с карточными полями на странице
-        _on_pay_page = "payments" in page.url
-        if not _on_pay_page:
-            try:
-                _on_pay_page = await page.evaluate("""() => {
-                    const t = (document.body?.innerText || '').toLowerCase();
-                    return t.includes('credit') || t.includes('debit') || t.includes('card number')
-                        || t.includes('cvv') || t.includes('pay now') || t.includes('net banking')
-                        || document.querySelector('input[placeholder*="card"], input[id*="card"]') !== null;
-                }""")
-            except Exception:
-                pass
-        if not _on_pay_page:
+        if "payments" not in page.url:
             _keep_open = not _auto_close
             _send_tg_error(_pp_phone, f"Не удалось перейти на страницу оплаты ({page.url.split('?')[0].split('/')[-1]})")
             return True, (f"{'✅ ' + addr_msg if addr_msg else '✅ Адрес уже был сохранён'}"
