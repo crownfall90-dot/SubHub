@@ -3080,6 +3080,15 @@ class GGSellBotHandler:
                 _il.import_module("menu")._purchase_cancel.set()
             except Exception:
                 pass
+            # Принудительно убиваем Chrome в фоне — если покупка застряла в
+            # долгом await (wait_for_function/wait_for_url), _ckcancel() не
+            # вызывается и браузер не закрывается без жёсткого kill.
+            try:
+                import grizzly as _gz_c, threading as _thr_c
+                _thr_c.Thread(target=_gz_c.kill_all_bot_chrome,
+                              daemon=True, name="chrome-kill-cancel").start()
+            except Exception:
+                pass
             await self._ack(qid, "🛑 Отменяю полностью...")
             await self._edit(cid, mid,
                 f"🛑 *Заказ #{invoice_id}*: выполнение отменяется.\n"
