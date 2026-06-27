@@ -6857,7 +6857,14 @@ async def _viewcheckout_to_payments(page) -> bool:
 
         # 2. Прокрутим к кнопке и кликаем Continue
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(600)
+        # На первой попытке даём странице дополнительно прогрузиться (до 10 сек)
+        if attempt == 0:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:
+                await page.wait_for_timeout(10_000)
+        else:
+            await page.wait_for_timeout(600)
         clicked = await _mouse_click_continue(page)
         print(f"  {DIM}Continue клик: {'да' if clicked else 'нет'} (попытка {attempt + 1}/4){RST}")
         if not clicked and attempt == 0:
