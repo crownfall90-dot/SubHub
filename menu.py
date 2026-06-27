@@ -4325,45 +4325,42 @@ async def _handle_paytm_currency_page(page) -> bool:
 
         # ── Change Currency / Pay in another currency → USD flow ─────────────
         # Если на странице есть "Change Currency" или "Pay in another currency" —
-        # кликаем, выбираем USD, нажимаем Pay. Заменяет INR-путь.
+        # кликаем через Playwright locator (правильно учитывает iframe-координаты),
+        # выбираем USD, нажимаем Pay.
         pay_clicked = False
+        _CC_PHRASES = [
+            "pay in another currency", "in another currency",
+            "change currency", "change curr",
+        ]
         for _fr_cc in [page.main_frame] + list(page.frames):
             if pay_clicked:
                 break
             try:
-                _cc_btn = await _fr_cc.evaluate("""() => {
-                    for (const el of document.querySelectorAll('*')) {
-                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                        const ok = t.includes('change currency') || t.includes('change curr')
-                                   || t.includes('pay in another currency')
-                                   || t.includes('in another currency');
-                        if (!ok) continue;
-                        if (t.length > 80) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 20 || r.height < 8) continue;
-                        const s = window.getComputedStyle(el);
-                        if (s.display === 'none' || s.visibility === 'hidden') continue;
-                        return {x: r.x + r.width/2, y: r.y + r.height/2, txt: t.substring(0,50)};
-                    }
-                    return null;
-                }""")
-                if not _cc_btn:
+                # Ищем через Playwright locator — он сам переводит координаты iframe
+                _cc_loc = None
+                for _phrase in _CC_PHRASES:
+                    _loc = _fr_cc.locator(f"text='{_phrase}'").first
+                    try:
+                        if await _loc.is_visible(timeout=300):
+                            _cc_loc = _loc
+                            print(f"  Найдена кнопка '{_phrase}' — кликаю...")
+                            break
+                    except Exception:
+                        pass
+                if _cc_loc is None:
                     continue
-                print(f"  Найдена '{_cc_btn.get('txt','Change Currency')}' — кликаю...")
-                await page.mouse.click(_cc_btn["x"], _cc_btn["y"])
-                # Ждём появления модалки со списком валют (до 4 сек)
+                await _cc_loc.click(timeout=5_000)
+                # Ждём появления модалки со списком валют (до 5 сек)
                 try:
-                    await page.wait_for_function("""() => {
+                    await _fr_cc.wait_for_function("""() => {
                         for (const el of document.querySelectorAll('*')) {
                             const t = (el.innerText || el.textContent || '').trim().toUpperCase();
-                            if (t === 'USD' || t.includes('SELECT A CURRENCY')
-                                    || t.includes('US DOLLAR')) {
-                                const r = el.getBoundingClientRect();
-                                if (r.width > 10 && r.height > 8) return true;
-                            }
+                            if ((t === 'USD' || t.includes('SELECT A CURRENCY')
+                                    || t.includes('US DOLLAR') || t.includes('UNITED STATES'))
+                                    && el.getBoundingClientRect().width > 10) return true;
                         }
                         return false;
-                    }""", timeout=4_000)
+                    }""", timeout=5_000)
                 except Exception:
                     pass
                 await page.wait_for_timeout(500)
@@ -4372,102 +4369,57 @@ async def _handle_paytm_currency_page(page) -> bool:
                     print("  Скриншот валютной модалки: debug_currency_modal.png")
                 except Exception:
                     pass
-                # Ищем строку USD во всех фреймах
-                _USD_JS = """() => {
-                    // Приоритет: строки списка (li, [role=option] и др.)
-                    for (const el of document.querySelectorAll(
-                            'li, [role="option"], [role="listitem"], [role="row"], tr')) {
-                        const t = (el.innerText || el.textContent || '').trim();
-                        if (!t.toUpperCase().includes('USD')) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 40 || r.height < 8 || r.height > 150) continue;
-                        const s = window.getComputedStyle(el);
-                        if (s.display === 'none' || s.visibility === 'hidden') continue;
-                        try { el.click(); } catch(e) {}
-                        return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
-                    }
-                    // Fallback: div/span/button с коротким текстом, содержащим USD
-                    for (const el of document.querySelectorAll('div, span, button, a, p')) {
-                        const t = (el.innerText || el.textContent || '').trim();
-                        if (!t.toUpperCase().includes('USD')) continue;
-                        if (t.length > 60) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 40 || r.height < 8 || r.height > 120) continue;
-                        const s = window.getComputedStyle(el);
-                        if (s.display === 'none' || s.visibility === 'hidden') continue;
-                        try { el.click(); } catch(e) {}
-                        return {x: r.x+r.width/2, y: r.y+r.height/2, txt: t.substring(0,40)};
-                    }
-                    return null;
-                }"""
-                _usd_item = None
-                for _fr_usd in [page.main_frame] + list(page.frames):
+                # Ищем и кликаем USD через locator в том же фрейме
+                _usd_clicked = False
+                for _sel in [
+                    "li:has-text('USD')", "li:has-text('US Dollar')",
+                    "[role='option']:has-text('USD')", "[role='listitem']:has-text('USD')",
+                    "tr:has-text('USD')",
+                    "div:has-text('USD')", "span:has-text('USD')", "button:has-text('USD')",
+                ]:
                     try:
-                        _usd_item = await _fr_usd.evaluate(_USD_JS)
+                        _usd_loc = _fr_cc.locator(_sel).first
+                        if await _usd_loc.is_visible(timeout=500):
+                            _txt = (await _usd_loc.inner_text()).strip()[:40]
+                            print(f"  Выбираю USD: {_txt!r}")
+                            await _usd_loc.click(timeout=3_000)
+                            _usd_clicked = True
+                            break
                     except Exception:
                         pass
-                    if _usd_item:
-                        break
-                if not _usd_item:
+                if not _usd_clicked:
                     print(f"  {Y}USD не найден в списке валют{RST}")
                     break
-                print(f"  Выбираю USD: {_usd_item.get('txt','')!r}")
-                await page.mouse.click(_usd_item["x"], _usd_item["y"])
                 # Ждём обновления кнопки Pay (до 3 сек)
-                try:
-                    await page.wait_for_function("""() => {
-                        for (const el of document.querySelectorAll('*')) {
-                            const raw = (el.innerText || '').trim();
-                            const lines = raw.split('\\n').slice(0,3)
-                                .map(l=>l.trim()).filter(l=>l);
-                            const t = lines.join(' ').toLowerCase();
-                            if (t.startsWith('pay') && !t.includes('another')
-                                    && !t.includes('change') && !t.includes('apple')
-                                    && !t.includes('google')) return true;
-                        }
-                        return false;
-                    }""", timeout=3_000)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(500)
-                # Ищем кнопку Pay
-                _PAY_USD_JS = """() => {
-                    for (const el of document.querySelectorAll(
-                            'button, [role="button"], a, div')) {
-                        const raw = (el.innerText || '').trim();
-                        if (!raw) continue;
-                        const lines = raw.split('\\n').slice(0,4)
-                            .map(l=>l.trim()).filter(l=>l);
-                        const t = lines.join(' ').toLowerCase();
-                        if (!t.startsWith('pay')) continue;
-                        if (t.includes('apple') || t.includes('google')
-                                || t.includes('another') || t.includes('change')) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 40 || r.height < 12) continue;
-                        const s = window.getComputedStyle(el);
-                        if (s.display === 'none' || s.visibility === 'hidden') continue;
-                        return {x: r.x+r.width/2, y: r.y+r.height/2,
-                                txt: lines.join(' ').substring(0,60)};
-                    }
-                    return null;
-                }"""
-                _pay_usd = None
-                for _fr_pu in [page.main_frame] + list(page.frames):
+                await page.wait_for_timeout(1_000)
+                # Ищем кнопку Pay через locator в том же фрейме
+                _pay_usd_loc = None
+                for _psel in [
+                    "button:has-text('Pay')", "[role='button']:has-text('Pay')",
+                    "a:has-text('Pay')",
+                ]:
                     try:
-                        _pay_usd = await _fr_pu.evaluate(_PAY_USD_JS)
+                        _ploc = _fr_cc.locator(_psel).filter(
+                            has_not_text="another"
+                        ).filter(has_not_text="Apple").filter(
+                            has_not_text="Google"
+                        ).filter(has_not_text="Change").first
+                        if await _ploc.is_visible(timeout=500):
+                            _pay_usd_loc = _ploc
+                            break
                     except Exception:
                         pass
-                    if _pay_usd:
-                        break
-                if _pay_usd:
-                    print(f"  Нажимаю Pay USD: {_pay_usd.get('txt','')!r}")
-                    await page.mouse.click(_pay_usd["x"], _pay_usd["y"])
+                if _pay_usd_loc:
+                    _ptxt = (await _pay_usd_loc.inner_text()).strip()[:60]
+                    print(f"  Нажимаю Pay USD: {_ptxt!r}")
+                    await _pay_usd_loc.click(timeout=5_000)
                     pay_clicked = True
                     await page.wait_for_timeout(2_000)
                 else:
                     print(f"  {Y}Кнопка Pay не найдена после выбора USD{RST}")
                 break  # нашли Change Currency — больше фреймы не перебираем
-            except Exception:
+            except Exception as _cc_ex:
+                print(f"  {Y}Change Currency фрейм: {_cc_ex}{RST}")
                 continue
 
         if pay_clicked:
