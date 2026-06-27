@@ -196,6 +196,42 @@ def _kill_chrome_for_profile_standalone(profile_path) -> int:
     return killed
 
 
+def kill_all_bot_chrome() -> int:
+    """Убивает ВСЕ Chrome-процессы запущенные этим ботом (chrome_profiles*)."""
+    import subprocess
+    markers = ["chrome_profiles", "chrome_profiles_done",
+               "chrome_profiles_backup", "chrome_profiles_used"]
+    killed = 0
+    try:
+        import psutil
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if "chrome" not in (proc.info.get("name") or "").lower():
+                    continue
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                if any(m in cmdline for m in markers):
+                    proc.kill()
+                    killed += 1
+            except Exception:
+                pass
+    except ImportError:
+        try:
+            conditions = " -or ".join(
+                f"$_.CommandLine -like '*{m}*'" for m in markers
+            )
+            ps_cmd = (
+                f"Get-WmiObject Win32_Process -Filter \"name='chrome.exe'\" | "
+                f"Where-Object {{{conditions}}} | "
+                f"ForEach-Object {{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}}"
+            )
+            subprocess.run(["powershell", "-Command", ps_cmd],
+                           capture_output=True, timeout=10)
+            killed = -1
+        except Exception:
+            pass
+    return killed
+
+
 # ── Реестр активных номеров для отслеживания и отмены ────────────────────────
 _RENTALS = {}
 _MONITOR_TASK = None
@@ -652,6 +688,9 @@ def cleanup_all_rentals_on_exit():
     Номера у которых ещё не прошло 2 мин — остаются в фоновом мониторе (_BG_LOOP),
     который продолжает работать пока открыта консоль."""
     import concurrent.futures
+
+    # Убиваем все Chrome-процессы бота
+    kill_all_bot_chrome()
 
     # Ждём завершения всех фоновых входов перед отчисткой номеров
     active_futures = [f for f in _BG_FUTURES if not f.done()]

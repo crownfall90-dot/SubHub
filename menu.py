@@ -9792,7 +9792,12 @@ def _migrate_config() -> None:
 
 
 def _startup_cleanup() -> None:
-    """При каждом запуске: удаляем старые логи и использованные профили."""
+    """При каждом запуске: удаляем старые логи, использованные профили, убиваем Chrome."""
+    import grizzly as _gz
+
+    # Убиваем все Chrome-процессы бота от предыдущего сеанса
+    _gz.kill_all_bot_chrome()
+
     # Логи (automation*.log, test_run.log и любые *.log рядом со скриптом)
     script_dir = Path(__file__).parent
     deleted_logs = 0
