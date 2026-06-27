@@ -3543,19 +3543,26 @@ def _menu_tg_bot_thread() -> None:
             except Exception:
                 pass
 
-            # После рестарта от обновления: убираем "Перезапускаю..."
+            # После рестарта: убираем "Перезапускаю..." и сразу открываем главное меню
             try:
                 rf = Path(__file__).parent / "._restart_msg.json"
                 if rf.exists():
                     rm = json.loads(rf.read_text(encoding="utf-8"))
                     rf.unlink()
+                    _restart_cid = rm["chat_id"]
                     done = rm.get("text", "").replace(
                         "\n\n⚡ _Перезапускаю..._", "\n\n✅ _Перезапущен_")
                     await client.post(f"{api}/editMessageText",
-                                      json={"chat_id": rm["chat_id"],
+                                      json={"chat_id": _restart_cid,
                                             "message_id": rm["msg_id"],
                                             "text": done,
                                             "parse_mode": "Markdown"})
+                    # Отправляем главное меню в тот же чат
+                    await client.post(f"{api}/sendMessage",
+                                      json={"chat_id": _restart_cid,
+                                            "text": _main_text(),
+                                            "parse_mode": "Markdown",
+                                            "reply_markup": _main_kb(_restart_cid)})
             except Exception:
                 pass
 
