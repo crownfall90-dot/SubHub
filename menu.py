@@ -2994,28 +2994,76 @@ async def _check_recent_black_orders(page) -> list:
                 timeout=8_000)
         except Exception:
             pass
-        page_text = ""
-        try:
-            page_text = await page.evaluate("() => document.body.innerText")
-        except Exception:
-            pass
-        lines = page_text.splitlines()
-        for i, line in enumerate(lines):
-            if "flipkart black" not in line.lower():
+        # Извлекаем карточки заказов через DOM: ищем элементы с текстом "flipkart black"
+        # и берём ближайший текст о дате/статусе из того же блока
+        js_orders = await page.evaluate("""() => {
+            const results = [];
+            // Ищем все элементы, текст которых содержит "flipkart black"
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const seen = new Set();
+            let node;
+            while ((node = walker.nextNode())) {
+                const txt = node.textContent || ‘’;
+                if (!txt.toLowerCase().includes(‘flipkart black’)) continue;
+                // Поднимаемся до блока-контейнера (до 8 уровней)
+                let block = node.parentElement;
+                for (let i = 0; i < 8 && block; i++) {
+                    const h = block.getBoundingClientRect().height;
+                    if (h > 60 || block.tagName === ‘ARTICLE’) break;
+                    block = block.parentElement;
+                }
+                if (!block || seen.has(block)) continue;
+                seen.add(block);
+                const blockText = (block.innerText || block.textContent || ‘’).replace(/\\s+/g, ‘ ‘).trim();
+                results.push(blockText.slice(0, 300));
+            }
+            return results;
+        }""")
+
+        for block_text in (js_orders or []):
+            if "flipkart black" not in block_text.lower():
                 continue
-            context_text = " ".join(lines[max(0, i-3):i+6])
-            # Ищем статус доставки или дату в контексте
-            status = ""
+            # Ищем дату: "Delivered on Mon, 14 Jun ‘24" / "Ordered on Jan 5, 2024"
             m_date = _re_ord.search(
-                r"(delivered|ordered|cancelled|return)\s+(?:on\s+)?([A-Za-z]+\s+\d{1,2})",
-                context_text, _re_ord.I)
+                r"(delivered|ordered|cancelled|return(?:ed)?)"
+                r"\s+(?:on\s+)?(?:[A-Za-z]{2,3}[.,]\s*)?"
+                r"(\d{1,2}\s+[A-Za-z]{3,9}(?:\s*[‘’]?\d{2,4})?|[A-Za-z]{3,9}\s+\d{1,2}(?:[,\s]+\d{4})?)",
+                block_text, _re_ord.I)
+            status = ""
             if m_date:
-                status = f"{m_date.group(1)} {m_date.group(2)}"
-            if line.strip():
-                desc = f"{line.strip()[:60]}"
-                if status:
-                    desc += f" ({status})"
-                found.append(desc)
+                status = f"{m_date.group(1).capitalize()} {m_date.group(2).strip()}"
+            # Первая строка блока = название товара
+            first_line = block_text.splitlines()[0].strip()[:60] if block_text else ""
+            desc = first_line or "Flipkart Black"
+            if status:
+                desc += f" ({status})"
+            found.append(desc)
+
+        # Fallback: если JS не нашёл — парсим innerText
+        if not found:
+            page_text = ""
+            try:
+                page_text = await page.evaluate("() => document.body.innerText")
+            except Exception:
+                pass
+            lines = page_text.splitlines()
+            for i, line in enumerate(lines):
+                if "flipkart black" not in line.lower():
+                    continue
+                context_text = " ".join(lines[max(0, i-5):i+10])
+                m_date = _re_ord.search(
+                    r"(delivered|ordered|cancelled|return(?:ed)?)"
+                    r"\s+(?:on\s+)?(?:[A-Za-z]{2,3}[.,]\s*)?"
+                    r"(\d{1,2}\s+[A-Za-z]{3,9}(?:\s*[‘’]?\d{2,4})?|[A-Za-z]{3,9}\s+\d{1,2}(?:[,\s]+\d{4})?)",
+                    context_text, _re_ord.I)
+                status = ""
+                if m_date:
+                    status = f"{m_date.group(1).capitalize()} {m_date.group(2).strip()}"
+                if line.strip():
+                    desc = f"{line.strip()[:60]}"
+                    if status:
+                        desc += f" ({status})"
+                    found.append(desc)
     except Exception:
         pass
     return found
