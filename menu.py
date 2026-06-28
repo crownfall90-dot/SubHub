@@ -2620,42 +2620,182 @@ def _load_archive_records() -> list[dict]:
 
 
 def screen_used():
-    """Архив использованных профилей — только JSON записи."""
-    cls()
-    header("АРХИВ  —  ИСПОЛЬЗОВАННЫЕ ПРОФИЛИ", M)
+    """Архив использованных профилей — интерактивный список."""
+    while True:
+        cls()
+        header("АРХИВ  —  ИСПОЛЬЗОВАННЫЕ ПРОФИЛИ", M)
 
-    records = _load_archive_records()
+        records = _load_archive_records()
 
-    if not records:
-        print(f"  {DIM}Архив пуст.{RST}")
-        print(f"  {DIM}Используйте пункт 3 → «И» чтобы перенести профиль в архив.{RST}")
-        pause()
-        return
+        if not records:
+            print(f"  {DIM}Архив пуст.{RST}")
+            print(f"  {DIM}Используйте пункт 3 → «И» чтобы перенести профиль в архив.{RST}")
+            pause()
+            return
 
-    section(f"Всего в архиве: {len(records)} записей  (новые сначала)")
-    print()
-
-    for i, r in enumerate(records, 1):
-        phone = r.get("username", "?")
-        created  = r.get("login_str",  "—")
-        issued   = r.get("issued_str", "—")
-        used     = r.get("used_str",   "—")
-        months   = r.get("subscription_months")
-        bought   = r.get("subscription_bought_str", "—")
-        expires  = r.get("subscription_expires_str", "—")
-
-        print(f"  {BLD}{Y}[{i:>2}]{RST}  {W}+91 {phone}{RST}")
-        print(f"         {DIM}Создан   :{RST} {created}")
-        print(f"         {DIM}Выдан    :{RST} {issued}")
-        print(f"         {DIM}Архив    :{RST} {used}")
-        if months:
-            tariff = f"{months} мес. · {'365 дн.' if months == 12 else '90 дн.'}"
-            print(f"         {G}Подписка :{RST} {tariff}  →  куплена {bought}")
-            print(f"         {G}Истекает :{RST} {expires}")
+        section(f"Всего в архиве: {len(records)} записей  (новые сначала)")
         print()
 
-    print(f"  {DIM}Папка: {USED_PROFILES_DIR.resolve()}{RST}")
-    pause()
+        for i, r in enumerate(records, 1):
+            phone    = r.get("username", "?")
+            created  = r.get("login_str",  "—")
+            issued   = r.get("issued_str", "—")
+            used     = r.get("used_str",   "—")
+            months   = r.get("subscription_months")
+            bought   = r.get("subscription_bought_str", "—")
+            expires  = r.get("subscription_expires_str", "—")
+            ck_file  = Path("cookies_backup") / f"cookies_{phone}.json"
+            ck_mark  = f"  {G}[куки✓]{RST}" if ck_file.exists() else ""
+
+            print(f"  {BLD}{Y}[{i:>2}]{RST}  {W}+91 {phone}{RST}{ck_mark}")
+            print(f"         {DIM}Создан   :{RST} {created}")
+            print(f"         {DIM}Выдан    :{RST} {issued}")
+            print(f"         {DIM}Архив    :{RST} {used}")
+            if months:
+                tariff = f"{months} мес. · {'365 дн.' if months == 12 else '90 дн.'}"
+                print(f"         {G}Подписка :{RST} {tariff}  →  куплена {bought}")
+                print(f"         {G}Истекает :{RST} {expires}")
+            print()
+
+        print(f"  {DIM}Папка: {USED_PROFILES_DIR.resolve()}{RST}")
+        print()
+        opt("0", "Назад", R)
+        print()
+
+        choice = input(f"  {BLD}Выберите профиль [1-{len(records)}] или 0: {RST}").strip()
+        if choice in ("0", ""):
+            return
+
+        try:
+            idx = int(choice) - 1
+            if not (0 <= idx < len(records)):
+                raise ValueError
+        except ValueError:
+            print(f"\n  {R}Неверный номер.{RST}")
+            time.sleep(2)
+            continue
+
+        # ── Детальный вид архивного профиля ──────────────────────────────────
+        r = records[idx]
+        _screen_used_detail(r)
+
+
+def _screen_used_detail(r: dict) -> None:
+    """Детальный экран архивного профиля с действиями."""
+    while True:
+        cls()
+        phone   = r.get("username", "?")
+        ts_int  = int(r.get("used_ts") or 0)
+        rec_path = USED_PROFILES_DIR / f"record_{phone}_{ts_int}.json"
+
+        header(f"АРХИВ  —  +91 {phone}", M)
+        print()
+        print(f"  {DIM}Создан   :{RST} {r.get('login_str',  '—')}")
+        print(f"  {DIM}Выдан    :{RST} {r.get('issued_str', '—')}")
+        print(f"  {DIM}Архив    :{RST} {r.get('used_str',   '—')}")
+        months = r.get("subscription_months")
+        if months:
+            tariff = f"{months} мес. · {'365 дн.' if months == 12 else '90 дн.'}"
+            print(f"  {G}Подписка :{RST} {tariff}  →  куплена {r.get('subscription_bought_str','—')}")
+            print(f"  {G}Истекает :{RST} {r.get('subscription_expires_str','—')}")
+        email = r.get("buyer_email") or ""
+        if email:
+            print(f"  {DIM}Email    :{RST} {email}")
+        note = r.get("note") or ""
+        if note:
+            print(f"  {Y}Примечание:{RST} {note}")
+        print()
+
+        ck_file = Path("cookies_backup") / f"cookies_{phone}.json"
+        has_ck  = ck_file.exists()
+        restored_done = (DONE_PROFILES_DIR / f"profile_{phone}").exists()
+        restored_live = (PROFILES_DIR      / f"profile_{phone}").exists()
+        already_there = restored_done or restored_live
+
+        section("Действия")
+        if already_there:
+            where = "chrome_profiles_done" if restored_done else "chrome_profiles"
+            print(f"  {DIM}Профиль уже восстановлен → {where}/profile_{phone}{RST}")
+        else:
+            opt("В", "Восстановить профиль  (создать папку профиля с метаданными)", G)
+
+        if has_ck:
+            opt("К", f"Экспорт куки  ({len(json.loads(ck_file.read_text(encoding='utf-8')))} шт. → файл + текст)", C)
+        else:
+            print(f"  {DIM}Куки не сохранены  (экспортируйте из живого профиля перед архивацией){RST}")
+
+        opt("Д", "Удалить запись из архива навсегда", R)
+        print()
+        opt("0", "Назад к списку", R)
+        print()
+
+        action = input(f"  {BLD}Действие: {RST}").strip().upper()
+
+        if action in ("0", ""):
+            return
+
+        # ── Восстановить ─────────────────────────────────────────────────────
+        if action == "В":
+            if already_there:
+                print(f"\n  {Y}Профиль уже существует.{RST}")
+                time.sleep(2)
+                continue
+            if not rec_path.exists():
+                print(f"\n  {R}Запись архива не найдена: {rec_path.name}{RST}")
+                time.sleep(2)
+                return
+            try:
+                profile_dir = DONE_PROFILES_DIR / f"profile_{phone}"
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                meta_file   = profile_dir / ".profile_meta.json"
+                meta_file.write_text(json.dumps(r, ensure_ascii=False, indent=2),
+                                     encoding="utf-8")
+                rec_path.unlink()
+                print(f"\n  {G}✅ Профиль восстановлен → chrome_profiles_done/profile_{phone}{RST}")
+                print(f"  {DIM}Теперь используйте «К» (восстановить из куков) или войдите заново.{RST}")
+                time.sleep(3)
+                return
+            except Exception as e:
+                print(f"\n  {R}Ошибка восстановления: {e}{RST}")
+                time.sleep(3)
+                return
+
+        # ── Экспорт куки ─────────────────────────────────────────────────────
+        if action == "К":
+            if not has_ck:
+                print(f"\n  {Y}Файл куков не найден.{RST}")
+                time.sleep(2)
+                continue
+            try:
+                raw  = ck_file.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                print(f"\n  {G}Файл:{RST} {ck_file.resolve()}")
+                print(f"  {G}Куков:{RST} {len(data)} шт.")
+                print()
+                print(f"  {DIM}--- JSON (первые 1500 символов) ---{RST}")
+                snippet = raw[:1500]
+                print(f"  {W}{snippet}{RST}")
+                if len(raw) > 1500:
+                    print(f"  {DIM}... (обрезано, полный файл выше){RST}")
+            except Exception as e:
+                print(f"\n  {R}Ошибка чтения куков: {e}{RST}")
+            pause()
+            continue
+
+        # ── Удалить запись ───────────────────────────────────────────────────
+        if action == "Д":
+            confirm = input(f"\n  {R}Удалить запись +91 {phone} из архива? (Д/Н): {RST}").strip().upper()
+            if confirm == "Д":
+                try:
+                    if rec_path.exists():
+                        rec_path.unlink()
+                    print(f"\n  {G}Запись удалена.{RST}")
+                    time.sleep(1.5)
+                    return
+                except Exception as e:
+                    print(f"\n  {R}Ошибка: {e}{RST}")
+                    time.sleep(2)
+            continue
 
 
 # ── Данные для генерации индийских адресов ───────────────────────────────────
