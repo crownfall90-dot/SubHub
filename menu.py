@@ -9034,6 +9034,46 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 # Re-grant после входа — страница сменилась на Flipkart главную
                 await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
 
+                # Сразу после входа — проверяем нет ли уже купленного Black Membership
+                _lo_orders = await _check_recent_black_orders(page)
+                if _lo_orders:
+                    _lo_info = "; ".join(_lo_orders[:3])
+                    print(f"\n  {Y}╔══ ВНИМАНИЕ: уже куплено! ════════════════════════════════╗{RST}")
+                    print(f"  {Y}║  {_lo_info[:70]}{RST}")
+                    print(f"  {Y}╚═══════════════════════════════════════════════════════════╝{RST}")
+                    _orders_confirm_ev.clear()
+                    _orders_confirm_choice[0] = None
+                    _tg_send_direct_kb(
+                        f"⚠️ *Уже куплено!*\n\n"
+                        f"Профиль `{phone_10}` — найден заказ *Flipkart BLACK*:\n"
+                        f"_{_lo_info[:200]}_\n\n"
+                        f"Что делать?",
+                        {"inline_keyboard": [
+                            [{"text": "✅ Продолжить покупку", "callback_data": f"fill:orders_ok:{phone_10}"}],
+                            [{"text": "🗑 Удалить профиль",   "callback_data": f"fill:orders_del:{phone_10}"}],
+                        ]}
+                    )
+                    print(f"  {Y}Жду ответа в Telegram (60 сек)...{RST}")
+                    _lo_dl = asyncio.get_event_loop().time() + 60
+                    while asyncio.get_event_loop().time() < _lo_dl:
+                        if _orders_confirm_ev.is_set():
+                            break
+                        await asyncio.sleep(1)
+                    if _orders_confirm_choice[0] is False:
+                        print(f"  {R}Удаляю профиль {phone_10}...{RST}")
+                        _keep_open = False
+                        import shutil as _sh_lo
+                        _sh_lo.rmtree(str(profile_path), ignore_errors=True)
+                        _tg_send_direct(f"🗑 Профиль `{phone_10}` удалён (дублирующий заказ)")
+                        return False, "Профиль удалён — дублирующий заказ"
+                    print(f"  {G}Продолжаю покупку...{RST}")
+                    # Возвращаемся на главную для дальнейшей навигации
+                    try:
+                        await page.goto("https://www.flipkart.com",
+                                        wait_until="domcontentloaded", timeout=12_000)
+                    except Exception:
+                        pass
+
                 if skip_purchase:
                     try:
                         await _send_cookies_to_tg(ctx, phone_10)
