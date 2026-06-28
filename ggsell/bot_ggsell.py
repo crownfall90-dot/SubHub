@@ -48,7 +48,9 @@ class GGSellBotHandler:
         tg_api_url: str,
         project_root: Path,
         webhook_url: str = "",
+        record_sale_fn=None,
     ):
+        self._record_sale_fn = record_sale_fn
         self.orders = orders
         self.confirm = confirm
         self._done = done
@@ -160,6 +162,22 @@ class GGSellBotHandler:
         if profile_path_str:
             self._bind_profile_to_order(profile_path_str, invoice_id, link, buyer_email)
         self._confirm_profile.pop(invoice_id, None)
+
+        # Автоматически записываем продажу, если есть сумма выплаты
+        if self._record_sale_fn and profile_path_str:
+            try:
+                _cached_ord = self.orders.get(invoice_id, {})
+                _order_data = (_cached_ord.get("order", {}) if isinstance(_cached_ord, dict) else {})
+                _parsed = self.parse_order(_order_data)
+                _sell = _parsed.get("sum_sell")
+                if _sell:
+                    _months = self._order_months(_order_data) if _order_data else 3
+                    _plan = "12m" if _months >= 12 else ("6m" if _months >= 6 else "3m")
+                    _ph_m = re.search(r"\d{10}", Path(profile_path_str).name)
+                    _phone = _ph_m.group() if _ph_m else ""
+                    self._record_sale_fn(_phone, _plan, float(_sell))
+            except Exception:
+                pass
 
     def get_used(self) -> set:
         """Множество invoice_id помеченных как «использованные»."""

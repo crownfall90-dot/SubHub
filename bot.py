@@ -3630,6 +3630,7 @@ def _menu_tg_bot_thread() -> None:
                 tg_api_url=api,
                 project_root=Path(__file__).parent,
                 webhook_url=_webhook_url,
+                record_sale_fn=_record_sale,
             )
 
             # ── GGSell webhook сервер ─────────────────────────────────────────
