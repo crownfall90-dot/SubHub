@@ -3023,15 +3023,19 @@ async def _check_recent_black_orders(page) -> list:
         for block_text in (js_orders or []):
             if "flipkart black" not in block_text.lower():
                 continue
-            # Ищем дату: "Delivered on Mon, 14 Jun ‘24" / "Ordered on Jan 5, 2024"
-            m_date = _re_ord.search(
+            # Форматы: "Delivered Today, Jun 28" / "Delivered on Mon, 14 Jun ‘24" / "Ordered on May 25"
+            _DATE_RE = (
                 r"(delivered|ordered|cancelled|return(?:ed)?)"
-                r"\s+(?:on\s+)?(?:[A-Za-z]{2,3}[.,]\s*)?"
-                r"(\d{1,2}\s+[A-Za-z]{3,9}(?:\s*[‘’]?\d{2,4})?|[A-Za-z]{3,9}\s+\d{1,2}(?:[,\s]+\d{4})?)",
-                block_text, _re_ord.I)
+                r"\s+(?:on\s+)?"
+                r"((?:Today|Tomorrow|Yesterday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,.]\s*)?"
+                r"(\d{1,2}\s+[A-Za-z]{3,9}(?:\s*[‘’]?\d{2,4})?|[A-Za-z]{3,9}\s+\d{1,2}(?:[,\s]+\d{4})?)"
+            )
+            m_date = _re_ord.search(_DATE_RE, block_text, _re_ord.I)
             status = ""
             if m_date:
-                status = f"{m_date.group(1).capitalize()} {m_date.group(2).strip()}"
+                _day = (m_date.group(2) or "").rstrip(", ").strip()
+                _dt  = m_date.group(3).strip()
+                status = m_date.group(1).capitalize() + " " + (f"{_day}, {_dt}" if _day else _dt)
             # Первая строка блока = название товара
             first_line = block_text.splitlines()[0].strip()[:60] if block_text else ""
             desc = first_line or "Flipkart Black"
@@ -3053,12 +3057,15 @@ async def _check_recent_black_orders(page) -> list:
                 context_text = " ".join(lines[max(0, i-5):i+10])
                 m_date = _re_ord.search(
                     r"(delivered|ordered|cancelled|return(?:ed)?)"
-                    r"\s+(?:on\s+)?(?:[A-Za-z]{2,3}[.,]\s*)?"
+                    r"\s+(?:on\s+)?"
+                    r"((?:Today|Tomorrow|Yesterday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,.]\s*)?"
                     r"(\d{1,2}\s+[A-Za-z]{3,9}(?:\s*[‘’]?\d{2,4})?|[A-Za-z]{3,9}\s+\d{1,2}(?:[,\s]+\d{4})?)",
                     context_text, _re_ord.I)
                 status = ""
                 if m_date:
-                    status = f"{m_date.group(1).capitalize()} {m_date.group(2).strip()}"
+                    _day = (m_date.group(2) or "").rstrip(", ").strip()
+                    _dt  = m_date.group(3).strip()
+                    status = m_date.group(1).capitalize() + " " + (f"{_day}, {_dt}" if _day else _dt)
                 if line.strip():
                     desc = f"{line.strip()[:60]}"
                     if status:
