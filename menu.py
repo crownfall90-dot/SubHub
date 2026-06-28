@@ -7008,9 +7008,20 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
         await page.mouse.click(loc_bbox["x"], loc_bbox["y"])
         await page.wait_for_timeout(_r.uniform(1_500, 2_500))
 
-        # На address-map: сразу вводим пинкод через поиск на карте
+        # На address-map: сначала пробуем Submit/Update/Confirm (если пинкод уже задан),
+        # и только если не сработало — вводим пинкод через Change
         if "address-map" in page.url or "changeShipping" in page.url:
-            await _search_location_by_pincode(page)
+            _quick_btn = None
+            try:
+                _quick_btn = await page.evaluate(_MAP_BTNS_JS)
+            except Exception:
+                pass
+            if _quick_btn:
+                print(f"  карта: пробую «{_quick_btn.get('text', '?')}» сразу (без Change)...")
+                await page.mouse.click(_quick_btn["x"], _quick_btn["y"])
+                await page.wait_for_timeout(_r.uniform(1_800, 2_500))
+            if "address-map" in page.url or "changeShipping" in page.url:
+                await _search_location_by_pincode(page)
 
         # Перед нажатием «Update address» чистим поле Alternate phone —
         # Flipkart предзаполняет его номером аккаунта с +91 (например,
@@ -9041,38 +9052,47 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     print(f"\n  {Y}╔══ ВНИМАНИЕ: уже куплено! ════════════════════════════════╗{RST}")
                     print(f"  {Y}║  {_lo_info[:70]}{RST}")
                     print(f"  {Y}╚═══════════════════════════════════════════════════════════╝{RST}")
-                    _orders_confirm_ev.clear()
-                    _orders_confirm_choice[0] = None
-                    _tg_send_direct_kb(
-                        f"⚠️ *Уже куплено!*\n\n"
-                        f"Профиль `{phone_10}` — найден заказ *Flipkart BLACK*:\n"
-                        f"_{_lo_info[:200]}_\n\n"
-                        f"Что делать?",
-                        {"inline_keyboard": [
-                            [{"text": "✅ Продолжить покупку", "callback_data": f"fill:orders_ok:{phone_10}"}],
-                            [{"text": "🗑 Удалить профиль",   "callback_data": f"fill:orders_del:{phone_10}"}],
-                        ]}
-                    )
-                    print(f"  {Y}Жду ответа в Telegram (60 сек)...{RST}")
-                    _lo_dl = asyncio.get_event_loop().time() + 60
-                    while asyncio.get_event_loop().time() < _lo_dl:
-                        if _orders_confirm_ev.is_set():
-                            break
-                        await asyncio.sleep(1)
-                    if _orders_confirm_choice[0] is False:
-                        print(f"  {R}Удаляю профиль {phone_10}...{RST}")
-                        _keep_open = False
-                        import shutil as _sh_lo
-                        _sh_lo.rmtree(str(profile_path), ignore_errors=True)
-                        _tg_send_direct(f"🗑 Профиль `{phone_10}` удалён (дублирующий заказ)")
-                        return False, "Профиль удалён — дублирующий заказ"
-                    print(f"  {G}Продолжаю покупку...{RST}")
-                    # Возвращаемся на главную для дальнейшей навигации
-                    try:
-                        await page.goto("https://www.flipkart.com",
-                                        wait_until="domcontentloaded", timeout=12_000)
-                    except Exception:
-                        pass
+                    if skip_purchase:
+                        # Режим входа — просто уведомляем TG и сохраняем профиль
+                        _tg_send_direct(
+                            f"ℹ️ *Вход выполнен (есть заказ BLACK)*\n\n"
+                            f"Профиль `{phone_10}` — найден заказ *Flipkart BLACK*:\n"
+                            f"_{_lo_info[:200]}_\n\n"
+                            f"Профиль сохранён."
+                        )
+                    else:
+                        _orders_confirm_ev.clear()
+                        _orders_confirm_choice[0] = None
+                        _tg_send_direct_kb(
+                            f"⚠️ *Уже куплено!*\n\n"
+                            f"Профиль `{phone_10}` — найден заказ *Flipkart BLACK*:\n"
+                            f"_{_lo_info[:200]}_\n\n"
+                            f"Что делать?",
+                            {"inline_keyboard": [
+                                [{"text": "✅ Продолжить покупку", "callback_data": f"fill:orders_ok:{phone_10}"}],
+                                [{"text": "🗑 Удалить профиль",   "callback_data": f"fill:orders_del:{phone_10}"}],
+                            ]}
+                        )
+                        print(f"  {Y}Жду ответа в Telegram (60 сек)...{RST}")
+                        _lo_dl = asyncio.get_event_loop().time() + 60
+                        while asyncio.get_event_loop().time() < _lo_dl:
+                            if _orders_confirm_ev.is_set():
+                                break
+                            await asyncio.sleep(1)
+                        if _orders_confirm_choice[0] is False:
+                            print(f"  {R}Удаляю профиль {phone_10}...{RST}")
+                            _keep_open = False
+                            import shutil as _sh_lo
+                            _sh_lo.rmtree(str(profile_path), ignore_errors=True)
+                            _tg_send_direct(f"🗑 Профиль `{phone_10}` удалён (дублирующий заказ)")
+                            return False, "Профиль удалён — дублирующий заказ"
+                        print(f"  {G}Продолжаю покупку...{RST}")
+                        # Возвращаемся на главную для дальнейшей навигации
+                        try:
+                            await page.goto("https://www.flipkart.com",
+                                            wait_until="domcontentloaded", timeout=12_000)
+                        except Exception:
+                            pass
 
                 if skip_purchase:
                     try:
