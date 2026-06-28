@@ -829,6 +829,7 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
         "--disable-save-password-bubble",
         "--disable-features=TranslateUI,OptimizationHints,MediaRouter,"
         "AutofillCreditCardSave,AutofillSaveCardBubble,"
+        "AutofillAddressSavePrompt,AutofillEnableNewSaveCardBubbleUi,"
         "PasswordBubble,SavePasswordBubble",
         "--disable-renderer-backgrounding",
         "--disable-ipc-flooding-protection",
@@ -920,8 +921,9 @@ def _pre_inject_chrome_prefs(profile_path: Path) -> None:
     for origin_key in ["https://www.flipkart.com:443,*", "https://www.flipkart.com,*"]:
         geo[origin_key] = {"last_modified": ts, "setting": 1}
 
-    # Отключаем сохранение карт и паролей
+    # Отключаем сохранение карт, адресов и паролей
     prefs.setdefault("autofill", {})["credit_card_enabled"] = False
+    prefs.setdefault("autofill", {})["profile_enabled"]     = False
     prefs["credentials_enable_service"] = False
     prefs.setdefault("profile", {})["password_manager_enabled"] = False
 
