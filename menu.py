@@ -7480,12 +7480,24 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             try:
                 await page.wait_for_function("""() => {
                     const url = location.href;
-                    return url.includes('viewcheckout') || url.includes('changeShippingAddress') ||
-                           url.includes('payments') || url.includes('add/form');
+                    if (url.includes('viewcheckout') || url.includes('changeShippingAddress') ||
+                            url.includes('payments') || url.includes('add/form'))
+                        return true;
+                    // Попап логина вместо чекаута — тоже выходим чтобы не ждать зря
+                    const body = (document.body && document.body.innerText || '').toLowerCase();
+                    return body.includes('log in to complete') || body.includes('phone number');
                 }""", timeout=20_000)
             except Exception:
                 pass
             await page.wait_for_timeout(1_000)
+            # Если так и не попали на чекаут — проверяем: возможно попап логина
+            if not any(s in page.url for s in _CHECKOUT_PARTS):
+                _login_popup = await page.evaluate("""() => {
+                    const b = (document.body && document.body.innerText || '').toLowerCase();
+                    return b.includes('log in to complete') || b.includes('phone number');
+                }""")
+                if _login_popup:
+                    return False, _NOT_LOGGED_IN_MSG
 
         addr_msg = ""
 
