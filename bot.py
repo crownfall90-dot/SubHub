@@ -2399,7 +2399,9 @@ def _menu_tg_bot_thread() -> None:
                 _sale_input_waiting[cid] = {"phone": phone, "plan": plan}
                 label = "3 месяца" if plan == "3m" else "12 месяцев"
                 await _send(cid,
-                            f"💬 Введите сумму продажи для *{label}* (в рублях):",
+                            f"💬 *{label}* — введите сумму продажи:\n"
+                            f"• в рублях: `700`\n"
+                            f"• в долларах: `$8.5`",
                             parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
                                                                 "callback_data": f"profile:menu:{phone}:active"}]]})
@@ -3436,28 +3438,44 @@ def _menu_tg_bot_thread() -> None:
                 phone = info["phone"]
                 plan  = info["plan"]
                 try:
-                    sell = float(text.replace(",", ".").replace("₹", "").strip())
-                    if sell <= 0:
+                    _raw = text.strip().replace(",", ".")
+                    _in_usd = _raw.startswith("$") or _raw.lower().endswith(("usd", "$"))
+                    _num = float(_raw.lstrip("$").rstrip("usdUSD ").strip())
+                    if _num <= 0:
                         raise ValueError("negative")
+                    if _in_usd:
+                        _rate = _get_usd_rate()
+                        if _rate <= 0:
+                            raise ValueError("no_rate")
+                        sell = round(_num * _rate, 2)
+                        _sell_disp = f"${_num} × {_rate:.2f} = {_rub_plain(sell)}"
+                    else:
+                        sell = _num
+                        _sell_disp = _rub_plain(sell)
                     _record_sale(phone, plan, sell)
                     scfg = _load_scfg()
-                    cost = float(scfg.get(f"cost_{plan}", 0))
+                    cost_usd = float(scfg.get(f"cost_{plan}", 0))
+                    _rate2 = _get_usd_rate()
+                    cost = cost_usd * _rate2 if (cost_usd > 0 and _rate2 > 0) else 0.0
                     profit = sell - cost
                     label = "3 мес" if plan == "3m" else "12 мес"
                     await _send(cid,
                         f"✅ *Продажа записана*\n\n"
                         f"📱 Профиль: `{_disp_phone(phone)}`\n"
                         f"📦 Тариф: *{label}*\n"
-                        f"💵 Выручка: *{_rub_plain(sell)}*\n"
+                        f"💵 Выручка: *{_sell_disp}*\n"
                         f"💸 Себестоимость: *{_rub_plain(cost)}*\n"
                         f"📈 Прибыль: *{_rub_plain(profit)}*",
                         parse_mode="Markdown",
                         reply_markup={"inline_keyboard": [
                             [{"text": "📊 Продажи", "callback_data": "go:sales"}],
                         ]})
-                except (ValueError, TypeError):
-                    await _send(cid, "❌ Некорректная сумма. Введите число (например: `800`)",
-                                parse_mode="Markdown",
+                except (ValueError, TypeError) as _se:
+                    _hint = ("❌ Не удалось получить курс USD. Введите сумму в рублях."
+                             if "no_rate" in str(_se) else
+                             "❌ Некорректная сумма. Введите число (например: `800` или `$8.5`)")
+                    _sale_input_waiting[cid] = info  # вернуть ожидание
+                    await _send(cid, _hint, parse_mode="Markdown",
                                 reply_markup={"inline_keyboard": [[{"text": "❌ Отмена",
                                                                     "callback_data": f"profile:menu:{phone}:active"}]]})
                 return
