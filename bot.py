@@ -2372,23 +2372,61 @@ def _menu_tg_bot_thread() -> None:
                 phone = data.split(":", 2)[2]
                 await _ack(qid)
                 scfg = _load_scfg()
-                c3  = scfg.get("cost_3m",  0)
-                c12 = scfg.get("cost_12m", 0)
+                c3   = scfg.get("cost_3m",  0)
+                c12  = scfg.get("cost_12m", 0)
                 c3s  = _usd_disp(c3)  if c3  else "$?"
                 c12s = _usd_disp(c12) if c12 else "$?"
+                _p3      = int(scfg.get("preset_sell_3m", 700) or 700)
+                _p3_usd  = float(scfg.get("preset_sell_3m_usd", 8.5) or 8.5)
+                _cur_r   = _get_usd_rate()
+                _p3_from_usd = round(_p3_usd * _cur_r, 2) if _cur_r > 0 else 0
+                _usd_btn_lbl = (f"🥈 3м · ${_p3_usd} = {int(_p3_from_usd)}₽"
+                                if _p3_from_usd > 0 else f"🥈 3м · ${_p3_usd}")
                 txt = (
                     f"💰 *Записать продажу*\n\n"
                     f"Профиль: `{_disp_phone(phone)}`\n\n"
                     "Выберите тариф:"
                 )
                 kb = {"inline_keyboard": [
-                    [{"text": f"🥈 3 месяца (себ. {c3s})",
+                    [{"text": f"🥈 3м · {_p3}₽",
+                      "callback_data": f"profile:sale_fast:3m:{phone}:{_p3}"},
+                     {"text": _usd_btn_lbl,
+                      "callback_data": f"profile:sale_fast:3m:{phone}:{_p3_from_usd}"}],
+                    [{"text": "✏️ 3м · своя сумма",
                       "callback_data": f"profile:sale:3m:{phone}"}],
                     [{"text": f"🥇 12 месяцев (себ. {c12s})",
                       "callback_data": f"profile:sale:12m:{phone}"}],
                     [{"text": "❌ Отмена", "callback_data": f"profile:menu:{phone}:active"}],
                 ]}
                 await _send(cid, txt, parse_mode="Markdown", reply_markup=kb)
+                return
+
+            if data.startswith("profile:sale_fast:"):
+                # profile:sale_fast:3m:{phone}:{amount_rub}
+                _sf = data.split(":", 4)
+                _sf_plan, _sf_phone, _sf_amt = _sf[2], _sf[3], _sf[4]
+                await _ack(qid)
+                try:
+                    sell = float(_sf_amt)
+                    _record_sale(_sf_phone, _sf_plan, sell)
+                    scfg2 = _load_scfg()
+                    cost_usd = float(scfg2.get(f"cost_{_sf_plan}", 0))
+                    _r2 = _get_usd_rate()
+                    cost = cost_usd * _r2 if (cost_usd > 0 and _r2 > 0) else 0.0
+                    profit = sell - cost
+                    label = "3 мес" if _sf_plan == "3m" else "12 мес"
+                    await _send(cid,
+                        f"✅ *Продажа записана*\n\n"
+                        f"📱 `{_disp_phone(_sf_phone)}`  📦 *{label}*\n"
+                        f"💵 Выручка: *{_rub_plain(sell)}*\n"
+                        f"💸 Себестоимость: *{_rub_plain(cost)}*\n"
+                        f"📈 Прибыль: *{_rub_plain(profit)}*",
+                        parse_mode="Markdown",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "📊 Продажи", "callback_data": "go:sales"}],
+                        ]})
+                except Exception:
+                    await _ack(qid, "❌ Ошибка записи", alert=True)
                 return
 
             if data.startswith("profile:sale:"):
