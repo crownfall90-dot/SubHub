@@ -5410,17 +5410,13 @@ async def _handle_paytm_currency_page(page) -> bool:
 
         if declined:
             _reason = "Недостаточно средств" if _insufficient_funds else "Платёж отклонён"
-            print(f"  {Y}⚠ {_reason} — нажимаю ← пока не flipkart.com...{RST}")
-            for _bi in range(8):
-                cur = page.url
-                print(f"    back {_bi}: {cur[:70]}")
-                if "flipkart.com" in cur:
-                    break
-                try:
-                    await page.go_back(wait_until="domcontentloaded", timeout=8_000)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(800)
+            print(f"  {Y}⚠ {_reason} — возвращаюсь на Flipkart...{RST}")
+            # Не используем go_back() — POST-страницы дают ERR_CACHE_MISS
+            try:
+                await page.goto("https://www.flipkart.com",
+                                wait_until="domcontentloaded", timeout=10_000)
+            except Exception:
+                pass
             return "insufficient_funds" if _insufficient_funds else "declined"
         else:
             break  # успешно нажали Pay или 3DS
@@ -5432,15 +5428,13 @@ async def _handle_paytm_currency_page(page) -> bool:
     if _3ds_res == "declined":
         return "declined"
     if _3ds_res == "switch_card":
-        print(f"  {Y}⚠ Смена карты — возвращаюсь на payments...{RST}")
-        for _sbi in range(10):
-            if "flipkart.com" in page.url:
-                break
+        print(f"  {Y}⚠ Смена карты — возвращаюсь на Flipkart...{RST}")
+        if "flipkart.com" not in page.url:
             try:
-                await page.go_back(wait_until="domcontentloaded", timeout=8_000)
+                await page.goto("https://www.flipkart.com",
+                                wait_until="domcontentloaded", timeout=10_000)
             except Exception:
                 pass
-            await page.wait_for_timeout(800)
         return "switch_card"
 
     # Проверяем что платёж завершился и вернулись на Flipkart
@@ -7866,6 +7860,15 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                     _ci = _chosen
                 else:
                     _ci += 1
+                continue
+
+            if _pay_done in ("declined", "insufficient_funds"):
+                _is_last_card = _ci + 1 >= len(_cards_seq)
+                _reason_lbl = "Недостаточно средств" if _pay_done == "insufficient_funds" else "Карта отклонена"
+                print(f"  {Y}{_reason_lbl} — {'пробую следующую карту' if not _is_last_card else 'карты закончились'}{RST}")
+                if _is_last_card:
+                    _send_tg_error(_pp_phone, f"{_reason_lbl} — все карты исчерпаны")
+                _ci += 1
                 continue
 
             if _pay_done:
