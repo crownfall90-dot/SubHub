@@ -64,6 +64,28 @@ def _transient_print(text: str, delay: float = 5.0) -> None:
         _TPRINT_TIMER.daemon = True
         _TPRINT_TIMER.start()
 
+# ── Throttled-логирование ошибок монитора ───────────────────────────────────
+# Монитор крутится каждые 5 сек — без троттла одна и та же ошибка засыпала бы
+# консоль. Печатаем не чаще раза в _ERR_LOG_INTERVAL сек на каждый ключ, с
+# подсчётом подавленных повторов. Раньше эти ошибки глотались (except: pass),
+# из-за чего сбои оплаты/возврата/OTP были невидимы для диагностики.
+_ERR_LOG_AT: dict[str, float] = {}
+_ERR_LOG_COUNT: dict[str, int] = {}
+_ERR_LOG_INTERVAL = 60.0
+
+def _log_err(key: str, msg: str) -> None:
+    """Печатает ошибку монитора не чаще раза в минуту на ключ (с числом повторов)."""
+    now = time.monotonic()
+    last = _ERR_LOG_AT.get(key, 0.0)
+    _ERR_LOG_COUNT[key] = _ERR_LOG_COUNT.get(key, 0) + 1
+    if now - last < _ERR_LOG_INTERVAL:
+        return
+    cnt = _ERR_LOG_COUNT[key]
+    _ERR_LOG_AT[key] = now
+    _ERR_LOG_COUNT[key] = 0
+    _rep = f" {_DIM}(×{cnt} за минуту){_RST}" if cnt > 1 else ""
+    print(f"  {_Y}[Фон] ⚠ {msg}{_RST}{_rep}", flush=True)
+
 # ── Статистика запуска ────────────────────────────────────────────────────────
 _STATS: dict = {
     "numbers_bought":    0,
@@ -385,8 +407,8 @@ async def _rental_monitor_loop():
                             "cancelling":    False,
                             "external":      True,
                         }
-                except Exception:
-                    pass
+                except Exception as _scan_ex:
+                    _log_err("api_scan", f"сканирование активных номеров: {_scan_ex}")
 
             # 1. Проверяем активные номера на OTP каждые 10 сек
             if api_key:
@@ -414,8 +436,9 @@ async def _rental_monitor_loop():
                                     r["status"] = "completed"
                                     _RENTALS.pop(aid, None)
                                     _otp_last_check.pop(aid, None)
-                            except Exception:
-                                pass
+                            except Exception as _otp_ex:
+                                _log_err(f"otp_{aid}",
+                                         f"проверка OTP +91 {r.get('phone_10','?')}: {_otp_ex}")
 
             # 2. Переводим активные номера без OTP в failed после 150 сек
             for aid, r in list(_RENTALS.items()):
@@ -430,8 +453,8 @@ async def _rental_monitor_loop():
                 if r["status"] == "failed":
                     if now >= r["next_attempt_at"] and not r.get("cancelling"):
                         asyncio.create_task(_cancel_rental_task(aid))
-        except Exception:
-            pass
+        except Exception as _loop_ex:
+            _log_err("monitor_loop", f"итерация монитора: {_loop_ex}")
         try:
             await asyncio.sleep(5)
         except BaseException:
@@ -489,9 +512,10 @@ async def _cancel_rental_task(aid):
                 _RENTALS.pop(aid, None)
                 await client.close()
                 return
-        except Exception:
-            pass
-            
+        except Exception as _last_ex:
+            _log_err(f"cancel_otp_{aid}",
+                     f"проверка OTP перед отменой +91 {r.get('phone_10','?')}: {_last_ex}")
+
         try:
             await client.cancel(aid)
             _transient_print(f"  {_G}[Фон] ✅ +91 {r['phone_10']} отменён{_RST}")
@@ -511,8 +535,14 @@ async def _cancel_rental_task(aid):
                 else:
                     r["next_attempt_at"] = now + 10.0
                 _transient_print(f"  {_Y}[Фон] ↺ +91 {r['phone_10']} — повтор через 10 сек{_RST}")
-        
+
         await client.close()
+    except Exception as _ct_ex:
+        # Возврат денег не прошёл из-за неожиданной ошибки — логируем (раньше
+        # терялось как «Task exception was never retrieved»). Номер останется в
+        # _RENTALS и будет повторно отменён следующей итерацией монитора.
+        _log_err(f"cancel_task_{aid}",
+                 f"отмена номера +91 {r.get('phone_10','?')}: {_ct_ex}")
     finally:
         if aid in _RENTALS:
             _RENTALS[aid]["cancelling"] = False
