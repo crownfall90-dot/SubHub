@@ -195,6 +195,11 @@ def _menu_tg_bot_thread() -> None:
         _notify  = [set()]  # chat_ids для уведомления о завершении
         _ctrl    = [{}]     # {"chat_id": int, "msg_id": int} — живое сообщение
         _bg_ops: dict = {}  # phone → "running"
+        # Сериализует операции покупки/оплаты: общее состояние (_purchase_cancel,
+        # _switch_card_choice, _orders_confirm_choice, _3ds_card_options) в menu.py —
+        # глобальные синглтоны, поэтому одновременно может идти только одна такая
+        # операция. Параллельные запросы становятся в очередь, а не сталкиваются.
+        _op_lock = asyncio.Lock()
         _pending_issued_archive: dict = {}  # cid → [phone, ...] — ожидают архивации после проверки
         _ggsel_cli      = [None]  # GGSell client (ленивая инициализация)
         _ggsel_orders: dict = {}  # {invoice_id: item из notify_queue}
@@ -1404,13 +1409,22 @@ def _menu_tg_bot_thread() -> None:
 
         async def _bg_address(cid, phone):
             _bg_ops[phone] = "running"
-            try:
-                _m("_purchase_cancel").clear()
-            except Exception:
-                pass
+            _have_lock = False
+            if _op_lock.locked():
+                try:
+                    await _send(cid, f"⏳ <code>{phone}</code> в очереди — ждёт завершения текущей операции…",
+                                parse_mode="HTML")
+                except Exception:
+                    pass
             await _send(cid, f"⏳ Заполняю адрес для <code>{phone}</code>...",
                         parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
+                await _op_lock.acquire()
+                _have_lock = True
+                try:
+                    _m("_purchase_cancel").clear()
+                except Exception:
+                    pass
                 pp = _find_profile(phone)
                 if not pp:
                     await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
@@ -1442,18 +1456,32 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, f"❌ Ошибка адреса <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
+                if _have_lock:
+                    try:
+                        _op_lock.release()
+                    except Exception:
+                        pass
 
         async def _bg_fill_data(cid, phone):
             """Заполняет все данные до оплаты и переносит профиль в «С данными»."""
             _bg_ops[phone] = "running"
-            try:
-                _m("_purchase_cancel").clear()
-            except Exception:
-                pass
+            _have_lock = False
+            if _op_lock.locked():
+                try:
+                    await _send(cid, f"⏳ <code>{phone}</code> в очереди — ждёт завершения текущей операции…",
+                                parse_mode="HTML")
+                except Exception:
+                    pass
             await _send(cid, f"⚡ Заполняю данные для <code>{phone}</code>...\n"
                              f"<i>Адрес → чекаут → страница оплаты → закрыть</i>",
                         parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
+                await _op_lock.acquire()
+                _have_lock = True
+                try:
+                    _m("_purchase_cancel").clear()
+                except Exception:
+                    pass
                 pp = _find_profile(phone)
                 if not pp:
                     await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
@@ -1485,6 +1513,11 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, f"❌ Ошибка <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
+                if _have_lock:
+                    try:
+                        _op_lock.release()
+                    except Exception:
+                        pass
 
         async def _bg_cookies(cid, phone):
             _bg_ops[phone] = "running"
@@ -1635,14 +1668,23 @@ def _menu_tg_bot_thread() -> None:
 
         async def _bg_buy(cid, phone, months):
             _bg_ops[phone] = "running"
-            try:
-                _m("_purchase_cancel").clear()
-            except Exception:
-                pass
+            _have_lock = False
+            if _op_lock.locked():
+                try:
+                    await _send(cid, f"⏳ <code>{phone}</code> в очереди — ждёт завершения текущей операции…",
+                                parse_mode="HTML")
+                except Exception:
+                    pass
             tariff = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
             await _send(cid, f"⏳ <b>Покупка Black Membership</b>\n\n<code>{phone}</code>\n💳 {tariff}",
                         parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
+                await _op_lock.acquire()
+                _have_lock = True
+                try:
+                    _m("_purchase_cancel").clear()
+                except Exception:
+                    pass
                 pp = _find_profile(phone)
                 if not pp:
                     await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
@@ -1681,6 +1723,11 @@ def _menu_tg_bot_thread() -> None:
                 await _send(cid, f"❌ Ошибка покупки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
+                if _have_lock:
+                    try:
+                        _op_lock.release()
+                    except Exception:
+                        pass
 
         async def _bg_check_all(cid):
             """Проверяет активацию всех профилей."""
@@ -1743,19 +1790,28 @@ def _menu_tg_bot_thread() -> None:
             if not need:
                 await _send(cid, "✅ _У всех профилей уже есть адрес_")
                 return
+            if _op_lock.locked():
+                await _send(cid, "⏳ _В очереди — ждёт завершения текущей операции…_")
             await _send(cid, f"⏳ *Заполняю адрес для {len(need)} профилей...*")
             ok_cnt = fail_cnt = 0
-            for pp in need:
+            await _op_lock.acquire()
+            try:
+                for pp in need:
+                    try:
+                        addr = _m("_gen_indian_address")()
+                        loop = asyncio.get_running_loop()
+                        raw  = await loop.run_in_executor(None, lambda pp=pp, a=addr: asyncio.run(
+                            _m("_do_fill_address")(pp, a)))
+                        ok, _ = _unpack(raw)
+                        if ok: ok_cnt   += 1
+                        else:  fail_cnt += 1
+                    except Exception:
+                        fail_cnt += 1
+            finally:
                 try:
-                    addr = _m("_gen_indian_address")()
-                    loop = asyncio.get_running_loop()
-                    raw  = await loop.run_in_executor(None, lambda pp=pp, a=addr: asyncio.run(
-                        _m("_do_fill_address")(pp, a)))
-                    ok, _ = _unpack(raw)
-                    if ok: ok_cnt   += 1
-                    else:  fail_cnt += 1
+                    _op_lock.release()
                 except Exception:
-                    fail_cnt += 1
+                    pass
             await _send(cid,
                 f"📍 *Адреса заполнены*\n\n"
                 f"✅ Успешно: *{ok_cnt}*\n"
@@ -1768,16 +1824,19 @@ def _menu_tg_bot_thread() -> None:
             if not need:
                 await _send(cid, "✅ _Нет профилей в категории «Доступные»_")
                 return
-            try:
-                _m("_purchase_cancel").clear()
-            except Exception:
-                pass
+            if _op_lock.locked():
+                await _send(cid, "⏳ _В очереди — ждёт завершения текущей операции…_")
             await _send(cid, f"⚡ *Заполняю все доступные профили* ({len(need)} шт.)\n_Адрес → чекаут → страница оплаты → закрыть_",
                         reply_markup=_buy_stop_kb())
             ok_cnt = fail_cnt = oos_cnt = oos2_cnt = 0
             fail_phones = []
             oos_phones = []
             oos2_phones = []
+            await _op_lock.acquire()
+            try:
+                _m("_purchase_cancel").clear()
+            except Exception:
+                pass
             for ph, pp in need:
                 if _m("_purchase_cancel").is_set():
                     break
@@ -1801,6 +1860,10 @@ def _menu_tg_bot_thread() -> None:
                 except Exception as _fe:
                     fail_cnt += 1
                     fail_phones.append(ph)
+            try:
+                _op_lock.release()
+            except Exception:
+                pass
             _oos_total = oos_cnt + oos2_cnt
             lines = [
                 f"⚡ *Готово* ({len(need)} профилей)",
