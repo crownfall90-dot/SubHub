@@ -331,19 +331,40 @@ def start_global_monitor():
 async def _rental_monitor_loop():
     _otp_last_check: dict[str, float] = {}
     _api_scan_at: float = 0.0
+    # Один persistent GrizzlySMSClient на весь цикл — переиспользует TCP-соединения
+    # вместо создания нового клиента (и пула) на каждый poll. Пересоздаём только
+    # при смене API-ключа. Отмена номеров (_cancel_rental_task) держит свой клиент,
+    # чтобы не делить соединения с этим циклом.
+    _mon_client = None
+    _mon_key = None
     while True:
         try:
             now = time.monotonic()
             api_key = _get_grizzly_api_key()
+
+            # Пересоздаём общий клиент при смене ключа / закрываем при его отсутствии
+            if api_key and api_key != _mon_key:
+                if _mon_client is not None:
+                    try:
+                        await _mon_client.close()
+                    except Exception:
+                        pass
+                _mon_client = GrizzlySMSClient(api_key, http_timeout=10)
+                _mon_key = api_key
+            elif not api_key and _mon_client is not None:
+                try:
+                    await _mon_client.close()
+                except Exception:
+                    pass
+                _mon_client = None
+                _mon_key = None
 
             # 0. Каждые 10 сек сканируем GrizzlySMS API на активные номера,
             #    которых нет в _RENTALS — подхватываем «чужие» и забытые.
             if api_key and now - _api_scan_at >= 10.0:
                 _api_scan_at = now
                 try:
-                    _scan_client = GrizzlySMSClient(api_key, http_timeout=10)
-                    _active_list = await _scan_client.get_active_activations()
-                    await _scan_client.close()
+                    _active_list = await _mon_client.get_active_activations()
                     for _item in (_active_list or []):
                         _aid = str(_item.get("activationId") or _item.get("id") or "")
                         _ph_raw = str(_item.get("phoneNumber") or _item.get("phone") or "")
@@ -375,9 +396,7 @@ async def _rental_monitor_loop():
                         if now - last_check >= 10.0:
                             _otp_last_check[aid] = now
                             try:
-                                client = GrizzlySMSClient(api_key, http_timeout=10)
-                                st = await client.get_status(aid)
-                                await client.close()
+                                st = await _mon_client.get_status(aid)
                                 if st.get("type") == "OK" and st.get("code"):
                                     otp = st["code"]
                                     if aid not in _RENTALS:
