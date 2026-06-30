@@ -46,7 +46,11 @@ def _read_proxy_cfg() -> dict:
         with open(_proxy_cfg_path(), encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
         pcfg = dict(cfg.get("proxy") or {})
-        pcfg["enabled"] = False  # прокси отключены глобально (временно)
+        # Прокси отключены глобально (временно). Настройки в config.yaml/меню «Р»
+        # сохраняются, но к браузеру НЕ применяются. Меню «Р» честно показывает
+        # баннер «⛔ ВРЕМЕННО ОТКЛЮЧЕНЫ ГЛОБАЛЬНО». Чтобы вернуть прокси — удалить
+        # строку ниже (тогда уважается pcfg["enabled"] из config.yaml).
+        pcfg["enabled"] = False
         return pcfg
     except Exception:
         return {"enabled": False}
