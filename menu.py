@@ -4858,7 +4858,19 @@ async def _handle_paytm_currency_page(page) -> bool:
                 if _pay_inr_loc:
                     _ptxt = (await _pay_inr_loc.inner_text()).strip()[:60]
                     print(f"  Нажимаю Pay INR: {_ptxt!r}")
-                    await _pay_inr_loc.click(timeout=5_000)
+                    # Ждём пока backdrop-оверлей (tw-bg-backdrop-drawer) исчезнет
+                    try:
+                        await _fr_cc.wait_for_selector(
+                            ".tw-bg-backdrop-drawer",
+                            state="hidden", timeout=5_000
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await _pay_inr_loc.click(timeout=5_000)
+                    except Exception as _click_ex:
+                        print(f"  {Y}Обычный клик Pay заблокирован ({_click_ex}), пробуем JS-клик{RST}")
+                        await _pay_inr_loc.evaluate("el => el.click()")
                     pay_clicked = True
                     await page.wait_for_timeout(2_000)
                 else:
