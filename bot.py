@@ -2199,6 +2199,18 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid)
                 return
 
+            # Нажатие любой кнопки = пользователь больше не вводит текст. Сбрасываем
+            # все состояния «ждём ввод», чтобы кнопки «Отмена» реально отменяли ввод,
+            # а не оставляли бота ждущим (тогда следующий текст перехватывался зря).
+            # Обработчики-сеттеры (sale/note/cost/card_order) ниже заново выставят
+            # своё ожидание после этого сброса. В callback'ах эти словари только
+            # пишутся, никогда не читаются для логики — сброс безопасен.
+            if data not in ("noop",):
+                _sales_cost_waiting.pop(cid, None)
+                _sale_input_waiting.pop(cid, None)
+                _note_waiting.pop(cid, None)
+                _card_order_waiting.pop(cid, None)
+
             # Навигация: главное меню ──────────────────────────────────────────
             if data in ("go:main", "show:main"):
                 await _ack(qid)

@@ -3039,6 +3039,15 @@ class GGSellBotHandler:
     async def handle_callback(self, cid: int, mid: int, qid: str, data: str) -> None:
         """Обработать все ggsell: и go:ggsell callback-команды."""
 
+        # Нажатие любой кнопки = пользователь больше не вводит текст. Сбрасываем
+        # все режимы ожидания ввода, чтобы кнопки «Отмена» реально отменяли ввод
+        # (иначе card_order/template-отмена оставляла бота ждущим, и следующий
+        # текст перехватывался зря). Обработчики-сеттеры ниже заново выставят свой
+        # режим после сброса. В callback'ах эти словари только пишутся, не читаются.
+        self.reply_mode.pop(cid, None)
+        self.template_edit_mode.pop(cid, None)
+        self.card_order_mode.pop(cid, None)
+
         if data in ("go:ggsell", "ggsell:refresh"):
             await self._ack(qid)
             await self._edit(cid, mid, "⏳ *GGSell* — загружаю данные...",
