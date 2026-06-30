@@ -541,6 +541,7 @@ def _menu_tg_bot_thread() -> None:
                     [{"text": "📞 Показать номер", "callback_data": f"profile:shownum:{phone}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies_archived:{phone}:{rec_key}"}],
                     [{"text": "🔓 Восстановить профиль", "callback_data": f"profile:unarchive:{rec_key}"}],
+                    [{"text": "🗑 Удалить навсегда", "callback_data": f"profile:arcdel_confirm:{rec_key}"}],
                     [{"text": "◀️ Назад", "callback_data": "profiles:list:archive"}],
                 ]}
 
@@ -591,6 +592,7 @@ def _menu_tg_bot_thread() -> None:
                              {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}])
                 rows.append([{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}])
                 rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
+                rows.append([{"text": "🗑 Удалить профиль", "callback_data": f"profile:del_confirm:{phone}"}])
 
             rows.append([{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies:{phone}"}])
             _note_lbl = ("📝 Примечание: " + (m.get("note") or "")[:20]) if m.get("note") else "📝 Добавить примечание"
@@ -2581,6 +2583,69 @@ def _menu_tg_bot_thread() -> None:
                             {"inline_keyboard": []}, parse_mode="HTML")
                 return
 
+            # Удаление активного профиля (не выданного) — Да/Нет
+            if data.startswith("profile:del_confirm:"):
+                phone = data.split(":", 2)[2]
+                await _ack(qid)
+                await _edit(cid, mid,
+                    f"🗑 Удалить профиль <code>{phone}</code>?\n\n"
+                    f"<i>Папка профиля будет удалена безвозвратно.</i>",
+                    {"inline_keyboard": [
+                        [{"text": "🗑 Да, удалить", "callback_data": f"profile:del_do:{phone}"},
+                         {"text": "✖️ Отмена",      "callback_data": f"profile:menu:{phone}:noaddr"}],
+                    ]}, parse_mode="HTML")
+                return
+
+            if data.startswith("profile:del_do:"):
+                phone = data.split(":", 2)[2]
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid, "❌ Профиль не найден", alert=True)
+                    await _edit(cid, mid, f"❌ Профиль <code>{phone}</code> не найден (уже удалён?).",
+                                {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:profiles"}]]},
+                                parse_mode="HTML")
+                    return
+                import shutil as _sh_del
+                try:
+                    _sh_del.rmtree(str(pp), ignore_errors=True)
+                except Exception:
+                    pass
+                await _ack(qid, "🗑 Профиль удалён")
+                await _edit(cid, mid, f"🗑 Профиль <code>{phone}</code> удалён.",
+                            {"inline_keyboard": [[{"text": "◀️ К профилям", "callback_data": "go:profiles"}]]},
+                            parse_mode="HTML")
+                return
+
+            # Удаление записи из архива — Да/Нет
+            if data.startswith("profile:arcdel_confirm:"):
+                rec_key = data.split(":", 2)[2]
+                await _ack(qid)
+                await _edit(cid, mid,
+                    f"🗑 Удалить запись архива <code>{rec_key}</code>?\n\n"
+                    f"<i>Запись будет удалена безвозвратно (профиль был выдан ранее).</i>",
+                    {"inline_keyboard": [
+                        [{"text": "🗑 Да, удалить", "callback_data": f"profile:arcdel_do:{rec_key}"},
+                         {"text": "✖️ Отмена",      "callback_data": "profiles:list:archive"}],
+                    ]}, parse_mode="HTML")
+                return
+
+            if data.startswith("profile:arcdel_do:"):
+                rec_key = data.split(":", 2)[2]
+                rec_path = USED_PROFILES_DIR / f"record_{rec_key}.json" if USED_PROFILES_DIR else None
+                if not rec_path or not rec_path.exists():
+                    await _ack(qid, "❌ Запись не найдена", alert=True)
+                    return
+                try:
+                    rec_path.unlink()
+                except Exception as _e:
+                    await _ack(qid, f"❌ Ошибка удаления: {_e}", alert=True)
+                    return
+                await _ack(qid, "🗑 Запись удалена")
+                await _edit(cid, mid, f"🗑 Запись архива <code>{rec_key}</code> удалена.",
+                            {"inline_keyboard": [[{"text": "◀️ К архиву", "callback_data": "profiles:archive"}]]},
+                            parse_mode="HTML")
+                return
+
             if data.startswith("profile:buy:"):
                 parts  = data.split(":")
                 months = int(parts[2])
@@ -3219,13 +3284,26 @@ def _menu_tg_bot_thread() -> None:
                 return
 
             if data.startswith("pay:switch_confirm:"):
+                _card_name_sw = ""
                 try:
                     _pos = int(data.split(":")[-1])
                     _m("_switch_card_choice")[0] = _pos
                     _m("_switch_card_ev").set()
+                    for _opt in _m("_3ds_card_options"):
+                        if _opt.get("pos") == _pos:
+                            _c = _opt.get("card", {})
+                            _card_name_sw = (_c.get("nickname") or _c.get("name")
+                                             or _m("_mask_card")(_c.get("number", "")))
+                            break
                 except Exception:
                     pass
+                _sw_lbl = f"*{_card_name_sw}*" if _card_name_sw else f"карту №{_pos + 1}"
                 await _ack(qid, "🔄 Переключаю карту...")
+                await _edit(cid, mid,
+                    f"🔄 *Смена карты...*\n\n"
+                    f"Переключаюсь на {_sw_lbl}.\n"
+                    f"_Ожидайте, бот продолжает оплату._",
+                    {"inline_keyboard": []})
                 return
 
             if data == "pay:switch_cancel":

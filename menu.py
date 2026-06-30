@@ -4539,11 +4539,17 @@ async def _handle_paytm_currency_page(page) -> bool:
                 'input[placeholder*="otp" i]', 'input[placeholder*="code" i]',
                 'input[type="tel"]', 'input[type="number"][maxlength]',
                 'input[maxlength="6"]', 'input[maxlength="4"]',
+                'input[type="password"]',
             ];
-            return sels.some(s => {
-                const el = document.querySelector(s);
-                return el && el.offsetParent !== null;
-            });
+            if (sels.some(s => { const el = document.querySelector(s); return el && el.offsetParent !== null; }))
+                return true;
+            // UQPAY / hitrust: любой видимый незаблокированный текстовый input
+            if (location.href.includes('hitrust.com') || location.href.includes('acs-auth')) {
+                for (const inp of document.querySelectorAll('input[type="text"], input:not([type])')) {
+                    if (inp.offsetParent !== null && !inp.readOnly && !inp.disabled) return true;
+                }
+            }
+            return false;
         }"""
         for fr in [page] + list(page.frames):
             try:
@@ -5070,15 +5076,31 @@ async def _handle_paytm_currency_page(page) -> bool:
             if not pay_clicked:
                 return False
 
-        # Шаг 3: ждём навигации после клика Pay INR (до 3 сек)
+        # Шаг 3: ждём пока страница уйдёт на 3DS (до 30 сек) или вернётся на Flipkart
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=3_000)
+            await page.wait_for_url(
+                lambda u: _is_3ds_page(u) or "flipkart.com" in u or "payglocal" in u,
+                timeout=30_000
+            )
+        except Exception:
+            pass
+        # Дополнительно ждём загрузку самой 3DS-страницы
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=5_000)
         except Exception:
             pass
 
         _otp_required = False
 
         for _3ds_try in range(12):
+            cur_url_3ds = page.url
+            if not _is_3ds_page(cur_url_3ds):
+                # Если страница ещё не навигировала — даём ещё 3 сек
+                if _3ds_try == 0:
+                    await page.wait_for_timeout(3_000)
+                    cur_url_3ds = page.url
+                if not _is_3ds_page(cur_url_3ds):
+                    break
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=3_000)
             except Exception:
@@ -5148,6 +5170,26 @@ async def _handle_paytm_currency_page(page) -> bool:
             if _has_otp_text(all_text):
                 print(f"  {G}✅ 3DS: страница подтверждения OTP{RST}")
                 _otp_required = True
+                # После 2 итераций кликания без результата — перестаём слепо жать Submit
+                # и ждём пока пользователь введёт OTP вручную (до 15 мин)
+                if _3ds_try >= 2:
+                    print(f"  {Y}⏳ OTP-страница не меняется — ждём ввода вручную (до 15 мин){RST}")
+                    try:
+                        _tg_send_direct(
+                            f"⏳ *Введите OTP* на странице 3DS верификации вручную.\n"
+                            f"_(Код пришёл на почту/телефон привязанный к карте)_"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await page.wait_for_url(
+                            lambda u: "flipkart.com" in u, timeout=900_000
+                        )
+                        print(f"  {G}✅ OTP подтверждён вручную — вернулись на Flipkart{RST}")
+                        _otp_required = False
+                    except Exception:
+                        print(f"  {Y}⚠ Timeout ожидания OTP — считаю отклонённым{RST}")
+                    break
 
             # Ищем и нажимаем Next/Submit
             _btn_clicked = False
@@ -5314,7 +5356,8 @@ async def _handle_paytm_currency_page(page) -> bool:
                 _cur = page.url
                 if ("flipkart.com" in _cur or "/retry" in _cur or "/error" in _cur
                         or "cardinalcommerce.com" in _cur or "StepUp" in _cur
-                        or "3dsecure" in _cur or "stepup" in _cur.lower()):
+                        or "3dsecure" in _cur or "stepup" in _cur.lower()
+                        or _is_3ds_page(_cur)):
                     break
                 _body_chk = await page.evaluate(
                     "() => document.body ? document.body.innerText.toLowerCase() : ''")
@@ -7534,6 +7577,41 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await _maximize_window(ctx, page)
 
+        # Проверяем — нет ли уже купленного Black Membership
+        _bm_phone_label = _phone_from_path(profile_path)
+        _bm_orders = await _check_recent_black_orders(page)
+        if _bm_orders:
+            _bm_info = "; ".join(_bm_orders[:3])
+            print(f"\n  {Y}╔══ ВНИМАНИЕ: уже куплено! ════════════════════════════════╗{RST}")
+            print(f"  {Y}║  {_bm_info[:70]}{RST}")
+            print(f"  {Y}╚═══════════════════════════════════════════════════════════╝{RST}")
+            _orders_confirm_ev.clear()
+            _orders_confirm_choice[0] = None
+            _tg_send_direct_kb(
+                f"⚠️ *Уже куплено!*\n\n"
+                f"Профиль `{_bm_phone_label}` — найден заказ *Flipkart BLACK*:\n"
+                f"_{_bm_info[:200]}_\n\n"
+                f"Что делать?",
+                {"inline_keyboard": [
+                    [{"text": "✅ Продолжить покупку", "callback_data": f"fill:orders_ok:{_bm_phone_label}"}],
+                    [{"text": "🗑 Удалить профиль",   "callback_data": f"fill:orders_del:{_bm_phone_label}"}],
+                ]}
+            )
+            print(f"  {Y}Жду ответа в Telegram (60 сек)...{RST}")
+            _bm_dl = asyncio.get_event_loop().time() + 60
+            while asyncio.get_event_loop().time() < _bm_dl:
+                if _orders_confirm_ev.is_set():
+                    break
+                await asyncio.sleep(1)
+            if _orders_confirm_choice[0] is False:
+                print(f"  {R}Удаляю профиль {_bm_phone_label}...{RST}")
+                _keep_open = False
+                import shutil as _sh_bm
+                _sh_bm.rmtree(str(profile_path), ignore_errors=True)
+                _tg_send_direct(f"🗑 Профиль `{_bm_phone_label}` удалён (дублирующий заказ)")
+                return False, "Профиль удалён — дублирующий заказ"
+            print(f"  {G}Продолжаю покупку...{RST}")
+
         # Как пункт 4: открываем страницу поиска, выбираем нужный продукт, жмём Buy Now
         err = await _navigate_search_buy(page, months)
         if err:
@@ -7738,7 +7816,9 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
 
         _payments_url_saved = page.url
         _post_result: dict = {}
-        for _ci, _ctry in enumerate(_cards_seq):
+        _ci = 0
+        while _ci < len(_cards_seq):
+            _ctry = _cards_seq[_ci]
             _ckcancel()
             if _ci > 0:
                 _nick = (_ctry.get("nickname") or _ctry.get("number", "")[-4:]) if _ctry else "—"
@@ -7776,6 +7856,18 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 _send_tg_error(_pp_phone, "Оплата не прошла — время ожидания 3DS OTP (15 мин) истекло")
                 return False, "Оплата не прошла — время ожидания 3DS OTP истекло"
 
+            if _pay_done == "switch_card":
+                # Пользователь выбрал конкретную карту через TG
+                _chosen = _switch_card_choice[0]
+                if 0 <= _chosen < len(_cards_seq):
+                    _nick_ch = (_cards_seq[_chosen].get("nickname")
+                                or _cards_seq[_chosen].get("number", "")[-4:]) if _cards_seq[_chosen] else "—"
+                    print(f"  {G}💳 Смена карты по запросу TG → {_nick_ch} (позиция {_chosen + 1}){RST}")
+                    _ci = _chosen
+                else:
+                    _ci += 1
+                continue
+
             if _pay_done:
                 # Оплата запущена — идём на black-store только если Flipkart подтвердил
                 try:
@@ -7797,6 +7889,8 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 print(f"  {Y}Карта не прошла — {'пробую следующую' if not _is_last_card else 'карты закончились'}{RST}")
                 if _is_last_card:
                     _send_tg_error(_pp_phone, "Карта не прошла — все карты исчерпаны")
+
+            _ci += 1
 
         base = f"✅ {addr_msg}" if addr_msg else "✅ Адрес уже был сохранён"
         if _post_result.get("paid"):
