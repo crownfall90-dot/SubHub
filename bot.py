@@ -3093,6 +3093,11 @@ def _menu_tg_bot_thread() -> None:
                 except Exception:
                     pass
                 await asyncio.sleep(1)
+                try:
+                    import menu as _menu_mod
+                    _menu_mod._shutting_down = True
+                except Exception:
+                    pass
                 import os as _os
                 _os._exit(42)
 

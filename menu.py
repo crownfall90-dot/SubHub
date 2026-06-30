@@ -305,6 +305,8 @@ CARDS_FILE          = _DATA / "cards.json"
 
 # Код выхода процесса: 42 = menu.bat должен перезапуститься (применено обновление)
 _exit_code = [0]
+# True когда процесс завершается (os._exit) — pause() должна молчать
+_shutting_down = False
 
 MSK = timezone(timedelta(hours=3))
 
@@ -514,6 +516,8 @@ def cls():
 
 
 def pause(msg: str = "  Нажмите Enter для продолжения..."):
+    if _shutting_down:
+        return
     try:
         input(f"\n{DIM}{msg}{RST}")
     except (KeyboardInterrupt, EOFError):

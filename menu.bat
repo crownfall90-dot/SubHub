@@ -5,7 +5,7 @@ set "PYTHONIOENCODING=utf-8"
 set "PYTHONUTF8=1"
 
 :loop
-cmd /d /c python menu.py
+python menu.py
 set "EX=%errorlevel%"
 
 if "%EX%"=="42" goto restart
@@ -18,5 +18,5 @@ goto loop
 
 :on_error
 echo.
-echo  Python error (code %EX%). Press any key...
-pause >nul
+echo  Python завершился с ошибкой (код %EX%).
+ping -n 3 127.0.0.1 >nul 2>&1
