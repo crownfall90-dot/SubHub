@@ -8420,13 +8420,20 @@ async def _enter_otp_on_page(page, otp_code: str, *, timeout_redirect: float = 2
     return "login" not in page.url.lower()
 
 
-async def _do_all_in_one(months: int, headless: bool = False, card: dict | None = None, skip_purchase: bool = False, max_par_override: int | None = None, intercept_mode: bool = False, stop_at_email: bool = False) -> tuple[bool, str]:
+async def _do_all_in_one(months: int, headless: bool = False, card: dict | None = None, skip_purchase: bool = False, max_par_override: int | None = None, intercept_mode: bool = False, stop_at_email: bool = False, _pay_lock: "asyncio.Lock | None" = None) -> tuple[bool, str]:
     """
     Полный цикл: GrizzlySMS номер → вход в Flipkart → адрес → Buy Now → Continue.
     При «Maximum attempts reached» отменяет номер и пробует следующий (до 5 раз).
     headless=True: браузер без окна; после успеха открывает профиль в видимом Chrome.
     Скорость: параллельный поиск номера (parallel_get_slots) + price_tiers как в main.py.
+
+    _pay_lock: общий asyncio.Lock от вызывающего, который запускает несколько
+    _do_all_in_one параллельно. Берётся ТОЛЬКО на фазу покупки (после входа:
+    Buy Now → адрес → оплата), которая трогает общие синглтоны (_3ds_card_options,
+    _switch_card_choice, _orders_confirm_choice). Поиск номеров, вход и проверка
+    OTP остаются параллельными — лок берётся уже после успешного входа.
     """
+    _pay_lock_held = False
     try:
         from playwright.async_api import async_playwright
         import yaml
@@ -9317,6 +9324,13 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     return True, f"Вход выполнен: +91 {phone_10}"
 
                 # ── 4. Buy Now на странице товара ────────────────────────────
+                # Фаза покупки трогает общие синглтоны — сериализуем её среди
+                # параллельных _do_all_in_one (вход/поиск номеров уже позади).
+                if _pay_lock is not None and not _pay_lock_held:
+                    if _pay_lock.locked():
+                        print(f"  {DIM}Покупка занята другим аккаунтом — жду очереди...{RST}")
+                    await _pay_lock.acquire()
+                    _pay_lock_held = True
                 print(f"  {DIM}Перехожу на страницу товара...{RST}")
                 err = await _click_buy_now(page, url)
                 if err:
@@ -9560,6 +9574,11 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         pass
 
     finally:
+        if _pay_lock_held:
+            try:
+                _pay_lock.release()
+            except Exception:
+                pass
         await sms_client.close()
 
     return False, "Прервано"
@@ -9572,16 +9591,20 @@ async def _do_purchases_parallel(
     card,
     max_concurrent: int,
 ) -> tuple[int, int]:
-    """Запускает до max_concurrent покупок параллельно. Возвращает (успехов, всего)."""
-    sem     = asyncio.Semaphore(max_concurrent)
-    lock    = asyncio.Lock()
-    success = 0
-    done    = 0
+    """Запускает до max_concurrent покупок параллельно. Возвращает (успехов, всего).
+    pay_lock сериализует фазу покупки/оплаты: поиск номеров/вход/OTP идут
+    параллельно, а покупка — по одной (общие синглтоны 3DS/смены карты)."""
+    sem      = asyncio.Semaphore(max_concurrent)
+    lock     = asyncio.Lock()
+    pay_lock = asyncio.Lock()
+    success  = 0
+    done     = 0
 
     async def one(idx: int) -> None:
         nonlocal success, done
         async with sem:
-            ok, msg = await _do_all_in_one(months, headless=headless, card=card)
+            ok, msg = await _do_all_in_one(months, headless=headless, card=card,
+                                           _pay_lock=pay_lock)
             async with lock:
                 done += 1
                 if ok:
@@ -10827,6 +10850,9 @@ if __name__ == "__main__":
                 max_par_per_flow = max(1, max_p_n // max_conc)
 
                 sem = asyncio.Semaphore(max_conc)
+                # Сериализует фазу покупки среди параллельных потоков (вход/OTP
+                # остаются параллельными — лок берётся уже после входа).
+                _pay_lock_rc = asyncio.Lock()
                 results: list = [None] * total
 
                 async def _one(idx: int, mths: int) -> None:
@@ -10837,7 +10863,8 @@ if __name__ == "__main__":
                                                            skip_purchase=_skip,
                                                            max_par_override=max_par_per_flow,
                                                            intercept_mode=_intercept,
-                                                           stop_at_email=_stop_at_email)
+                                                           stop_at_email=_stop_at_email,
+                                                           _pay_lock=_pay_lock_rc)
                             results[idx] = (ok, msg)
                             print(f"  [{idx+1}/{total}] {'✅' if ok else '❌'} {msg}")
                         except BaseException as exc:
