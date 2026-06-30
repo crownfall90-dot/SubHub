@@ -2039,6 +2039,30 @@ def _menu_tg_bot_thread() -> None:
                 else:
                     await _send(cid, txt)
 
+        async def _force_kill_tree(proc, grace=2.5):
+            """Через grace секунд после сигнала: если процесс ещё жив — жёстко
+            убиваем его и всё дерево детей (включая Chrome). Оставшиеся номера
+            GrizzlySMS вернёт фоновый монитор родителя."""
+            try:
+                await asyncio.sleep(grace)
+            except Exception:
+                pass
+            try:
+                if proc.poll() is not None:
+                    return  # уже завершился штатно (успел вернуть номера)
+                try:
+                    import psutil
+                    p = psutil.Process(proc.pid)
+                    for ch in p.children(recursive=True):
+                        try: ch.kill()
+                        except Exception: pass
+                    p.kill()
+                except Exception:
+                    try: proc.kill()
+                    except Exception: pass
+            except Exception:
+                pass
+
         async def _do_stop(cid, mid=0):
             if not _running():
                 if mid:
@@ -2046,19 +2070,24 @@ def _menu_tg_bot_thread() -> None:
                                 "🚀 *Запуск автоматизации*\n\nℹ️ Нет активного процесса.",
                                 _launch_kb())
                 return
+            proc = _proc[0]
             try:
                 import os, signal
                 if os.name == "nt":
-                    _proc[0].send_signal(signal.CTRL_BREAK_EVENT)
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
                 else:
-                    _proc[0].terminate()
-                if mid:
+                    proc.terminate()
+            except Exception:
+                pass
+            # Эскалация: не дошёл — добиваем всё дерево процессов (вместе с Chrome).
+            asyncio.create_task(_force_kill_tree(proc, 2.5))
+            if mid:
+                try:
                     await _edit(cid, mid,
-                                "🚀 *Запуск автоматизации*\n\n🛑 Сигнал остановки отправлен...",
+                                "🚀 *Запуск автоматизации*\n\n🛑 Останавливаю — завершаю процесс...",
                                 _launch_kb())
-            except Exception as exc:
-                if mid:
-                    await _edit(cid, mid, f"❌ Ошибка остановки: {exc}", _launch_kb())
+                except Exception:
+                    pass
 
         # ══════════════════════════════════════════════════════════════════════
         # Фоновая проверка обновлений
@@ -3312,11 +3341,19 @@ def _menu_tg_bot_thread() -> None:
                 return
 
             if data == "buy:stop":
+                await _ack(qid, "🛑 Останавливаю...")
+                # Ставим флаг отмены И убиваем Chrome активной операции — иначе
+                # долгие await Playwright (3DS/OTP/навигация) не прервутся сразу.
+                # _stop_active_purchases блокирующая (psutil) → в отдельном потоке.
                 try:
                     _m("_purchase_cancel").set()
                 except Exception:
                     pass
-                await _ack(qid, "🛑 Останавливаю...")
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, _m("_stop_active_purchases"))
+                except Exception:
+                    pass
                 return
 
             if data.startswith("pay:switch:") and not data.startswith("pay:switch_confirm:"):

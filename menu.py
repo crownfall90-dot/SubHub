@@ -558,12 +558,16 @@ _PURCHASE_LOCK = threading.RLock()
 
 
 def _serialize_purchase(_fn):
-    """Декоратор: выполняет async-функцию _do_* под _PURCHASE_LOCK."""
+    """Декоратор: выполняет async-функцию _do_* под _PURCHASE_LOCK и регистрирует
+    профиль в реестре активных покупок (для мгновенной остановки кнопкой)."""
     async def _wrap(*a, **kw):
         _PURCHASE_LOCK.acquire()
+        _pp = a[0] if a else None
+        _register_purchase_profile(_pp)
         try:
             return await _fn(*a, **kw)
         finally:
+            _unregister_purchase_profile(_pp)
             _PURCHASE_LOCK.release()
     _wrap.__name__ = getattr(_fn, "__name__", "_wrap")
     _wrap.__doc__ = getattr(_fn, "__doc__", None)
@@ -3408,6 +3412,12 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _keep_open = False
         return False, "CANCELLED"
     except Exception as exc:
+        # Если в процессе нажали «Остановить» — браузер убит, await Playwright упал
+        # с ошибкой. Трактуем как чистую отмену, а не как ошибку выполнения.
+        if _purchase_cancel.is_set():
+            print(f"  {Y}🛑 Остановлено пользователем — браузер закрыт.{RST}")
+            _keep_open = False
+            return False, "CANCELLED"
         msg = str(exc)
         if _use_proxy and _is_proxy_error(exc) and not _keep_open and _retry_n < _MAX_PROXY_RETRIES:
             svr = _proxy_module._last_proxy_server
@@ -4037,6 +4047,48 @@ def _to_gmail(email: str) -> str:
 # проверяют в долгих ожиданиях/циклах и сразу прерываются (с закрытием браузера).
 import threading as _threading_pc
 _purchase_cancel = _threading_pc.Event()
+
+# Реестр профилей, по которым ПРЯМО СЕЙЧАС идёт покупка/заполнение (path → refcount).
+# Нужен чтобы кнопка «Остановить» могла мгновенно убить Chrome активной операции:
+# кооперативный флаг не прерывает долгие await Playwright (ожидание 3DS/OTP/навигации),
+# а убийство браузера роняет их сразу. Заполняется декоратором _serialize_purchase.
+_active_purchase_profiles: dict = {}
+_app_lock = _threading_pc.Lock()
+
+def _register_purchase_profile(pp) -> None:
+    if pp is None:
+        return
+    k = str(pp)
+    with _app_lock:
+        _active_purchase_profiles[k] = _active_purchase_profiles.get(k, 0) + 1
+
+def _unregister_purchase_profile(pp) -> None:
+    if pp is None:
+        return
+    k = str(pp)
+    with _app_lock:
+        n = _active_purchase_profiles.get(k, 0) - 1
+        if n <= 0:
+            _active_purchase_profiles.pop(k, None)
+        else:
+            _active_purchase_profiles[k] = n
+
+def _stop_active_purchases() -> int:
+    """Мгновенно прерывает текущие покупки/заполнения: ставит флаг отмены и убивает
+    Chrome всех активных профилей, чтобы зависшие await Playwright сразу упали.
+    Возвращает число убитых Chrome-процессов. Блокирующая (psutil) — звать в потоке."""
+    _purchase_cancel.set()
+    with _app_lock:
+        paths = list(_active_purchase_profiles.keys())
+    killed = 0
+    for p in paths:
+        try:
+            k = _kill_chrome_for_profile(p)
+            if isinstance(k, int) and k > 0:
+                killed += k
+        except Exception:
+            pass
+    return killed
 
 # Переключение карты во время ожидания 3DS OTP (TG-кнопка → бот устанавливает флаг)
 _switch_card_choice: list = [-1]  # [0] — позиция карты в _ordered_pay
@@ -7972,6 +8024,11 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         _keep_open = False
         return False, "CANCELLED"
     except Exception as exc:
+        # Нажали «Остановить» → браузер убит, await упал. Это отмена, не ошибка.
+        if _purchase_cancel.is_set():
+            print(f"  {Y}🛑 Остановлено пользователем — браузер закрыт.{RST}")
+            _keep_open = False
+            return False, "CANCELLED"
         msg = str(exc)
         if _use_proxy and _is_proxy_error(exc) and _retry_n < _MAX_PROXY_RETRIES:
             svr = _last_proxy_server
