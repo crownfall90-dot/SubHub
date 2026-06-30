@@ -544,6 +544,32 @@ def _atomic_write_text(path, text: str) -> None:
     os.replace(tmp, path)
 
 
+# ── Глобальная сериализация покупки/оплаты ───────────────────────────────────
+# Покупка/оплата трогают общие синглтоны (_purchase_cancel, _switch_card_choice,
+# _orders_confirm_choice, _3ds_card_options). Реальное выполнение _do_* идёт в
+# worker-потоках (asyncio.run в run_in_executor) из РАЗНЫХ источников: ручной
+# TG-бот, GGSell-бот, консоль. У каждого свой asyncio.Lock, но они в разных
+# event-loop'ах и между собой не координируются. Этот RLock — единая точка
+# сериализации на уровне потоков: пока один _do_* идёт, остальные ждут.
+# RLock (а не Lock) — чтобы рекурсия (_do_fill_address/_do_buy_membership зовут
+# себя при ретраях) и вложенность (_do_all_in_one → _do_buy_membership) в ОДНОМ
+# потоке не давали дедлок; другой поток всё равно блокируется до полного выхода.
+_PURCHASE_LOCK = threading.RLock()
+
+
+def _serialize_purchase(_fn):
+    """Декоратор: выполняет async-функцию _do_* под _PURCHASE_LOCK."""
+    async def _wrap(*a, **kw):
+        _PURCHASE_LOCK.acquire()
+        try:
+            return await _fn(*a, **kw)
+        finally:
+            _PURCHASE_LOCK.release()
+    _wrap.__name__ = getattr(_fn, "__name__", "_wrap")
+    _wrap.__doc__ = getattr(_fn, "__doc__", None)
+    return _wrap
+
+
 def header(title: str = "LOGIN AUTOMATION  ──  PROFILE MANAGER", color: str = C):
     print()
     W_ = 54
@@ -3098,6 +3124,7 @@ async def _check_recent_black_orders(page) -> list:
     return found
 
 
+@_serialize_purchase
 async def _do_fill_address(profile_path: Path, addr: dict,
                            _skip_proxies: set | None = None,
                            _retry_n: int = 0,
@@ -7515,6 +7542,7 @@ def _is_flipkart_accessible_sync() -> bool:
         return False
 
 
+@_serialize_purchase
 async def _do_buy_membership(profile_path: Path, months: int, card: dict | None = None,
                              _skip_proxies: set | None = None,
                              _retry_n: int = 0,
