@@ -530,6 +530,20 @@ def run(cmd: list[str]) -> int:
     return proc.returncode
 
 
+def _atomic_write_text(path, text: str) -> None:
+    """Атомарная запись текста: пишем во временный файл рядом, fsync и заменяем
+    целевой через os.replace. Защищает от обрезанного/битого файла, если процесс
+    убьют во время записи (например os._exit(42) при перезапуске консоли)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as _f:
+        _f.write(text)
+        _f.flush()
+        os.fsync(_f.fileno())
+    os.replace(tmp, path)
+
+
 def header(title: str = "LOGIN AUTOMATION  ──  PROFILE MANAGER", color: str = C):
     print()
     W_ = 54
@@ -1397,7 +1411,7 @@ def _save_meta_field(profile_path: Path, **fields) -> bool:
     try:
         data = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
         data.update(fields)
-        meta_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(meta_file, json.dumps(data, ensure_ascii=False, indent=2))
         return True
     except Exception as exc:
         print(f"\n  {R}Ошибка записи метаданных: {exc}{RST}")
@@ -1501,7 +1515,7 @@ def _archive_profile(profile_path: Path, **extra_fields) -> bool:
     record_name = f"record_{phone}_{ts_int}.json"
     record_path = USED_PROFILES_DIR / record_name
     try:
-        record_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(record_path, json.dumps(data, ensure_ascii=False, indent=2))
     except Exception as exc:
         print(f"\n  {R}Ошибка записи архивной записи: {exc}{RST}")
         return False
@@ -2754,8 +2768,7 @@ def _screen_used_detail(r: dict) -> None:
                 profile_dir = DONE_PROFILES_DIR / f"profile_{phone}"
                 profile_dir.mkdir(parents=True, exist_ok=True)
                 meta_file   = profile_dir / ".profile_meta.json"
-                meta_file.write_text(json.dumps(r, ensure_ascii=False, indent=2),
-                                     encoding="utf-8")
+                _atomic_write_text(meta_file, json.dumps(r, ensure_ascii=False, indent=2))
                 rec_path.unlink()
                 print(f"\n  {G}✅ Профиль восстановлен → chrome_profiles_done/profile_{phone}{RST}")
                 print(f"  {DIM}Теперь используйте «К» (восстановить из куков) или войдите заново.{RST}")
@@ -10103,7 +10116,7 @@ def _load_cards() -> list:
 
 
 def _save_cards(cards: list) -> None:
-    CARDS_FILE.write_text(json.dumps(cards, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(CARDS_FILE, json.dumps(cards, ensure_ascii=False, indent=2))
 
 
 def _mask_card(number: str) -> str:
@@ -10163,8 +10176,7 @@ def _load_card_order() -> list:
 def _save_card_order(order: list) -> None:
     f = _DATA / "card_order.json"
     try:
-        _DATA.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(order, ensure_ascii=False), encoding="utf-8")
+        _atomic_write_text(f, json.dumps(order, ensure_ascii=False))
     except Exception:
         pass
 
