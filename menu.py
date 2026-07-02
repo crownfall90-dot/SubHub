@@ -5797,6 +5797,10 @@ async def _handle_3ds_verification(page) -> bool:
     _otp_frame_found = None
     _otp_dl = asyncio.get_event_loop().time() + 12
     while asyncio.get_event_loop().time() < _otp_dl:
+        # Смена карты через TG может прийти ещё до появления OTP-поля — реагируем сразу
+        if _switch_card_ev.is_set():
+            print(f"  {Y}⚠ Смена карты из TG (до появления OTP-поля) — прерываю{RST}")
+            return "switch_card"
         for _fr in [page] + list(page.frames):
             try:
                 _c = _fr.locator(
@@ -7925,13 +7929,16 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         _payments_url_saved = page.url
         _post_result: dict = {}
         _ci = 0
+        _first_entry = True  # первая карта — уже на странице оплаты, навигация не нужна
         while _ci < len(_cards_seq):
             _ctry = _cards_seq[_ci]
             _ckcancel()
-            if _ci > 0:
+            if not _first_entry:
                 _nick = (_ctry.get("nickname") or _ctry.get("number", "")[-4:]) if _ctry else "—"
                 print(f"\n  Карта {_ci+1}/{len(_cards_seq)}: {_nick} — пробую...")
-                # Возвращаемся на страницу оплаты для следующей карты
+                # Возвращаемся на страницу ввода карты (после отказа/3DS/смены карты).
+                # Раньше было привязано к _ci>0 → при смене на карту позиции 0 возврат
+                # не срабатывал и бот пытался вводить карту на чужой странице.
                 cur = page.url
                 if "flipkart.com/payments" not in cur:
                     try:
@@ -7940,6 +7947,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                         await page.wait_for_timeout(2_000)
                     except Exception:
                         pass
+            _first_entry = False
 
             # Заполняем кнопки смены карты для 3DS OTP уведомления
             try:
@@ -7971,9 +7979,12 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                     _nick_ch = (_cards_seq[_chosen].get("nickname")
                                 or _cards_seq[_chosen].get("number", "")[-4:]) if _cards_seq[_chosen] else "—"
                     print(f"  {G}💳 Смена карты по запросу TG → {_nick_ch} (позиция {_chosen + 1}){RST}")
+                    _tg_send_direct(f"🔄 *Возврат на страницу оплаты* — ввожу карту {_nick_ch}…")
                     _ci = _chosen
                 else:
                     _ci += 1
+                # Форсируем возврат на страницу ввода карты (сбрасываем «первый вход»)
+                _first_entry = False
                 continue
 
             if _pay_done in ("declined", "insufficient_funds"):
