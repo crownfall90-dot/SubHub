@@ -457,7 +457,7 @@ class GGSellBotHandler:
         issued_dt = done.get(invoice_id, "")
         _refunded = self.get_refunded()
         if invoice_id in _refunded:
-            lines.append(f"↩️ *Статус: возврат*  ·  `{_refunded[invoice_id]}`")
+            lines.append(f"🟠 *Статус: возврат*  ·  `{_refunded[invoice_id]}`")
         elif invoice_id in used_ids:
             lines.append("🟡 *Статус: в архиве*")
         elif invoice_id in done:
@@ -972,11 +972,10 @@ class GGSellBotHandler:
             except Exception:
                 yt_orders = []
 
-        # Сортировка: самые новые (наибольший id) — сверху;
-        # возвратные заказы отсеиваем в конец списка (stable sort сохранит порядок)
+        # Сортировка: самые новые (наибольший id) — сверху.
+        # Возвратные заказы остаются на своих местах, только с оранжевой меткой.
         refunded = self.get_refunded()
         yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0), reverse=True)
-        yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0) in refunded)
 
         done = self.get_done()
         order_btns = []
@@ -1047,7 +1046,7 @@ class GGSellBotHandler:
             p     = self.parse_order(o)
 
             if inv_i in refunded:
-                icon = "↩️"
+                icon = "🟠"
             elif inv_i in done:
                 icon = "🔵"
             elif inv_i in self.confirm:
@@ -1110,39 +1109,11 @@ class GGSellBotHandler:
         if green_count > 0:
             top_rows = [[{"text": f"✅ Выполнить все ({green_count})",
                           "callback_data": "ggsell:fulfill_all"}]]
-        # Отдельный список возвратов (все помеченные, не только из последних 30)
-        _all_refunds = len(refunded)
-        if _all_refunds:
-            top_rows.append([{"text": f"↩️ Возвраты ({_all_refunds})",
-                              "callback_data": "ggsell:refunds"}])
 
         kb_rows = top_rows + btn_rows + [
             [{"text": "◀️ Назад", "callback_data": "go:ggsell"}],
         ]
         await self._edit(cid, mid, "\n".join(lines), {"inline_keyboard": kb_rows})
-
-    def refunds_page_sync(self) -> tuple:
-        """Список всех заказов с пометкой «возврат» (из ggsel_done.json)."""
-        self.get_done()  # подгружает кэш buyer_emails
-        refunded = self.get_refunded()
-        lines = [
-            "↩️ *Возвраты*",
-            "━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"Всего: *{len(refunded)}*",
-            "",
-            "_Нажми на заказ, чтобы открыть его._",
-        ]
-        rows = []
-        # Новые пометки сверху (по дате пометки возврата)
-        for inv, dt in sorted(refunded.items(), key=lambda kv: kv[1], reverse=True)[:25]:
-            email = self._done_buyer_emails.get(inv, "")
-            label = f"↩️ {email[:30]}" if email else f"↩️ #{inv}"
-            label += f"  {dt[5:16]}"  # MM-DD HH:MM
-            rows.append([{"text": label[:64], "callback_data": f"ggsell:order:{inv}"}])
-        if not refunded:
-            lines.append("_Возвратов нет_")
-        rows.append([{"text": "◀️ Заказы", "callback_data": "ggsell:orders"}])
-        return "\n".join(lines), {"inline_keyboard": rows}
 
     async def bg_fulfill_all(self, cid, mid):
         """Запускает параллельное выполнение всех невыданных заказов."""
@@ -3172,12 +3143,6 @@ class GGSellBotHandler:
                              {"inline_keyboard": [[{"text": "◀️ Назад",
                                                      "callback_data": "go:ggsell"}]]})
             asyncio.create_task(self.bg_orders_page(cid, mid, offset=offset))
-            return
-
-        if data == "ggsell:refunds":
-            await self._ack(qid)
-            txt, kb = self.refunds_page_sync()
-            await self._edit(cid, mid, txt, kb)
             return
 
         if data == "ggsell:chats":
