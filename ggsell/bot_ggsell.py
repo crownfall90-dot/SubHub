@@ -204,6 +204,36 @@ class GGSellBotHandler:
             pass
         return profile_path_str
 
+    def get_refunded(self) -> dict:
+        """{invoice_id: 'YYYY-MM-DD HH:MM'} заказов, по которым сделан возврат на GGSell."""
+        try:
+            raw = json.loads((_DATA_DIR / "ggsel_done.json").read_text(encoding="utf-8"))
+            return {int(k): v for k, v in raw.get("refunded", {}).items()}
+        except Exception:
+            return {}
+
+    def mark_refunded(self, invoice_id: int, undo: bool = False) -> None:
+        """Помечает заказ как возврат (или снимает пометку при undo=True).
+        Возвратные заказы отсеиваются из списков невыданных, массовой и
+        авто-выдачи."""
+        try:
+            f = _DATA_DIR / "ggsel_done.json"
+            try:
+                raw = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+            if undo:
+                raw.get("refunded", {}).pop(str(invoice_id), None)
+            else:
+                dt_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                raw.setdefault("refunded", {})[str(invoice_id)] = dt_str
+            f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        # Возвратный заказ не должен ждать авто-выдачи
+        if not undo:
+            self._auto_pending.pop(invoice_id, None)
+
     async def bg_mark_used(self, cid: int, mid: int, invoice_id: int) -> None:
         """Помечает использованной и архивирует Chrome-профиль."""
         profile_path_str = self.mark_used(invoice_id)
@@ -425,7 +455,10 @@ class GGSellBotHandler:
         # Статус
         lines.append("")
         issued_dt = done.get(invoice_id, "")
-        if invoice_id in used_ids:
+        _refunded = self.get_refunded()
+        if invoice_id in _refunded:
+            lines.append(f"↩️ *Статус: возврат*  ·  `{_refunded[invoice_id]}`")
+        elif invoice_id in used_ids:
             lines.append("🟡 *Статус: в архиве*")
         elif invoice_id in done:
             lines.append("🔵 *Статус: выдано*")
@@ -481,9 +514,14 @@ class GGSellBotHandler:
     def order_kb(self, invoice_id: int, review_exists: bool = False) -> dict:
         done        = self.get_done()
         used_ids    = self.get_used()
+        refunded    = self.get_refunded()
         confirm_lnk = self.confirm.get(invoice_id)
         rows = []
-        if confirm_lnk:
+        if invoice_id in refunded:
+            # Возврат: выдача скрыта, можно только снять пометку
+            rows.append([{"text": "↩️ Возврат — снять пометку",
+                          "callback_data": f"ggsell:unmark_refund:{invoice_id}"}])
+        elif confirm_lnk:
             rows.append([
                 {"text": "📤 Отправить покупателю", "callback_data": f"ggsell:send:{invoice_id}"},
             ])
@@ -492,9 +530,15 @@ class GGSellBotHandler:
             rows.append([{"text": "▶️ Выполнить",      "callback_data": f"ggsell:run:{invoice_id}"}])
             rows.append([
                 {"text": "✅ Отметить выдано",  "callback_data": f"ggsell:mark_done:{invoice_id}"},
+                {"text": "↩️ Отметить возврат", "callback_data": f"ggsell:mark_refund:{invoice_id}"},
             ])
         elif invoice_id not in used_ids:
-            rows.append([{"text": "🟡 Использована", "callback_data": f"ggsell:mark_used:{invoice_id}"}])
+            rows.append([{"text": "🟡 Использована", "callback_data": f"ggsell:mark_used:{invoice_id}"},
+                         {"text": "↩️ Отметить возврат", "callback_data": f"ggsell:mark_refund:{invoice_id}"}])
+        else:
+            # В архиве — возврат всё ещё возможен (деньги вернули после выдачи)
+            rows.append([{"text": "↩️ Отметить возврат",
+                          "callback_data": f"ggsell:mark_refund:{invoice_id}"}])
 
         # Привязанный профиль: переход и замена ссылки (как в меню профиля)
         bound = self.get_bound_profile(invoice_id)
@@ -928,8 +972,11 @@ class GGSellBotHandler:
             except Exception:
                 yt_orders = []
 
-        # Сортировка: самые новые (наибольший id) — сверху
+        # Сортировка: самые новые (наибольший id) — сверху;
+        # возвратные заказы отсеиваем в конец списка (stable sort сохранит порядок)
+        refunded = self.get_refunded()
         yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0), reverse=True)
+        yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0) in refunded)
 
         done = self.get_done()
         order_btns = []
@@ -938,6 +985,8 @@ class GGSellBotHandler:
         total_cnt    = len(yt_orders)
         today_cnt    = 0
         today_done   = 0
+        refund_cnt   = sum(1 for o in yt_orders
+                           if int(o.get("invoice_id") or o.get("id") or 0) in refunded)
 
         for o in yt_orders:
             inv_i = int(o.get("invoice_id") or o.get("id") or 0)
@@ -949,10 +998,11 @@ class GGSellBotHandler:
                     today_done += 1
 
         # Шапка — только статистика
+        _refund_stat = f"   ·   ↩️ Возвраты: *{refund_cnt}*" if refund_cnt else ""
         lines = [
             "📋 *GGSell — Заказы YouTube Premium*",
             "━━━━━━━━━━━━━━━━━━━━━━", "",
-            f"📦 Всего: *{total_cnt}*   ·   📅 Сегодня: *{today_cnt}*   ·   ✅ Выдано сегодня: *{today_done}*",
+            f"📦 Всего: *{total_cnt}*   ·   📅 Сегодня: *{today_cnt}*   ·   ✅ Выдано сегодня: *{today_done}*{_refund_stat}",
             "",
         ]
 
@@ -996,7 +1046,9 @@ class GGSellBotHandler:
             inv_i = int(inv) if str(inv).isdigit() else 0
             p     = self.parse_order(o)
 
-            if inv_i in done:
+            if inv_i in refunded:
+                icon = "↩️"
+            elif inv_i in done:
                 icon = "🔵"
             elif inv_i in self.confirm:
                 icon = "⏳"
@@ -1046,11 +1098,12 @@ class GGSellBotHandler:
             btn_rows.append([{"text": f"Показать следующие 5 ›",
                               "callback_data": f"ggsell:orders:{offset + PAGE_SIZE}"}])
 
-        # Кнопка "Выполнить все" если есть невыданные заказы
+        # Кнопка "Выполнить все" если есть невыданные заказы (возвраты отсеяны)
         green_count = sum(
             1 for o in yt_orders
             if int(o.get("invoice_id") or o.get("id") or 0) not in done
             and int(o.get("invoice_id") or o.get("id") or 0) not in self.confirm
+            and int(o.get("invoice_id") or o.get("id") or 0) not in refunded
             and int(o.get("invoice_id") or o.get("id") or 0) > 0
         )
         top_rows = []
@@ -1084,11 +1137,13 @@ class GGSellBotHandler:
             return
 
         done = self.get_done()
+        _refunded_fa = self.get_refunded()
         green = [
             (int(o.get("invoice_id") or o.get("id") or 0), o)
             for o in yt_orders
             if int(o.get("invoice_id") or o.get("id") or 0) not in done
             and int(o.get("invoice_id") or o.get("id") or 0) not in self.confirm
+            and int(o.get("invoice_id") or o.get("id") or 0) not in _refunded_fa
             and int(o.get("invoice_id") or o.get("id") or 0) > 0
         ]
 
@@ -1362,10 +1417,12 @@ class GGSellBotHandler:
             return
 
         done = self.get_done()
+        _refunded_lb = self.get_refunded()
         # Сортировка от старых к новым (возрастающий id)
         yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0))
         pending = [o for o in yt_orders
-                   if int(o.get("invoice_id") or o.get("id") or 0) not in done]
+                   if int(o.get("invoice_id") or o.get("id") or 0) not in done
+                   and int(o.get("invoice_id") or o.get("id") or 0) not in _refunded_lb]
 
         lp = link[8:44] + "…" if len(link) > 52 else link
         lines = [
@@ -1873,10 +1930,11 @@ class GGSellBotHandler:
         marker = greeting.strip()[:24]
 
         done = self.get_done()
+        _refunded_sc = self.get_refunded()
         prompted = 0
         for o in yt:
             inv = int(o.get("invoice_id") or o.get("id") or 0)
-            if not inv or inv in done:
+            if not inv or inv in done or inv in _refunded_sc:
                 continue
             if self.get_bound_profile(inv):
                 continue
@@ -2584,7 +2642,8 @@ class GGSellBotHandler:
         # Авто-выполнение: профиль НЕ резервируем заранее (и не пишем какой).
         # Просто ждём первого сообщения покупателя — тогда и подбираем профиль
         # по приоритету (Оплаченные → С данными → Доступные → новый).
-        if any(self._get(_cid, "ggsel_auto_fulfill") for _cid in list(self.subs)):
+        if (any(self._get(_cid, "ggsel_auto_fulfill") for _cid in list(self.subs))
+                and invoice_id not in self.get_refunded()):
             self._auto_pending[invoice_id] = order
             logger.info(f"GGSell auto #{invoice_id}: ждём первого сообщения от покупателя")
 
@@ -2630,6 +2689,7 @@ class GGSellBotHandler:
             _will_auto = (invoice_id in self._auto_pending and
                           any(self._get(_c, "ggsel_auto_fulfill") for _c in list(self.subs)))
             _is_pending = bool(invoice_id) and (invoice_id not in self.get_done()) \
+                and (invoice_id not in self.get_refunded()) \
                 and not self.get_bound_profile(invoice_id)
             if _is_pending and not _will_auto:
                 kb_rows.insert(0, [{"text": "▶️ Начать выполнение заказа",
@@ -3307,6 +3367,20 @@ class GGSellBotHandler:
             invoice_id = int(data.split(":")[2])
             self.mark_done(invoice_id)
             await self._ack(qid, "✅ Отмечено как выдано")
+            asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
+            return
+
+        if data.startswith("ggsell:mark_refund:"):
+            invoice_id = int(data.split(":")[2])
+            self.mark_refunded(invoice_id)
+            await self._ack(qid, "↩️ Отмечено как возврат")
+            asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
+            return
+
+        if data.startswith("ggsell:unmark_refund:"):
+            invoice_id = int(data.split(":")[2])
+            self.mark_refunded(invoice_id, undo=True)
+            await self._ack(qid, "✅ Пометка возврата снята")
             asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
             return
 
