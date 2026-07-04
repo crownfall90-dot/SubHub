@@ -1414,25 +1414,65 @@ def _menu_tg_bot_thread() -> None:
             await _send(cid, "\n".join(lines), reply_markup={"inline_keyboard": kb_rows})
 
         async def _bg_refresh_link(cid, phone):
-            """Проверяет активацию Black и обновляет короткую ссылку в профиле."""
+            """Проверяет активацию Black и обновляет короткую ссылку в профиле.
+            При not_logged_in (слетела сессия Flipkart) — пробует восстановить
+            сессию из локального бэкапа куков и повторяет проверку."""
             import time as _time_rl
             _bg_ops[phone] = "running"
             await _send(cid, f"🔄 Обновляю ссылку для <code>{phone}</code>...", parse_mode="HTML")
+
+            def escape_html(t: str) -> str:
+                return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
             try:
                 pp = _find_profile(phone)
                 if not pp:
                     await _send_profile_not_found(cid, phone)
                     return
-                loop   = asyncio.get_running_loop()
-                result = await loop.run_in_executor(None, lambda: asyncio.run(
-                    _m("_check_black_store_activation")(pp, username=phone, headless=True)))
-                st    = result.get("status", "?")       if isinstance(result, dict) else "?"
-                short = (result.get("short_link") or "") if isinstance(result, dict) else ""
-                aurl  = (result.get("activation_url") or "") if isinstance(result, dict) else ""
-                link  = short or aurl
+                loop = asyncio.get_running_loop()
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                async def _check(_pp):
+                    return await loop.run_in_executor(None, lambda: asyncio.run(
+                        _m("_check_black_store_activation")(_pp, username=phone, headless=True)))
+
+                def _extract(res):
+                    _st  = res.get("status", "?")       if isinstance(res, dict) else "?"
+                    _sh  = (res.get("short_link") or "") if isinstance(res, dict) else ""
+                    _au  = (res.get("activation_url") or "") if isinstance(res, dict) else ""
+                    return _st, (_sh or _au)
+
+                result = await _check(pp)
+                st, link = _extract(result)
+
+                # Сессия Flipkart слетела → пробуем восстановить из бэкапа куков
+                if not link and st == "not_logged_in":
+                    _bk = Path("cookies_backup") / f"cookies_{phone}.json"
+                    if _bk.exists():
+                        await _send(cid,
+                            f"🔐 <b>{phone}</b>: сессия слетела (нет входа) — "
+                            f"восстанавливаю из сохранённых куков…", parse_mode="HTML")
+                        try:
+                            _pp_cur = pp
+                            ok_r, msg_r = await loop.run_in_executor(None, lambda: asyncio.run(
+                                _m("_restore_profile_from_cookies")(_bk, phone, _pp_cur)))
+                        except Exception as _re:
+                            ok_r, msg_r = False, str(_re)
+                        if ok_r:
+                            pp = _find_profile(phone) or pp
+                            await _send(cid,
+                                f"✅ <b>{phone}</b>: вход восстановлен — повторяю проверку…",
+                                parse_mode="HTML")
+                            result = await _check(pp)
+                            st, link = _extract(result)
+                        else:
+                            await _send(cid,
+                                f"⚠️ <b>{phone}</b>: сохранённые куки не дали входа "
+                                f"(<i>{escape_html(str(msg_r))}</i>) — сессия устарела.",
+                                parse_mode="HTML",
+                                reply_markup={"inline_keyboard": [
+                                    [{"text": "🍪 Как восстановить из свежих куков",
+                                      "callback_data": "profiles:cookies_info"}]]})
+                            return
 
                 if link:
                     # Сохраняем новую ссылку в мету (заодно пополняется link_history)
@@ -1447,13 +1487,21 @@ def _menu_tg_bot_thread() -> None:
                                     [{"text": "📤 Отправить покупателю",
                                       "callback_data": f"profile:send_to_buyer:{phone}:0"}],
                                 ]})
+                elif st == "not_logged_in":
+                    # Сессия мертва, бэкапа кук нет или он не помог
+                    await _send(cid,
+                        f"🔒 <b>{phone}</b>: вход в аккаунт слетел, автоматически "
+                        f"восстановить не удалось.\n"
+                        f"<i>Нужны свежие куки из браузера, где выполнен вход в этот аккаунт.</i>",
+                        parse_mode="HTML",
+                        reply_markup={"inline_keyboard": [
+                            [{"text": "🍪 Как восстановить из свежих куков",
+                              "callback_data": "profiles:cookies_info"}]]})
                 else:
                     await _send(cid,
                         f"⚠️ <b>{phone}</b>: свежая ссылка недоступна (статус: {escape_html(str(st))})",
                         parse_mode="HTML")
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка обновления <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)

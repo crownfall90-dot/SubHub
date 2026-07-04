@@ -6470,10 +6470,12 @@ async def _send_cookies_tg(ctx, profile_name: str, phone: str = "") -> None:
         print(f"  TG cookies: {_e}")
 
 
-async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str) -> tuple[bool, str]:
+async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
+                                        profile_path: Path | None = None) -> tuple[bool, str]:
     """
-    Создаёт новый Chrome-профиль и импортирует куки Flipkart из JSON-файла.
+    Импортирует куки Flipkart из JSON-файла в Chrome-профиль (обновляет сессию).
     Проверяет что вход выполнен (имя пользователя на странице).
+    profile_path — обновить именно этот профиль (иначе ищется/создаётся по номеру).
     Возвращает (ok, message).
     """
     from playwright.async_api import async_playwright
@@ -6507,15 +6509,20 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str) -> 
     if not pw_cookies:
         return False, "JSON пустой — куки не найдены"
 
-    # Создаём папку профиля
+    # Определяем папку профиля
     phone_digits = "".join(filter(str.isdigit, phone))
-    existing = sorted(DONE_PROFILES_DIR.glob(f"profile_*_{phone_digits}"))
-    if existing:
-        profile_path = existing[0]
-        print(f"  Профиль уже существует: {profile_path.name} — перезаписываю куки")
+    if profile_path is not None:
+        # Явно указанный профиль (обновляем сессию на месте, без дублей)
+        print(f"  Обновляю сессию профиля: {Path(profile_path).name}")
+        profile_path = Path(profile_path)
     else:
-        idx = len(list(DONE_PROFILES_DIR.glob("profile_*"))) + 1
-        profile_path = DONE_PROFILES_DIR / f"profile_{idx:04d}_{phone_digits}"
+        existing = sorted(DONE_PROFILES_DIR.glob(f"profile_*{phone_digits}"))
+        if existing:
+            profile_path = existing[0]
+            print(f"  Профиль уже существует: {profile_path.name} — перезаписываю куки")
+        else:
+            idx = len(list(DONE_PROFILES_DIR.glob("profile_*"))) + 1
+            profile_path = DONE_PROFILES_DIR / f"profile_{idx:04d}_{phone_digits}"
 
     profile_path.mkdir(parents=True, exist_ok=True)
 
@@ -6549,16 +6556,23 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str) -> 
         if not logged_in:
             return False, "Куки не дали входа — возможно устарели"
 
-        # Сохраняем метаданные
-        meta = {
+        # Сохраняем метаданные — СЛИВАЕМ с существующими, чтобы не потерять
+        # link_history, привязку к заказу (issued_invoice_id), ссылки и т.п.
+        _meta_file = profile_path / ".profile_meta.json"
+        try:
+            meta = json.loads(_meta_file.read_text(encoding="utf-8")) if _meta_file.exists() else {}
+            if not isinstance(meta, dict):
+                meta = {}
+        except Exception:
+            meta = {}
+        meta.update({
             "username": phone_digits,
             "login_ts": time.time(),
             "site_url": "https://www.flipkart.com/account/login",
             "profile_name": profile_path.name,
             "restored_from_cookies": str(cookies_json_path.name),
-        }
-        (profile_path / ".profile_meta.json").write_text(
-            __import__("json").dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        })
+        _atomic_write_text(_meta_file, json.dumps(meta, ensure_ascii=False, indent=2))
 
         return True, profile_path.name
 
