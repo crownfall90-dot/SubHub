@@ -544,6 +544,7 @@ def _menu_tg_bot_thread() -> None:
             if list_type == "archive":
                 return {"inline_keyboard": [
                     [{"text": "📞 Показать номер", "callback_data": f"profile:shownum:{phone}"}],
+                    [{"text": "📜 История ссылок", "callback_data": f"profile:arc_link_history:{rec_key}"}],
                     [{"text": "🍪 Экспорт куки JSON", "callback_data": f"profile:cookies_archived:{phone}:{rec_key}"}],
                     [{"text": "🔓 Восстановить профиль", "callback_data": f"profile:unarchive:{rec_key}"}],
                     [{"text": "🗑 Удалить навсегда", "callback_data": f"profile:arcdel_confirm:{rec_key}"}],
@@ -581,6 +582,7 @@ def _menu_tg_bot_thread() -> None:
                                   "callback_data": f"ggsell:order:{_bound_inv}"}])
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
+                    rows.append([{"text": "📜 История ссылок", "callback_data": f"profile:link_history:{phone}"}])
                 rows.append([{"text": "💰 Записать продажу", "callback_data": f"profile:record_sale:{phone}"}])
                 rows.append([{"text": "📦 Перенести в архив", "callback_data": f"profile:archive_one:{phone}"}])
             elif is_paid:
@@ -589,6 +591,7 @@ def _menu_tg_bot_thread() -> None:
                 rows.append([{"text": "🔵 Поставить статус выдан", "callback_data": f"profile:set_issued:{phone}"}])
                 if has_link:
                     rows.append([{"text": "🔄 Заменить ссылку", "callback_data": f"profile:refresh_link:{phone}"}])
+                    rows.append([{"text": "📜 История ссылок", "callback_data": f"profile:link_history:{phone}"}])
                     rows.append([{"text": "📤 Выдать получателю", "callback_data": f"profile:send_to_buyer:{phone}:0"}])
                 rows.append([{"text": "💰 Записать продажу", "callback_data": f"profile:record_sale:{phone}"}])
             else:
@@ -1200,6 +1203,64 @@ def _menu_tg_bot_thread() -> None:
                     return p
             return None
 
+        def _find_archive_rec(phone):
+            """Последняя архивная запись record_{phone}_{ts}.json для телефона."""
+            try:
+                if not USED_PROFILES_DIR or not USED_PROFILES_DIR.exists():
+                    return None
+                recs = sorted(USED_PROFILES_DIR.glob(f"record_*{phone}*.json"), reverse=True)
+                return recs[0] if recs else None
+            except Exception:
+                return None
+
+        async def _send_profile_not_found(cid, phone):
+            """«Профиль не найден» + если он в архиве — кнопка восстановления."""
+            rec = _find_archive_rec(phone)
+            if rec:
+                rec_key = rec.stem.replace("record_", "")
+                await _send(cid,
+                    f"❌ Профиль <code>{phone}</code> не найден в сохранённых.\n\n"
+                    f"📦 <i>Найден в архиве — восстановить и повторить операцию?</i>",
+                    parse_mode="HTML",
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "🔓 Восстановить профиль",
+                          "callback_data": f"profile:unarchive:{rec_key}:menu"}],
+                    ]})
+            else:
+                await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+
+        def _link_history_text(meta, phone):
+            """Текст истории ссылок профиля из меты (хронологически, первая сверху)."""
+            hist = meta.get("link_history")
+            if not isinstance(hist, list):
+                hist = []
+            if not hist:
+                # Истории ещё нет — показываем текущую ссылку, если есть
+                cur = (meta.get("black_short_link") or meta.get("issued_link")
+                       or meta.get("black_activation_link") or "")
+                if cur:
+                    hist = [{"ts": meta.get("link_received_ts") or meta.get("issued_ts") or 0,
+                             "link": cur}]
+            def esc(t):
+                return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            lines = [f"📜 <b>История ссылок</b> · <code>{_disp_phone(phone)}</code>",
+                     "━━━━━━━━━━━━━━━━━━━━━━"]
+            if not hist:
+                lines.append("<i>Ссылок ещё не было</i>")
+                return "\n".join(lines)
+            for i, h in enumerate(hist[-15:], 1):
+                ts = h.get("ts") or 0
+                try:
+                    dt = _m("_fmt_msk")(ts) if ts else "—"
+                except Exception:
+                    dt = "—"
+                mark = "  ← текущая" if i == len(hist[-15:]) else ""
+                lines.append(f"\n{i}. 🕒 <code>{dt}</code>{mark}")
+                lines.append(esc(h.get("link") or ""))
+            if len(hist) > 15:
+                lines.append(f"\n<i>…показаны последние 15 из {len(hist)}</i>")
+            return "\n".join(lines)
+
         def _unpack(r):
             return (r[0], str(r[1])) if isinstance(r, tuple) and len(r) > 1 \
                    else (bool(r), "")
@@ -1228,7 +1289,7 @@ def _menu_tg_bot_thread() -> None:
             try:
                 pp = _find_profile(phone)
                 if not pp:
-                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    await _send_profile_not_found(cid, phone)
                     return
                 loop   = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: asyncio.run(
@@ -1360,7 +1421,7 @@ def _menu_tg_bot_thread() -> None:
             try:
                 pp = _find_profile(phone)
                 if not pp:
-                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    await _send_profile_not_found(cid, phone)
                     return
                 loop   = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: asyncio.run(
@@ -1374,6 +1435,8 @@ def _menu_tg_bot_thread() -> None:
                     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
                 if link:
+                    # Сохраняем новую ссылку в мету (заодно пополняется link_history)
+                    _save_activation_result(pp, result)
                     _m("_save_meta_field")(pp, link_received_ts=_time_rl.time())
                     msg = (f"🔄 <b>{phone}</b> — ссылка обновлена\n\n"
                            f"🔗 {escape_html(link)}")
@@ -1427,7 +1490,7 @@ def _menu_tg_bot_thread() -> None:
                     pass
                 pp = _find_profile(phone)
                 if not pp:
-                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    await _send_profile_not_found(cid, phone)
                     return
                 addr = _m("_gen_indian_address")()
                 loop = asyncio.get_running_loop()
@@ -1484,7 +1547,7 @@ def _menu_tg_bot_thread() -> None:
                     pass
                 pp = _find_profile(phone)
                 if not pp:
-                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    await _send_profile_not_found(cid, phone)
                     return
                 addr = _m("_gen_indian_address")()
                 loop = asyncio.get_running_loop()
@@ -1525,7 +1588,7 @@ def _menu_tg_bot_thread() -> None:
             try:
                 pp = _find_profile(phone)
                 if not pp:
-                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    await _send_profile_not_found(cid, phone)
                     return
 
                 def _export():
@@ -1687,7 +1750,7 @@ def _menu_tg_bot_thread() -> None:
                     pass
                 pp = _find_profile(phone)
                 if not pp:
-                    await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
+                    await _send_profile_not_found(cid, phone)
                     return
                 cards = []
                 try:
@@ -2579,6 +2642,11 @@ def _menu_tg_bot_thread() -> None:
 
             if data.startswith("profile:unarchive:"):
                 rec_key = data.split(":", 2)[2]
+                # Суффикс ":menu" — восстановление из сообщения «профиль не найден»:
+                # после успеха показываем меню профиля, а не список архива.
+                _ua_to_menu = rec_key.endswith(":menu")
+                if _ua_to_menu:
+                    rec_key = rec_key[:-5]
                 rec_path = USED_PROFILES_DIR / f"record_{rec_key}.json"
                 if not rec_path.exists():
                     await _ack(qid, "❌ Запись архива не найдена", alert=True)
@@ -2595,7 +2663,13 @@ def _menu_tg_bot_thread() -> None:
                                          encoding="utf-8")
                     rec_path.unlink()
                     await _ack(qid, "🔓 Профиль возвращён в статус «Выдан»")
-                    await _edit(cid, mid, _archive_text(), _archive_kb())
+                    if _ua_to_menu:
+                        txt = (f"🔓 Профиль <code>{phone_ua}</code> восстановлен из архива.\n\n"
+                               f"Повторите нужную операцию:")
+                        await _edit(cid, mid, txt,
+                                    _profile_menu_kb(phone_ua, "active"), parse_mode="HTML")
+                    else:
+                        await _edit(cid, mid, _archive_text(), _archive_kb())
                 except Exception as exc:
                     await _ack(qid, f"❌ Ошибка: {exc}", alert=True)
                 return
@@ -3467,6 +3541,38 @@ def _menu_tg_bot_thread() -> None:
                     return
                 await _ack(qid, "🔄 Обновляю ссылку...")
                 asyncio.create_task(_bg_refresh_link(cid, phone))
+                return
+
+            if data.startswith("profile:link_history:"):
+                phone = data.split(":", 2)[2]
+                pp = _find_profile(phone)
+                if not pp:
+                    await _ack(qid)
+                    await _send_profile_not_found(cid, phone)
+                    return
+                try:
+                    m = _m("_read_profile_meta")(pp)
+                except Exception:
+                    m = {}
+                await _ack(qid)
+                await _send(cid, _link_history_text(m, phone), parse_mode="HTML",
+                            disable_web_page_preview=True)
+                return
+
+            if data.startswith("profile:arc_link_history:"):
+                rec_key = data.split(":", 2)[2]
+                rec_path = USED_PROFILES_DIR / f"record_{rec_key}.json"
+                if not rec_path.exists():
+                    await _ack(qid, "❌ Запись архива не найдена", alert=True)
+                    return
+                try:
+                    d = json.loads(rec_path.read_text(encoding="utf-8"))
+                except Exception:
+                    d = {}
+                phone_ah = d.get("username") or rec_key.rsplit("_", 1)[0]
+                await _ack(qid)
+                await _send(cid, _link_history_text(d, phone_ah), parse_mode="HTML",
+                            disable_web_page_preview=True)
                 return
 
             if data.startswith("profile:send_to_buyer:"):

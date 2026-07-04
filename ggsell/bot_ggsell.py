@@ -246,6 +246,20 @@ class GGSellBotHandler:
             meta["issued_ts"]         = _time.time()
             meta["issued_invoice_id"] = invoice_id
             if link:
+                # Ведём link_history и здесь (запись идёт мимо _save_meta_field)
+                _hist = meta.get("link_history")
+                if not isinstance(_hist, list):
+                    _hist = []
+                if not _hist:
+                    _old = (meta.get("black_short_link") or meta.get("black_activation_link")
+                            or meta.get("issued_link") or "")
+                    if _old and _old != link:
+                        _hist.append({"ts": meta.get("link_received_ts")
+                                            or meta.get("issued_ts") or 0,
+                                      "link": _old})
+                if not _hist or _hist[-1].get("link") != link:
+                    _hist.append({"ts": _time.time(), "link": link})
+                meta["link_history"] = _hist
                 meta["issued_link"] = link
             if buyer_email:
                 meta["buyer_email"] = buyer_email
@@ -492,6 +506,8 @@ class GGSellBotHandler:
                 {"text": "🔄 Заменить ссылку",
                  "callback_data": f"profile:refresh_link:{bound_phone}"},
             ])
+            rows.append([{"text": "📜 История ссылок",
+                          "callback_data": f"ggsell:link_history:{invoice_id}"}])
 
         review_icon = "✅" if review_exists else "❌"
         chat_row = [
@@ -3116,6 +3132,56 @@ class GGSellBotHandler:
                              {"inline_keyboard": [[{"text": "◀️ Заказы",
                                                      "callback_data": "ggsell:orders"}]]})
             asyncio.create_task(self.bg_order_view(cid, mid, invoice_id))
+            return
+
+        if data.startswith("ggsell:link_history:"):
+            invoice_id = int(data.split(":")[2])
+            bound = self.get_bound_profile(invoice_id)
+            meta: dict = {}
+            phone_lh = ""
+            if bound:
+                phone_lh = Path(bound).name.replace("profile_", "")
+                meta = self._read_bound_meta(bound)
+                if not meta:
+                    # Профиль мог быть перенесён в архив — берём мету из записи архива
+                    try:
+                        _used_dir = Path(bound).parent.parent / "chrome_profiles_used"
+                        _recs = sorted(_used_dir.glob(f"record_*{phone_lh}*.json"),
+                                       reverse=True)
+                        if _recs:
+                            meta = json.loads(_recs[0].read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+            hist = meta.get("link_history") if isinstance(meta.get("link_history"), list) else []
+            if not hist:
+                _cur = (meta.get("black_short_link") or meta.get("issued_link")
+                        or meta.get("black_activation_link") or self.get_sent_link(invoice_id))
+                if _cur:
+                    hist = [{"ts": meta.get("link_received_ts") or meta.get("issued_ts") or 0,
+                             "link": _cur}]
+            if not hist:
+                await self._ack(qid, "⚠️ Ссылок по этому заказу ещё не было", alert=True)
+                return
+            from datetime import datetime as _dt_lh, timezone as _tz_lh, timedelta as _td_lh
+            _msk = _tz_lh(_td_lh(hours=3))
+            lines = [f"📜 *История ссылок* · заказ `#{invoice_id}`"]
+            if phone_lh:
+                lines.append(f"📱 `{self._disp_phone(phone_lh)}`")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            _tail = hist[-15:]
+            for i, h in enumerate(_tail, 1):
+                ts = h.get("ts") or 0
+                try:
+                    dts = _dt_lh.fromtimestamp(float(ts), _msk).strftime("%d.%m.%Y %H:%M") if ts else "—"
+                except Exception:
+                    dts = "—"
+                mark = "  ← текущая" if i == len(_tail) else ""
+                lines.append(f"\n{i}. 🕒 `{dts}`{mark}")
+                lines.append(f"`{h.get('link') or ''}`")
+            if len(hist) > 15:
+                lines.append(f"\n_…показаны последние 15 из {len(hist)}_")
+            await self._ack(qid)
+            await self._send(cid, "\n".join(lines))
             return
 
         if data == "ggsell:fulfill_all":

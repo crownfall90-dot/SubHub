@@ -1441,10 +1441,42 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
 
 
 def _save_meta_field(profile_path: Path, **fields) -> bool:
-    """Записывает/обновляет поля в .profile_meta.json профиля."""
+    """Записывает/обновляет поля в .profile_meta.json профиля.
+
+    Автоматически ведёт link_history: каждая новая/заменённая ссылка профиля
+    (black_short_link / black_activation_link / issued_link) добавляется в
+    список {"ts", "link"}. Первая уже существовавшая ссылка заносится задним
+    числом при первом изменении."""
     meta_file = profile_path / ".profile_meta.json"
     try:
         data = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+        try:
+            _new_link = ""
+            # Приоритет: короткая (то, что реально выдаётся) > полная > выданная
+            for _lk in ("black_short_link", "black_activation_link", "issued_link"):
+                _v = fields.get(_lk)
+                if isinstance(_v, str) and _v.strip():
+                    _new_link = _v.strip()
+                    break
+            if _new_link:
+                _hist = data.get("link_history")
+                if not isinstance(_hist, list):
+                    _hist = []
+                if not _hist:
+                    # Профиль существовал до появления истории — фиксируем его
+                    # текущую ссылку как первую запись (задним числом)
+                    _old = (data.get("black_short_link") or data.get("black_activation_link")
+                            or data.get("issued_link") or "")
+                    if _old and _old != _new_link:
+                        _hist.append({"ts": data.get("link_received_ts")
+                                            or data.get("issued_ts") or 0,
+                                      "link": _old})
+                if not _hist or _hist[-1].get("link") != _new_link:
+                    import time as _t_lh
+                    _hist.append({"ts": _t_lh.time(), "link": _new_link})
+                data["link_history"] = _hist
+        except Exception:
+            pass
         data.update(fields)
         _atomic_write_text(meta_file, json.dumps(data, ensure_ascii=False, indent=2))
         return True
