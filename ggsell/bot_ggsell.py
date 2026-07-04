@@ -473,16 +473,22 @@ class GGSellBotHandler:
         if bound:
             meta = self._read_bound_meta(bound)
             ph_raw = Path(bound).name.replace("profile_", "")
-            short_link = (meta.get("black_short_link") or sent_link
-                          or meta.get("issued_link")
-                          or meta.get("black_activation_link") or "")
+            # Ссылка, ВЫДАННАЯ покупателю (что реально у него на руках)
+            issued_link = meta.get("issued_link") or sent_link or ""
+            # Последняя сгенерированная проверкой активации (может отличаться —
+            # каждая проверка «Activate now» создаёт новый entitlement-токен)
+            last_gen = meta.get("black_short_link") or ""
+            primary = issued_link or last_gen or meta.get("black_activation_link") or ""
             issued_str = issued_dt or meta.get("issued_str") or ""
             lines.append("")
             lines.append("━━━━━━━━━━━━━━━━━━━━━━")
             lines.append("📎 *Привязанный профиль*")
             lines.append(f"📱 `{self._disp_phone(ph_raw)}`")
-            if short_link:
-                lines.append(f"🔗 `{short_link}`")
+            if primary:
+                _lbl = " _(выдана покупателю)_" if issued_link else ""
+                lines.append(f"🔗 `{primary}`{_lbl}")
+            if last_gen and issued_link and last_gen != issued_link:
+                lines.append(f"🆕 `{last_gen}` _(последняя сгенерированная)_")
             if issued_str:
                 lines.append(f"📅 Выдан: `{issued_str}`")
         elif sent_link and (invoice_id in done or invoice_id in used_ids):

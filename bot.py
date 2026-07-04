@@ -2418,7 +2418,10 @@ def _menu_tg_bot_thread() -> None:
                 _pm_issued  = _pm.get("issued_str") or ""
                 _pm_vt      = (_pm.get("black_valid_till")
                                or _pm.get("subscription_expires_str") or "")
-                _pm_slink   = _pm.get("black_short_link") or _pm.get("issued_link") or ""
+                # Ссылка, ВЫДАННАЯ покупателю — приоритет над последней сгенерированной
+                _pm_issued_link = _pm.get("issued_link") or ""
+                _pm_last_gen    = _pm.get("black_short_link") or ""
+                _pm_slink   = _pm_issued_link or _pm_last_gen or ""
                 _pm_inv     = _pm.get("issued_invoice_id") or ""
                 _pm_email   = _pm.get("buyer_email") or ""
                 _info = f"📱 <code>{_disp_phone(phone)}</code>"
@@ -2434,7 +2437,11 @@ def _menu_tg_bot_thread() -> None:
                 if _pm_vt:
                     _info += f"\n⏳ До:       <b>{_pm_vt}</b>"
                 if _pm_slink:
-                    _info += f"\n🔗 <a href=\"{_pm_slink}\">{_pm_slink}</a>"
+                    _lbl_s = "  (выдана покупателю)" if _pm_issued_link else ""
+                    _info += f"\n🔗 <a href=\"{_pm_slink}\">{_pm_slink}</a>{_lbl_s}"
+                    if _pm_last_gen and _pm_issued_link and _pm_last_gen != _pm_issued_link:
+                        _info += (f"\n🆕 <a href=\"{_pm_last_gen}\">{_pm_last_gen}</a>"
+                                  f"  (последняя сгенерированная)")
                 _pm_note = _pm.get("note") or ""
                 if _pm_note:
                     _info += f"\n📝 <i>{_pm_note}</i>"
