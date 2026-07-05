@@ -7218,10 +7218,12 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             return False
 
     async def _click_add_opener():
-        """Клик по «Add Gift Card» / «Use Gift Card» — открывает форму ввода купона."""
+        """Клик по ссылке «Add Gift Card» (открывает модалку ввода купона).
+        НЕ трогаем «Use Gift Card» — это подпись строки с галочкой (её ставит
+        отдельный _ensure_use_checkbox), клик по ней снял бы галочку."""
         try:
             bb = await page.evaluate(r"""() => {
-                const want = ['add gift card', 'have a flipkart gift card?', 'use gift card'];
+                const want = ['add gift card', 'have a flipkart gift card?'];
                 for (const el of document.querySelectorAll('a,button,div,span,[role="button"]')) {
                     const t = (el.innerText || el.textContent || '').trim().toLowerCase();
                     if (!want.includes(t)) continue;
