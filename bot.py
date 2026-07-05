@@ -3353,7 +3353,6 @@ def _menu_tg_bot_thread() -> None:
                         _rows.append(_row); _row = []
                 if _row:
                     _rows.append(_row)
-                _rows.append([{"text": "🔢 Авто (номинал в строке)", "callback_data": "gift:add_denom:auto"}])
                 _rows.append([{"text": "❌ Отмена", "callback_data": "gift:menu"}])
                 await _send(cid,
                     "🎁 *Добавление гифт-карт*\n\n"
@@ -3364,8 +3363,8 @@ def _menu_tg_bot_thread() -> None:
 
             if data.startswith("gift:add_denom:"):
                 _dv = data.split(":")[2]
-                _gift_add_waiting[cid] = "auto" if _dv == "auto" else int(_dv)
-                _dlbl = "с номиналом из строки" if _dv == "auto" else f"по ₹{_dv}"
+                _gift_add_waiting[cid] = int(_dv)
+                _dlbl = f"по ₹{_dv}"
                 await _send(cid,
                     f"🎁 *Жду карты {_dlbl}*\n\n"
                     "Пришлите *текстом* или *файлом* (CSV / Excel / .txt). "
