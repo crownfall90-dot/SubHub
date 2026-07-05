@@ -800,9 +800,31 @@ def _menu_tg_bot_thread() -> None:
             return out, errs
 
         def _gift_bytes_to_text(fname, raw):
-            """Извлекает текст из присланного файла: .csv/.txt как есть; .xlsx через
-            openpyxl (если установлен) → строки «серия pin дата»."""
+            """Извлекает текст из присланного файла в строки «серия pin дата».
+            Поддержка: HTML-таблица (частый «Excel»-экспорт Flipkart с .xlsx),
+            настоящий .xlsx (openpyxl), CSV/TXT."""
+            import re as _re2
             _low = (fname or "").lower()
+            _sniff = raw[:400].lstrip(b"\xef\xbb\xbf").lstrip().lower()
+
+            # 1. HTML-таблица (определяем по содержимому, а не по расширению)
+            if (_sniff.startswith(b"<html") or _sniff.startswith(b"<table")
+                    or b"excel.sheet" in _sniff or b"<table" in raw[:2000].lower()):
+                try:
+                    html = raw.decode("utf-8", "replace")
+                    _lines = []
+                    for _tr in _re2.findall(r"<tr[^>]*>(.*?)</tr>", html, _re2.I | _re2.S):
+                        _cells = _re2.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", _tr, _re2.I | _re2.S)
+                        _vals = [_re2.sub(r"<[^>]+>", "", c).strip() for c in _cells]
+                        _vals = [v for v in _vals if v]
+                        if _vals:
+                            _lines.append(" ".join(_vals))
+                    if _lines:
+                        return "\n".join(_lines), ""
+                except Exception as _he:
+                    return "", f"Не удалось прочитать HTML-таблицу: {_he}"
+
+            # 2. Настоящий .xlsx (zip) через openpyxl
             if _low.endswith((".xlsx", ".xlsm", ".xls")):
                 try:
                     import io as _io2, openpyxl as _oxl
@@ -819,7 +841,8 @@ def _menu_tg_bot_thread() -> None:
                                 "(«📦 Зависимости») или пришлите CSV.")
                 except Exception as _xe:
                     return "", f"Не удалось прочитать Excel: {_xe}"
-            # csv / txt / прочее — как текст
+
+            # 3. CSV / TXT / прочее — как текст
             for enc in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
                 try:
                     return raw.decode(enc), ""
@@ -3375,7 +3398,8 @@ def _menu_tg_bot_thread() -> None:
                 lines = ["📜 *Использованные гифт-карты*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
                 for u in list(reversed(used))[:30]:
                     _pr = u.get("profile") or "—"
-                    lines.append(f"₹{u.get('denom')} · `{_m('_mask_gift')(u.get('number',''))}` · "
+                    _st = "↩️ др.аккаунт" if u.get("status") == "used_elsewhere" else "✅ применена"
+                    lines.append(f"{_st} · ₹{u.get('denom')} · `{_m('_mask_gift')(u.get('number',''))}` · "
                                  f"{u.get('used_str','')} · {_pr}")
                 if len(used) > 30:
                     lines.append(f"\n_…ещё {len(used)-30}_")

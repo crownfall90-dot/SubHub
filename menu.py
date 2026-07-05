@@ -7169,12 +7169,33 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
                 "[role='button']:has-text('Add Gift Card'), button:has-text('Apply')")
 
     applied = 0
-    for _i, c in enumerate(picked, 1):
+    applied_sum = 0
+    _tried_bad: set = set()   # номера, отклонённые НЕ как «already used» — не повторяем
+    _guard = 0
+    while applied_sum < total and _guard < 40:
+        _guard += 1
         _ckcancel()
+        # Доступные карты (использованные уже удалены из хранилища), кроме «плохих»
+        _avail = [gc for gc in _load_gift_cards()
+                  if not gc.get("used")
+                  and str(gc.get("number") or "").strip()
+                  and str(gc.get("pin") or "").strip()
+                  and int(gc.get("denom") or 0) > 0
+                  and str(gc.get("number")).strip() not in _tried_bad]
+        _need = total - applied_sum
+        _sel, _ = _select_gift_cards(_need, _avail)
+        if not _sel:
+            # Точный набор под остаток не собрать — берём самую крупную доступную (overpay ок)
+            _avail.sort(key=lambda x: int(x.get("denom") or 0), reverse=True)
+            _sel = [_avail[0]] if _avail else []
+        if not _sel:
+            print(f"  {R}✘ Гифт-карт не хватает (остаток ₹{_need}){RST}")
+            break
+        c = _sel[0]
         _num = str(c.get("number") or "").strip()
         _pin = str(c.get("pin") or "").strip()
         _dn  = int(c.get("denom") or 0)
-        print(f"  🎁 [{_i}/{len(picked)}] Ввожу карту {_mask_gift(_num)} (₹{_dn})...")
+        print(f"  🎁 Карта {_mask_gift(_num)} (₹{_dn}); осталось покрыть ₹{_need}...")
 
         _num_inp = page.locator(_NUM_SEL).first
         _pin_inp = page.locator(_PIN_SEL).first
@@ -7191,6 +7212,7 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             await page.wait_for_timeout(300)
         except Exception as _fe:
             print(f"  {Y}⚠ Не удалось заполнить поля: {_fe}{RST}")
+            _tried_bad.add(_num)
             continue
 
         # Клик «Add Gift Card»
@@ -7205,28 +7227,55 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
                 await page.keyboard.press("Enter")
             except Exception:
                 pass
-        await page.wait_for_timeout(2_500)
+        await page.wait_for_timeout(2_800)
 
-        # Проверяем результат: ошибка на странице?
-        _err = ""
+        # Сигнал успеха: поле номера очистилось (карта принята, форма сброшена).
+        _field_cleared = False
         try:
-            _err = await page.evaluate(r"""() => {
+            _field_cleared = (await _num_inp.input_value()).strip() == ""
+        except Exception:
+            _field_cleared = False
+        # Категория ошибки на странице
+        _errcat = ""
+        try:
+            _errcat = await page.evaluate(r"""() => {
                 const b = (document.body?.innerText || '').toLowerCase();
-                const pat = ['invalid', 'incorrect', 'not valid', 'already', 'expired',
-                             'wrong', 'does not', 'unable', 'cannot be applied', 'no balance'];
-                for (const p of pat) if (b.includes(p)) return p;
+                if (b.includes('another account') ||
+                    (b.includes('already') && b.includes('gift card'))) return 'already';
+                const pat = ['invalid','incorrect','not valid','expired','wrong',
+                             'does not','unable','cannot be applied','no balance','not a valid'];
+                for (const p of pat) if (b.includes(p)) return 'other';
                 return '';
             }""")
         except Exception:
-            _err = ""
-        if _err:
-            print(f"  {Y}⚠ Карта {_mask_gift(_num)} отклонена ({_err}) — пропускаю (НЕ помечаю использованной){RST}")
+            _errcat = ""
+
+        # Уже использована / добавлена на ДРУГОМ аккаунте → пометить, удалить, взять следующую
+        if _errcat == "already" and not _field_cleared:
+            print(f"  {Y}↩ Карта {_mask_gift(_num)} уже использована на другом аккаунте — "
+                  f"помечаю и удаляю, беру следующую{RST}")
+            _mark_gift_used(c, profile_path, status="used_elsewhere")
+            _tg_send_direct(f"🎁 Карта {_mask_gift(_num)} (₹{_dn}) уже использована на другом "
+                            f"аккаунте — удалена, пробую следующую.")
             continue
 
-        # Успех — карта начислена на баланс аккаунта → сразу помечаем использованной
+        # Прочая ошибка (invalid/expired/...) — не удаляем, но в этой сессии не повторяем
+        if not _field_cleared and _errcat == "other":
+            print(f"  {Y}⚠ Карта {_mask_gift(_num)} отклонена (не «другой аккаунт») — пропускаю{RST}")
+            _tried_bad.add(_num)
+            continue
+
+        # Не очистилось и явной ошибки нет — считаем неуспехом, чтобы не зациклиться
+        if not _field_cleared and not _errcat:
+            print(f"  {Y}⚠ Карта {_mask_gift(_num)} — нет подтверждения применения, пропускаю{RST}")
+            _tried_bad.add(_num)
+            continue
+
+        # Успех — карта начислена на баланс аккаунта → помечаем использованной
         applied += 1
-        _mark_gift_used(c, profile_path)
-        print(f"  {G}✔ Карта {_mask_gift(_num)} применена и помечена использованной{RST}")
+        applied_sum += _dn
+        _mark_gift_used(c, profile_path, status="used")
+        print(f"  {G}✔ Карта {_mask_gift(_num)} применена (₹{_dn}). Итого ₹{applied_sum}/{total}{RST}")
 
         # Появилась кнопка Place Order? Значит баланса хватает
         if await _gift_place_order_bbox(page):
@@ -10688,9 +10737,11 @@ def _load_gift_used() -> list:
     return []
 
 
-def _mark_gift_used(card: dict, profile_path=None) -> None:
-    """Помечает гифт-карту использованной: удаляет из хранилища, пишет в аудит-лог
-    (что/когда/какой профиль) и в мету профиля (gift_cards_used). Одноразово."""
+def _mark_gift_used(card: dict, profile_path=None, status: str = "used") -> None:
+    """Помечает гифт-карту использованной: удаляет из хранилища и пишет в аудит-лог.
+    status="used" — применена к этому профилю (пишется и в мету профиля).
+    status="used_elsewhere" — уже использована/добавлена на ДРУГОМ аккаунте
+    (Flipkart отклонил): удаляем и логируем, но в баланс профиля НЕ пишем."""
     import time as _t_gu
     num = str(card.get("number") or "").strip()
     denom = int(card.get("denom") or 0)
@@ -10711,12 +10762,12 @@ def _mark_gift_used(card: dict, profile_path=None) -> None:
     try:
         log = _load_gift_used()
         log.append({"denom": denom, "number": num, "used_ts": ts,
-                    "used_str": _fmt_msk(ts), "profile": prof_name})
+                    "used_str": _fmt_msk(ts), "profile": prof_name, "status": status})
         _atomic_write_text(GIFT_USED_FILE, json.dumps(log, ensure_ascii=False, indent=2))
     except Exception:
         pass
-    # 3. Запись в мету профиля
-    if profile_path:
+    # 3. Запись в мету профиля — только если карта реально применена к этому профилю
+    if profile_path and status == "used":
         try:
             _mf = Path(profile_path) / ".profile_meta.json"
             _meta = json.loads(_mf.read_text(encoding="utf-8")) if _mf.exists() else {}
