@@ -3405,10 +3405,13 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             if reached == "OUT_OF_STOCK":
                 return await _oos_delete_return(retry_done=True)
             if reached == "CAPTCHA":
+                _keep_open = False
                 return False, "Капча Flipkart зависла (Are you a human?) — не удалось пройти даже после обновлений. Попробуйте запустить ещё раз позже."
 
         # ── Шаг C: проверяем payments ────────────────────────────────────────
         if "payments" not in page.url:
+            # Провал — закрываем браузер (иначе брошенные окна убьются жёстко → EPIPE)
+            _keep_open = False
             _cur_c = page.url.split("?")[0].rstrip("/")
             if _cur_c in ("https://www.flipkart.com", "https://flipkart.com", "https://m.flipkart.com"):
                 if await _page_logged_out(page):
@@ -3490,9 +3493,12 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         if _use_proxy and _is_proxy_error(exc) and not _keep_open:
             print(f"  {Y}⚠ Все прокси недоступны — пробую без прокси...{RST}")
             return await _do_fill_address(profile_path, addr, set(), 1, _use_proxy=False, stop_at_payment=stop_at_payment)
-        _keep_open = True
+        # На ошибке закрываем браузер (не оставляем висеть → иначе жёсткое убийство даёт EPIPE)
+        _keep_open = False
         return False, msg
     finally:
+        # Закрываем контекст и драйвер аккуратно (graceful), чтобы Node-драйвер
+        # Playwright не падал с EPIPE от убитого извне браузера.
         if not _keep_open:
             if ctx:
                 try: await ctx.close()
@@ -8443,6 +8449,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             return await _do_buy_membership(profile_path, months, card,
                                             set(), 1, _use_proxy=False,
                                             _skip_ping=True)
+        _keep_open = False  # ошибка — закрываем браузер (иначе EPIPE при жёстком убийстве)
         return False, msg
     finally:
         _loop.set_exception_handler(_orig_exc_handler)
