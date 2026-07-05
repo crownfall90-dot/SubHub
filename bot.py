@@ -3385,10 +3385,11 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, "🎁 _Список пуст_", parse_mode="Markdown")
                     return
                 lines = ["🎁 *Гифт-карты в хранилище*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-                for i, c in enumerate(sorted(cards, key=lambda x: -int(x.get("denom") or 0))[:40], 1):
-                    lines.append(f"{i}. ₹{c.get('denom')} · `{_m('_mask_gift')(c.get('number',''))}`")
+                _srt = sorted(cards, key=lambda x: -int(x.get("denom") or 0))
+                for i, c in enumerate(_srt[:40], 1):
+                    lines.append(f"{i}. ₹{c.get('denom')}\n   серия `{c.get('number','')}`  PIN `{c.get('pin','')}`")
                 if len(cards) > 40:
-                    lines.append(f"\n_…ещё {len(cards)-40}_")
+                    lines.append(f"\n_…ещё {len(cards)-40} (полный список — в консоли)_")
                 lines.append(f"\n💰 Итого: *₹{_m('_gift_balance')(cards)}*")
                 await _send(cid, "\n".join(lines), parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [[{"text": "◀️ Гифт-карты", "callback_data": "gift:menu"}]]})
@@ -3401,13 +3402,14 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, "📜 _Использованных карт пока нет_", parse_mode="Markdown")
                     return
                 lines = ["📜 *Использованные гифт-карты*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-                for u in list(reversed(used))[:30]:
+                for u in list(reversed(used))[:40]:
                     _pr = u.get("profile") or "—"
                     _st = "↩️ др.аккаунт" if u.get("status") == "used_elsewhere" else "✅ применена"
-                    lines.append(f"{_st} · ₹{u.get('denom')} · `{_m('_mask_gift')(u.get('number',''))}` · "
-                                 f"{u.get('used_str','')} · {_pr}")
-                if len(used) > 30:
-                    lines.append(f"\n_…ещё {len(used)-30}_")
+                    _pin_u = f"  PIN `{u.get('pin')}`" if u.get("pin") else ""
+                    lines.append(f"{_st} · ₹{u.get('denom')} · {u.get('used_str','')} · {_pr}\n"
+                                 f"   серия `{u.get('number','')}`{_pin_u}")
+                if len(used) > 40:
+                    lines.append(f"\n_…ещё {len(used)-40}_")
                 await _send(cid, "\n".join(lines), parse_mode="Markdown",
                             reply_markup={"inline_keyboard": [[{"text": "◀️ Гифт-карты", "callback_data": "gift:menu"}]]})
                 return

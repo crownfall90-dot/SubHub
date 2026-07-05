@@ -1824,7 +1824,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         # Сначала проверяем ВСЕ фреймы (activate_now может быть в iframe)
         # потом COMPREHENSIVE_JS как запасной
         try:
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.evaluate("() => { if (document.body) window.scrollTo(0, document.body.scrollHeight); }")
             await page.wait_for_timeout(1_000)
             status = await _check_frames(verbose=True)
             if not status:
@@ -2413,10 +2413,12 @@ def screen_profiles():
             if isinstance(_gcu, list) and _gcu:
                 _sum_g = sum(int(g.get("denom") or 0) for g in _gcu)
                 print(f"  Гифт-карты: {C}{len(_gcu)} шт. на ₹{_sum_g}{RST}")
-                for g in _gcu[-8:]:
+                for g in _gcu:
                     _gw = g.get("used_str") or (_fmt_msk(g["used_ts"]) if g.get("used_ts") else "—")
+                    _gnum = g.get("number") or g.get("number_mask", "")
+                    _gpin = f" PIN {g.get('pin')}" if g.get("pin") else ""
                     print(f"             {DIM}₹{int(g.get('denom') or 0):<5} "
-                          f"{g.get('number_mask','')}  ·  {_gw}{RST}")
+                          f"серия {_gnum}{_gpin}  ·  {_gw}{RST}")
             print()
 
             opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)
@@ -7202,37 +7204,74 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         _tg_send_direct(f"🎁 *Не хватает гифт-карт*\n\nНужно ₹{total}, в хранилище ₹{_total_bal}.\nДобавьте карты и повторите.")
         return "gift_insufficient"
 
-    # ── 1. Кликаем «Have a Flipkart Gift Card?» в левой панели ────────────────
-    _gift_bbox = None
-    for _try in range(3):
-        try:
-            _gift_bbox = await page.evaluate(r"""() => {
-                for (const el of document.querySelectorAll('*')) {
-                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                    if (!t.includes('gift card')) continue;
-                    if (t.length > 40) continue;  // сам пункт меню, не длинные блоки
-                    const r = el.getBoundingClientRect();
-                    if (r.width >= 50 && r.height >= 10) return {x: r.x + r.width/2, y: r.y + r.height/2};
-                }
-                return null;
-            }""")
-        except Exception:
-            _gift_bbox = None
-        if _gift_bbox:
-            await page.mouse.click(_gift_bbox["x"], _gift_bbox["y"])
-            await page.wait_for_timeout(1_500)
-            break
-        await page.wait_for_timeout(1_500)
-    if not _gift_bbox:
-        print(f"  {R}✘ Пункт «Flipkart Gift Card» не найден на странице оплаты{RST}")
-        return "gift_failed"
-
+    # ── Хелперы под реальный UX страницы оплаты ───────────────────────────────
     _NUM_SEL = ("input[placeholder*='voucher number' i], input[placeholder*='gift card number' i], "
                 "input[placeholder*='voucher' i]")
     _PIN_SEL = ("input[placeholder*='voucher pin' i], input[placeholder*='gift card pin' i], "
                 "input[placeholder*='pin' i]")
-    _ADD_SEL = ("button:has-text('Add Gift Card'), button:has-text('Add gift card'), "
-                "[role='button']:has-text('Add Gift Card'), button:has-text('Apply')")
+
+    async def _voucher_visible():
+        try:
+            _l = page.locator(_NUM_SEL).first
+            return (await _l.count() > 0) and (await _l.is_visible())
+        except Exception:
+            return False
+
+    async def _click_add_opener():
+        """Клик по «Add Gift Card» / «Use Gift Card» — открывает форму ввода купона."""
+        try:
+            bb = await page.evaluate(r"""() => {
+                const want = ['add gift card', 'have a flipkart gift card?', 'use gift card'];
+                for (const el of document.querySelectorAll('a,button,div,span,[role="button"]')) {
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (!want.includes(t)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 25 || r.height < 8 || el.offsetParent === null) continue;
+                    return {x: r.x + r.width/2, y: r.y + r.height/2};
+                }
+                return null;
+            }""")
+            if bb:
+                await page.mouse.click(bb["x"], bb["y"])
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _click_add_submit():
+        """Клик по кнопке «Add Gift Card» в форме/модалке (отправка купона)."""
+        for _s in ("button:has-text('Add Gift Card')", "button:has-text('Add gift card')",
+                   "[role='button']:has-text('Add Gift Card')"):
+            try:
+                _l = page.locator(_s).last
+                if (await _l.count() > 0) and (await _l.is_visible()):
+                    await _l.click()
+                    return True
+            except Exception:
+                pass
+        try:
+            await page.keyboard.press("Enter")
+        except Exception:
+            pass
+        return False
+
+    async def _ensure_use_checkbox():
+        """Ставит галочку «Use Gift Card», если она есть и снята."""
+        try:
+            await page.evaluate(r"""() => {
+                for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                    const box = cb.closest('div,label,li,section') || cb.parentElement;
+                    const t = (box ? box.innerText : '') || '';
+                    if (/use gift card/i.test(t) && !cb.checked) { cb.click(); return; }
+                }
+                for (const el of document.querySelectorAll('[role="checkbox"]')) {
+                    const box = el.closest('div,label,li,section') || el.parentElement;
+                    const t = (box ? box.innerText : '') || '';
+                    if (/use gift card/i.test(t) && el.getAttribute('aria-checked') !== 'true') { el.click(); return; }
+                }
+            }""")
+        except Exception:
+            pass
 
     applied = 0
     applied_sum = 0
@@ -7253,7 +7292,6 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         _need = total - applied_sum
         _sel, _ = _select_gift_cards(_need, _avail)
         if not _sel:
-            # Точный набор под остаток не собрать — берём самую крупную доступную (overpay ок)
             _avail.sort(key=lambda x: int(x.get("denom") or 0), reverse=True)
             _sel = [_avail[0]] if _avail else []
         if not _sel:
@@ -7265,12 +7303,25 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         _dn  = int(c.get("denom") or 0)
         print(f"  🎁 Карта {_mask_gift(_num)} (₹{_dn}); осталось покрыть ₹{_need}...")
 
-        _num_inp = page.locator(_NUM_SEL).first
-        _pin_inp = page.locator(_PIN_SEL).first
-        try:
-            if await _num_inp.count() == 0:
-                print(f"  {Y}⚠ Поле номера гифт-карты не найдено — прекращаю{RST}")
+        # 1. Открываем форму ввода: жмём «Add Gift Card» и ЖДЁМ появления поля.
+        _field_ready = await _voucher_visible()
+        for _o in range(4):
+            if _field_ready:
                 break
+            await _click_add_opener()
+            for _ in range(16):   # до 8 сек ждём поле после клика
+                await page.wait_for_timeout(500)
+                if await _voucher_visible():
+                    _field_ready = True
+                    break
+        if not _field_ready:
+            print(f"  {R}✘ Поле ввода гифт-карты не появилось после «Add Gift Card» — прекращаю{RST}")
+            break
+
+        # 2. Заполняем номер и PIN
+        try:
+            _num_inp = page.locator(_NUM_SEL).first
+            _pin_inp = page.locator(_PIN_SEL).first
             await _num_inp.click()
             await _num_inp.fill("")
             await _num_inp.type(_num, delay=40)
@@ -7283,31 +7334,15 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _tried_bad.add(_num)
             continue
 
-        # Клик «Add Gift Card»
-        try:
-            _add = page.locator(_ADD_SEL).first
-            if await _add.count() > 0:
-                await _add.click()
-            else:
-                await page.keyboard.press("Enter")
-        except Exception:
-            try:
-                await page.keyboard.press("Enter")
-            except Exception:
-                pass
-        await page.wait_for_timeout(2_800)
+        # 3. Отправляем купон кнопкой «Add Gift Card»
+        await _click_add_submit()
+        await page.wait_for_timeout(3_000)
 
-        # Сигнал успеха: поле номера очистилось (карта принята, форма сброшена).
-        _field_cleared = False
-        try:
-            _field_cleared = (await _num_inp.input_value()).strip() == ""
-        except Exception:
-            _field_cleared = False
-        # Категория ошибки на странице
+        # 4. Категория ошибки на странице
         _errcat = ""
         try:
             _errcat = await page.evaluate(r"""() => {
-                const b = (document.body?.innerText || '').toLowerCase();
+                const b = (document.body ? document.body.innerText : '').toLowerCase();
                 if (b.includes('another account') ||
                     (b.includes('already') && b.includes('gift card'))) return 'already';
                 const pat = ['invalid','incorrect','not valid','expired','wrong',
@@ -7318,23 +7353,41 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         except Exception:
             _errcat = ""
 
+        # Успех: форма закрылась (поле пропало) ИЛИ поле номера очистилось
+        _closed = not await _voucher_visible()
+        _num_empty = False
+        if not _closed:
+            try:
+                _num_empty = (await page.locator(_NUM_SEL).first.input_value()).strip() == ""
+            except Exception:
+                _num_empty = False
+        _success = _closed or _num_empty
+
         # Уже использована / добавлена на ДРУГОМ аккаунте → пометить, удалить, взять следующую
-        if _errcat == "already" and not _field_cleared:
+        if _errcat == "already":
             print(f"  {Y}↩ Карта {_mask_gift(_num)} уже использована на другом аккаунте — "
                   f"помечаю и удаляю, беру следующую{RST}")
             _mark_gift_used(c, profile_path, status="used_elsewhere")
             _tg_send_direct(f"🎁 Карта {_mask_gift(_num)} (₹{_dn}) уже использована на другом "
                             f"аккаунте — удалена, пробую следующую.")
+            # закрываем модалку, если осталась
+            try: await page.keyboard.press("Escape")
+            except Exception: pass
             continue
 
-        # Прочая ошибка (invalid/expired/...) — не удаляем, но в этой сессии не повторяем
-        if not _field_cleared and _errcat == "other":
+        if _errcat == "other" and not _success:
             print(f"  {Y}⚠ Карта {_mask_gift(_num)} отклонена (не «другой аккаунт») — пропускаю{RST}")
             _tried_bad.add(_num)
+            try: await page.keyboard.press("Escape")
+            except Exception: pass
             continue
 
-        # Не очистилось и явной ошибки нет — считаем неуспехом, чтобы не зациклиться
-        if not _field_cleared and not _errcat:
+        if not _success:
+            # ещё подождём — модалка могла не успеть закрыться
+            await page.wait_for_timeout(2_000)
+            if not await _voucher_visible():
+                _success = True
+        if not _success:
             print(f"  {Y}⚠ Карта {_mask_gift(_num)} — нет подтверждения применения, пропускаю{RST}")
             _tried_bad.add(_num)
             continue
@@ -7345,15 +7398,17 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         _mark_gift_used(c, profile_path, status="used")
         print(f"  {G}✔ Карта {_mask_gift(_num)} применена (₹{_dn}). Итого ₹{applied_sum}/{total}{RST}")
 
-        # Появилась кнопка Place Order? Значит баланса хватает
+        await _ensure_use_checkbox()
         if await _gift_place_order_bbox(page):
             print(f"  {G}💰 Баланса достаточно — появилась кнопка Place Order{RST}")
             break
 
-    # ── 3. Place Order ───────────────────────────────────────────────────────
+    # ── Place Order ───────────────────────────────────────────────────────────
+    await _ensure_use_checkbox()
     _po = await _gift_place_order_bbox(page)
     if not _po:
         await page.wait_for_timeout(2_000)
+        await _ensure_use_checkbox()
         _po = await _gift_place_order_bbox(page)
     if not _po:
         print(f"  {R}✘ Кнопка Place Order не появилась — баланса не хватило или карты отклонены{RST}")
@@ -7363,7 +7418,6 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
 
     print(f"  {G}Нажимаю Place Order...{RST}")
     await page.mouse.click(_po["x"], _po["y"])
-    # Ждём страницу успеха (уход с payments / баннер)
     try:
         await page.wait_for_url(lambda u: "payments" not in u, timeout=30_000)
     except Exception:
@@ -7875,8 +7929,11 @@ async def _viewcheckout_to_payments(page) -> bool:
                 await _handle_email_on_page(page)
                 await page.wait_for_timeout(1_000)
 
-        # 2. Прокрутим к кнопке и кликаем Continue
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        # 2. Прокрутим к кнопке и кликаем Continue (body может быть null при навигации)
+        try:
+            await page.evaluate("() => { if (document.body) window.scrollTo(0, document.body.scrollHeight); }")
+        except Exception:
+            pass
         # На первой попытке даём странице дополнительно прогрузиться (до 10 сек)
         if attempt == 0:
             try:
@@ -10839,6 +10896,7 @@ def _mark_gift_used(card: dict, profile_path=None, status: str = "used") -> None
     (Flipkart отклонил): удаляем и логируем, но в баланс профиля НЕ пишем."""
     import time as _t_gu
     num = str(card.get("number") or "").strip()
+    pin = str(card.get("pin") or "").strip()
     denom = int(card.get("denom") or 0)
     ts = _t_gu.time()
     prof_name = ""
@@ -10856,7 +10914,7 @@ def _mark_gift_used(card: dict, profile_path=None, status: str = "used") -> None
     # 2. Аудит-лог использованных
     try:
         log = _load_gift_used()
-        log.append({"denom": denom, "number": num, "used_ts": ts,
+        log.append({"denom": denom, "number": num, "pin": pin, "used_ts": ts,
                     "used_str": _fmt_msk(ts), "profile": prof_name, "status": status})
         _atomic_write_text(GIFT_USED_FILE, json.dumps(log, ensure_ascii=False, indent=2))
     except Exception:
@@ -10871,7 +10929,7 @@ def _mark_gift_used(card: dict, profile_path=None, status: str = "used") -> None
             _gcu = _meta.get("gift_cards_used")
             if not isinstance(_gcu, list):
                 _gcu = []
-            _gcu.append({"denom": denom, "number_mask": _mask_gift(num),
+            _gcu.append({"denom": denom, "number": num, "pin": pin,
                          "used_ts": ts, "used_str": _fmt_msk(ts)})
             _meta["gift_cards_used"] = _gcu
             _atomic_write_text(_mf, json.dumps(_meta, ensure_ascii=False, indent=2))
@@ -10973,23 +11031,23 @@ def screen_gift_cards():
         if cards:
             section(f"Доступные карты  [{len(cards)} шт.]")
             print()
-            for i, c in enumerate(sorted(cards, key=lambda x: -int(x.get("denom") or 0))[:40], 1):
+            for i, c in enumerate(sorted(cards, key=lambda x: -int(x.get("denom") or 0)), 1):
                 _added = _fmt_msk(c["added_ts"]) if c.get("added_ts") else "—"
-                print(f"  [{i:2}] ₹{int(c.get('denom') or 0):<5} {C}{_mask_gift(c.get('number',''))}{RST}"
+                print(f"  [{i:2}] ₹{int(c.get('denom') or 0):<5} "
+                      f"серия {C}{c.get('number','')}{RST}  PIN {C}{c.get('pin','')}{RST}"
                       f"   {DIM}добавлена: {_added}{RST}")
-            if len(cards) > 40:
-                print(f"  {DIM}…ещё {len(cards)-40}{RST}")
             print()
 
         # История активаций / использования
         if used:
             section(f"История использования  [{len(used)} шт.]  (новые сверху)")
             print()
-            for u in list(reversed(used))[:25]:
+            for u in list(reversed(used)):
                 _st = f"{Y}↩ др.аккаунт{RST}" if u.get("status") == "used_elsewhere" else f"{G}✔ применена{RST}"
                 _when = u.get("used_str") or (_fmt_msk(u["used_ts"]) if u.get("used_ts") else "—")
                 _pr = u.get("profile") or "—"
-                print(f"  {_st}  ₹{int(u.get('denom') or 0):<5} {_mask_gift(u.get('number',''))}"
+                _pin_u = f" PIN {u.get('pin')}" if u.get("pin") else ""
+                print(f"  {_st}  ₹{int(u.get('denom') or 0):<5} серия {u.get('number','')}{_pin_u}"
                       f"   {DIM}{_when}  ·  {_pr}{RST}")
             if len(used) > 25:
                 print(f"  {DIM}…ещё {len(used)-25}{RST}")
