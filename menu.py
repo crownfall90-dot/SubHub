@@ -7146,10 +7146,13 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     if total <= 0:
         try:
             with open("config.yaml", encoding="utf-8") as _f:
-                total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 350))
+                total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 343))
         except Exception:
-            total = 350
-    print(f"  {C}🎁 Оплата гифт-картами. Сумма заказа: ₹{total}{RST}")
+            total = 343
+    # Гифт-картами платим кратно 50 — сумма к покрытию округляется ВВЕРХ (343 → 350)
+    _gift_need = -(-int(total) // 50) * 50
+    print(f"  {C}🎁 Оплата гифт-картами. Цена ₹{total}"
+          f"{f', гифт-картами нужно ₹{_gift_need}' if _gift_need != total else ''}{RST}")
 
     # Сначала пытаемся закрыть сумму МЕЛКИМИ картами (< GIFT_CONFIRM_THRESHOLD).
     # Крупные (>= порога, обычно ₹500+) — только с подтверждением пользователя.
