@@ -3208,8 +3208,20 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await _maximize_window(ctx, page)
 
-        await page.goto("https://www.flipkart.com",
-                        wait_until="domcontentloaded", timeout=20_000)
+        # Начальная навигация с одним ретраем — бывает разовый таймаут загрузки
+        _nav_ok = False
+        for _nav_try in range(2):
+            try:
+                await page.goto("https://www.flipkart.com",
+                                wait_until="domcontentloaded", timeout=25_000)
+                _nav_ok = True
+                break
+            except Exception as _nav_e:
+                if _nav_try == 0:
+                    print(f"  {Y}⚠ Главная не загрузилась ({_nav_e}) — повтор...{RST}")
+                    await page.wait_for_timeout(2_000)
+                else:
+                    return False, f"Не удалось открыть Flipkart (таймаут навигации): {_nav_e}"
         # Повторяем grant ПОСЛЕ навигации — в persistent context важен порядок
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         await page.wait_for_timeout(2_000)
@@ -3391,7 +3403,15 @@ async def _do_fill_address(profile_path: Path, addr: dict,
 
         # ── Шаг C: проверяем payments ────────────────────────────────────────
         if "payments" not in page.url:
-            return False, f"Не удалось перейти на оплату (URL: {page.url.split('?')[0]})"
+            _cur_c = page.url.split("?")[0].rstrip("/")
+            if _cur_c in ("https://www.flipkart.com", "https://flipkart.com", "https://m.flipkart.com"):
+                if await _page_logged_out(page):
+                    return False, _NOT_LOGGED_IN_MSG
+                return False, ("Оформление сбросило на главную Flipkart — сессия слетела "
+                               "или сработала бот-защита. Повторите позже / восстановите вход.")
+            if await _page_logged_out(page):
+                return False, _NOT_LOGGED_IN_MSG
+            return False, f"Не удалось перейти на оплату (URL: {_cur_c})"
 
         if stop_at_payment:
             import time as _t_sap
@@ -4000,15 +4020,23 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
         pass
     await page.wait_for_timeout(500)
 
-    # Успех: URL изменился, ИЛИ уже на checkout, ИЛИ checkout-контент в DOM
-    if page.url != landed or any(s in page.url for s in _SUCCESS_PARTS):
+    # Успех ТОЛЬКО если реально дошли до checkout (URL из _SUCCESS_PARTS или
+    # checkout-контент в DOM). Раньше успехом считался ЛЮБОЙ уход со страницы
+    # (page.url != landed) — из-за этого редирект на главную/логин (слетевшая
+    # сессия, недоступный товар, бот-защита) выдавался за успех, а дальше
+    # вылезало немое «Не удалось перейти на оплату (URL: flipkart.com/)».
+    async def _on_checkout() -> bool:
+        # URL любого чекаута (в т.ч. новый формат /checkout/<hash>) или checkout-DOM.
+        # Главная (flipkart.com/), товар (/p/itm…) и логин слова "checkout" не содержат.
+        if any(s in page.url for s in _SUCCESS_PARTS) or "checkout" in page.url:
+            return True
+        try:
+            return bool(await page.evaluate(_CHECKOUT_DOM))
+        except Exception:
+            return False
+
+    if await _on_checkout():
         return None
-    try:
-        on_checkout = await page.evaluate(_CHECKOUT_DOM)
-        if on_checkout:
-            return None
-    except Exception:
-        pass
 
     # Повторный клик — иногда первый клик попадает в неактивное состояние кнопки
     clicked2 = (
@@ -4019,16 +4047,19 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
         try:
             await page.wait_for_function(_CHECKOUT_DOM, timeout=15_000)
             await page.wait_for_timeout(500)
-            if page.url != landed or any(s in page.url for s in _SUCCESS_PARTS):
-                return None
-            if await page.evaluate(_CHECKOUT_DOM):
-                return None
         except Exception:
             pass
+        if await _on_checkout():
+            return None
 
+    # До checkout не дошли — диагностируем причину по итоговой странице
     if await _page_logged_out(page):
         return _NOT_LOGGED_IN_MSG
-    return "Клик по 'Buy now' не дал навигации"
+    _cur = page.url.split("?")[0].rstrip("/")
+    if _cur in ("https://www.flipkart.com", "https://flipkart.com", "https://m.flipkart.com"):
+        return ("Buy Now вернул на главную Flipkart — товар недоступен по этой "
+                "ссылке, сессия слетела или сработала бот-защита")
+    return f"Клик по 'Buy now' не дал перехода на оплату (страница: {_cur[:60]})"
 
 
 _OOS_PHRASES = frozenset({
