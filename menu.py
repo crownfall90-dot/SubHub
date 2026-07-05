@@ -7200,8 +7200,11 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _tg_send_direct("🎁 Оплата гифт-картами отменена — использование крупных карт не подтверждено.")
             return "gift_insufficient"
     else:
-        print(f"  {R}✘ Гифт-карт не хватает: нужно ₹{total}, всего ₹{_total_bal}{RST}")
-        _tg_send_direct(f"🎁 *Не хватает гифт-карт*\n\nНужно ₹{total}, в хранилище ₹{_total_bal}.\nДобавьте карты и повторите.")
+        _rep, _bal, _need_r, _short = _gift_shortage_report(total)
+        print(f"  {R}✘ Гифт-карт не хватает:{RST}")
+        for _ln in _rep.split("\n"):
+            print(f"  {R}  {_ln}{RST}")
+        _tg_send_direct(f"🎁 *Не хватает гифт-карт*\n\n{_rep}\n\nДобавьте карты и повторите.")
         return "gift_insufficient"
 
     # ── Хелперы под реальный UX страницы оплаты ───────────────────────────────
@@ -7309,7 +7312,13 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _avail.sort(key=lambda x: int(x.get("denom") or 0), reverse=True)
             _sel = [_avail[0]] if _avail else []
         if not _sel:
-            print(f"  {R}✘ Гифт-карт не хватает (остаток ₹{_need}){RST}")
+            _rep2, _b2, _n2, _s2 = _gift_shortage_report(_need)
+            print(f"  {R}✘ Гифт-карт не хватает на остаток:{RST}")
+            for _ln in _rep2.split("\n"):
+                print(f"  {R}  {_ln}{RST}")
+            _msg2 = (f"🎁 *Не хватает гифт-карт*\n\nПрименено на ₹{applied_sum}, "
+                     f"осталось покрыть ₹{_need}.\n\n{_rep2}")
+            _tg_send_direct(_msg2)
             break
         c = _sel[0]
         _num = str(c.get("number") or "").strip()
@@ -10864,6 +10873,29 @@ def _select_gift_cards(total: int, cards: list | None = None):
             return None, _gift_balance(cards)
         return picked, acc
     return picked, best_s * 50
+
+
+def _gift_shortage_report(need_amount: int):
+    """Подробный отчёт о нехватке гифт-карт под сумму need_amount.
+    Возвращает (текст, баланс, округл_нужно, нехватка)."""
+    cards = [c for c in _load_gift_cards()
+             if not c.get("used") and c.get("number") and c.get("pin")
+             and int(c.get("denom") or 0) > 0]
+    bal = sum(int(c.get("denom")) for c in cards)
+    need = -(-int(need_amount) // 50) * 50   # округление вверх до кратного 50
+    short = max(0, need - bal)
+    by: dict = {}
+    for c in cards:
+        d = int(c.get("denom"))
+        by[d] = by.get(d, 0) + 1
+    breakdown = "  ·  ".join(f"₹{d}×{by[d]}" for d in sorted(by, reverse=True)) or "карт нет"
+    lines = [
+        f"Нужно: ₹{need}" + (f"  (цена ₹{need_amount}, гифт-картами кратно 50)"
+                             if need != need_amount else ""),
+        f"В хранилище: ₹{bal}  →  {breakdown}",
+        f"Не хватает: ₹{short}  (добавьте карт на эту сумму, напр. {short // 50}×₹50)",
+    ]
+    return "\n".join(lines), bal, need, short
 
 
 _PAY_METHOD_FILE = _DATA / "pay_method.txt"
