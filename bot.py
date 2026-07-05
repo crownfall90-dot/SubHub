@@ -354,7 +354,7 @@ def _menu_tg_bot_thread() -> None:
 
         def _wz_tariff_kb(br, mode):
             return {"inline_keyboard": [
-                [{"text": "🥈 3 мес · ₹399", "callback_data": f"wz:tf:{br}:{mode}:3"},
+                [{"text": "🥈 3 мес · ₹343", "callback_data": f"wz:tf:{br}:{mode}:3"},
                  {"text": "🥇 12 мес · ₹1,499", "callback_data": f"wz:tf:{br}:{mode}:12"}],
                 [{"text": "◀️ Назад", "callback_data": f"wz:br:{br}"}],
             ]}
@@ -597,7 +597,7 @@ def _menu_tg_bot_thread() -> None:
                 rows.append([{"text": "💰 Записать продажу", "callback_data": f"profile:record_sale:{phone}"}])
             else:
                 # Доступные / С данными — ссылки ещё нет, нужно купить
-                rows.append([{"text": "🥈 Купить 3 мес · ₹399", "callback_data": f"profile:buy:3:{phone}"},
+                rows.append([{"text": "🥈 Купить 3 мес · ₹343", "callback_data": f"profile:buy:3:{phone}"},
                              {"text": "🥇 12 мес · ₹1499", "callback_data": f"profile:buy:12:{phone}"}])
                 rows.append([{"text": "📍 Заполнить данные", "callback_data": f"profile:fill_data:{phone}"}])
                 rows.append([{"text": "✅ Проверить активацию Black", "callback_data": f"profile:activate:{phone}"}])
@@ -732,7 +732,8 @@ def _menu_tg_bot_thread() -> None:
                 lines.append("\n_Карт нет — добавьте номер и PIN._")
             _pm_line = "🎁 гифт-карты" if _pm == "gift" else "💳 банковская карта"
             lines.append(f"\n⚙️ Способ оплаты покупки: *{_pm_line}*")
-            lines.append("\n_Товар 3 мес ≈ ₹343 — бот сам подберёт комбинацию._")
+            lines.append("\n_Товар 3 мес — ₹343 (гифт-картами нужно ₹350, кратно 50). "
+                         "Бот подберёт комбинацию сам._")
             return "\n".join(lines)
 
         def _gift_menu_kb():
@@ -1314,7 +1315,7 @@ def _menu_tg_bot_thread() -> None:
         def _single_tariff_kb(cnt, mode, m="3"):
             s = str(cnt)
             return {"inline_keyboard": [
-                [{"text": "🥈 3 мес · ₹399",    "callback_data": f"fullrunall:{s}:3:{mode}"}],
+                [{"text": "🥈 3 мес · ₹343",    "callback_data": f"fullrunall:{s}:3:{mode}"}],
                 [{"text": "🥇 12 мес · ₹1,499", "callback_data": f"fullrunall:{s}:12:{mode}"}],
                 [{"text": "◀️ Назад", "callback_data": f"fullmode:{s}:{mode}:{m}"}],
             ]}
@@ -1968,7 +1969,7 @@ def _menu_tg_bot_thread() -> None:
                                 parse_mode="HTML")
                 except Exception:
                     pass
-            tariff = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
+            tariff = "₹1,499 · 12 мес." if months == 12 else "₹343 · 3 мес."
             _pay_lbl = "🎁 гифт-картами" if _pm == "gift" else f"💳 {tariff}"
             await _send(cid, f"⏳ <b>Покупка Black Membership</b>\n\n<code>{phone}</code>\n{_pay_lbl}",
                         parse_mode="HTML", reply_markup=_buy_stop_kb())
@@ -3656,7 +3657,7 @@ def _menu_tg_bot_thread() -> None:
                     await _ack(qid, f"⚠️ Уже запущено (PID {_proc[0].pid})", alert=True)
                     return
                 await _ack(qid)
-                lbl = "3 мес · ₹399" if m == "3" else "12 мес · ₹1,499"
+                lbl = "3 мес · ₹343" if m == "3" else "12 мес · ₹1,499"
                 await _edit(cid, mid,
                     f"⚡ *Полный цикл · {lbl}*\n"
                     "_вход + адрес + Buy Now_\n\nСколько аккаунтов?",
@@ -3668,7 +3669,7 @@ def _menu_tg_bot_thread() -> None:
                 count  = int(parts[1])
                 m      = parts[2] if len(parts) > 2 else "3"
                 await _ack(qid)
-                lbl = "3 мес · ₹399" if m == "3" else "12 мес · ₹1,499"
+                lbl = "3 мес · ₹343" if m == "3" else "12 мес · ₹1,499"
                 cnt_t = str(count) if count else "из конфига"
                 await _edit(cid, mid,
                     f"⚡ *Полный цикл · {lbl} · {cnt_t} акк.*\n\nРежим запуска:",
@@ -3863,6 +3864,24 @@ def _menu_tg_bot_thread() -> None:
                 except Exception:
                     pass
                 await _ack(qid, "🗑 Удаляю профиль...")
+                return
+
+            if data == "gift:big_yes":
+                try:
+                    _m("_gift_big_choice")[0] = True
+                    _m("_gift_big_ev").set()
+                except Exception:
+                    pass
+                await _ack(qid, "✅ Разрешил крупные гифт-карты")
+                return
+
+            if data == "gift:big_no":
+                try:
+                    _m("_gift_big_choice")[0] = False
+                    _m("_gift_big_ev").set()
+                except Exception:
+                    pass
+                await _ack(qid, "🚫 Крупные гифт-карты не использую")
                 return
 
             if data == "run:status":

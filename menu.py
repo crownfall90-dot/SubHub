@@ -1283,7 +1283,7 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         print()
         section("Тариф Black Membership")
         print()
-        opt("1", "3 месяца  — ₹399", G)
+        opt("1", "3 месяца  — ₹343", G)
         opt("2", "12 месяцев — ₹1,499", C)
         print()
         while True:
@@ -2516,7 +2516,7 @@ def screen_profiles():
                 print(f"  Профиль : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
                 print(f"  Вход    : {DIM}{selected['login_str']}{RST}")
                 print()
-                opt("1", "3 месяца  — ₹399  (скидка 20%)", G)
+                opt("1", "3 месяца  — ₹343  (скидка 20%)", G)
                 opt("2", "12 месяцев — ₹1,499", C)
                 print()
                 opt("0", "Отмена", R)
@@ -2526,7 +2526,7 @@ def screen_profiles():
                     pass
                 elif tariff6 in ("1", "2"):
                     months6  = 3  if tariff6 == "1" else 12
-                    label6   = "3 месяца / ₹399" if tariff6 == "1" else "12 месяцев / ₹1,499"
+                    label6   = "3 месяца / ₹343" if tariff6 == "1" else "12 месяцев / ₹1,499"
                     print(f"\n  {DIM}Запускаю браузер — {label6}...{RST}")
                     print(f"  {DIM}Цепочка: вход → адрес → email → оплата → ссылка{RST}")
                     print(f"  {DIM}Карты берутся по установленному порядку (data/card_order.json){RST}\n")
@@ -4188,6 +4188,12 @@ _3ds_card_options: list = []      # список {"pos": int, "card": dict} дл
 _orders_confirm_ev = _threading_pc.Event()
 _orders_confirm_choice: list = [None]  # True=продолжить, False=удалить профиль
 
+# Подтверждение использования «крупных» гифт-карт (>= GIFT_CONFIRM_THRESHOLD).
+# Если мелких (50/100/200/250) не хватает — бот спрашивает разрешение через TG.
+GIFT_CONFIRM_THRESHOLD = 500
+_gift_big_ev = _threading_pc.Event()
+_gift_big_choice: list = [None]  # True=разрешить крупные, False=нет
+
 
 class _PurchaseCancelled(Exception):
     """Выполнение прервано пользователем."""
@@ -4641,7 +4647,7 @@ async def _handle_paytm_currency_page(page) -> bool:
     # НЕ кликаем по строке/строке с курсом — только по кнопке оплаты.
     _PAY_INR_JS = """() => {
         // 1. Ищем кнопку/ссылку где текст начинается с "Pay" И содержит "INR"
-        //    Это именно кнопка "Pay ₹399.00 INR" или "Pay ₹1,499.00 INR"
+        //    Это именно кнопка "Pay ₹343.00 INR" или "Pay ₹1,499.00 INR"
         const candidates = [];
         for (const el of document.querySelectorAll(
                 'button, a, [role="button"], div[class*="btn"], div[class*="pay"]')) {
@@ -4767,13 +4773,13 @@ async def _handle_paytm_currency_page(page) -> bool:
                 pass
 
         # JS для поиска ВИДИМОЙ кнопки Pay INR/₹
-        # PayGlocal: кнопка структурирована как "Pay\n₹399.00\nINR\n<numpad digits>"
-        # Первые 4 строки = "Pay ₹399.00 INR" (без нумпада).
+        # PayGlocal: кнопка структурирована как "Pay\n₹343.00\nINR\n<numpad digits>"
+        # Первые 4 строки = "Pay ₹343.00 INR" (без нумпада).
         _VIS_PAY_JS = """() => {
             for (const el of document.querySelectorAll('*')) {
                 const raw = (el.innerText || '').trim();
                 if (!raw) continue;
-                // Берём первые 4 строки — достаточно для "Pay ₹399.00 INR", исключает нумпад
+                // Берём первые 4 строки — достаточно для "Pay ₹343.00 INR", исключает нумпад
                 const lines = raw.split('\\n').slice(0, 4).map(l => l.trim()).filter(l => l);
                 const combined = lines.join(' ').replace(/\\s+/g, ' ');
                 const tl = combined.toLowerCase();
@@ -6310,7 +6316,7 @@ async def _enter_card_on_payments(page, card: dict, _decline_attempt: int = 0) -
     print(f"  Карта: {_mask_card(raw)} | Срок: {valid_val} | CVV: {'*'*len(cvv_val) if cvv_val != 'ok' else 'skip'}")
 
     # ── 7. Нажимаем Pay-кнопку — retry до 3 раз ──────────────────────────────
-    # Возможные тексты: «Pay ₹399», «Add Address & Pay», «PAY»
+    # Возможные тексты: «Pay ₹343», «Add Address & Pay», «PAY»
     pay_btn = page.locator(
         "button:has-text('Add Address & Pay'), "
         "button:has-text('Pay ₹'), "
@@ -6979,7 +6985,7 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     _link      = short_link or _full_url
     _has_short = short_link and short_link != _full_url
     _btn_seen  = result.get("button_seen", "не найдена")
-    _tariff    = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
+    _tariff    = "₹1,499 · 12 мес." if months == 12 else "₹343 · 3 мес."
 
     print(f"\n  {'='*55}")
     print(f"  ✅ Membership valid till: {valid_till or '—'}")
@@ -7140,19 +7146,58 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     if total <= 0:
         try:
             with open("config.yaml", encoding="utf-8") as _f:
-                total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 343))
+                total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 350))
         except Exception:
-            total = 343
+            total = 350
     print(f"  {C}🎁 Оплата гифт-картами. Сумма заказа: ₹{total}{RST}")
 
-    picked, picked_sum = _select_gift_cards(total)
-    if not picked:
-        bal = _gift_balance()
-        print(f"  {R}✘ Гифт-карт не хватает: нужно ₹{total}, доступно ₹{bal}{RST}")
-        _tg_send_direct(f"🎁 *Не хватает гифт-карт*\n\nНужно ₹{total}, в хранилище ₹{bal}.\nДобавьте карты и повторите.")
+    # Сначала пытаемся закрыть сумму МЕЛКИМИ картами (< GIFT_CONFIRM_THRESHOLD).
+    # Крупные (>= порога, обычно ₹500+) — только с подтверждением пользователя.
+    _all_gc = _load_gift_cards()
+    def _bal_of(pred):
+        return sum(int(c.get("denom") or 0) for c in _all_gc
+                   if not c.get("used") and c.get("number") and c.get("pin") and pred(int(c.get("denom") or 0)))
+    _small_bal = _bal_of(lambda d: 0 < d < GIFT_CONFIRM_THRESHOLD)
+    _total_bal = _bal_of(lambda d: d > 0)
+    _allow_big = False
+
+    if _small_bal >= total:
+        print(f"  {G}Мелких гифт-карт достаточно (₹{_small_bal}) — крупные (≥₹{GIFT_CONFIRM_THRESHOLD}) не трогаю{RST}")
+    elif _total_bal >= total:
+        # Мелких мало, но с крупными хватает — спрашиваем подтверждение через TG
+        _big = sorted({int(c.get("denom") or 0) for c in _all_gc
+                       if not c.get("used") and c.get("number") and c.get("pin")
+                       and int(c.get("denom") or 0) >= GIFT_CONFIRM_THRESHOLD}, reverse=True)
+        _big_lbl = ", ".join(f"₹{d}" for d in _big) or f"≥₹{GIFT_CONFIRM_THRESHOLD}"
+        print(f"  {Y}Мелких не хватает (₹{_small_bal} из ₹{total}). Спрашиваю подтверждение на крупные…{RST}")
+        _gift_big_ev.clear()
+        _gift_big_choice[0] = None
+        _tg_send_direct_kb(
+            f"🎁 *Не хватает мелких гифт-карт*\n\n"
+            f"Сумма заказа: *₹{total}*\n"
+            f"Мелкими (до ₹{GIFT_CONFIRM_THRESHOLD}) есть только: *₹{_small_bal}*\n\n"
+            f"Использовать карты от *₹{GIFT_CONFIRM_THRESHOLD}*?  ({_big_lbl})",
+            {"inline_keyboard": [[
+                {"text": "✅ Да, использовать", "callback_data": "gift:big_yes"},
+                {"text": "🚫 Нет", "callback_data": "gift:big_no"},
+            ]]})
+        _wait_dl = asyncio.get_event_loop().time() + 120
+        while asyncio.get_event_loop().time() < _wait_dl:
+            _ckcancel()
+            if _gift_big_ev.is_set():
+                break
+            await asyncio.sleep(1)
+        if _gift_big_choice[0] is True:
+            _allow_big = True
+            print(f"  {G}✔ Разрешено использовать крупные гифт-карты{RST}")
+        else:
+            print(f"  {Y}✘ Крупные не подтверждены — отмена оплаты гифт-картами{RST}")
+            _tg_send_direct("🎁 Оплата гифт-картами отменена — использование крупных карт не подтверждено.")
+            return "gift_insufficient"
+    else:
+        print(f"  {R}✘ Гифт-карт не хватает: нужно ₹{total}, всего ₹{_total_bal}{RST}")
+        _tg_send_direct(f"🎁 *Не хватает гифт-карт*\n\nНужно ₹{total}, в хранилище ₹{_total_bal}.\nДобавьте карты и повторите.")
         return "gift_insufficient"
-    print(f"  {G}Подобрано {len(picked)} карт на ₹{picked_sum} "
-          f"(номиналы: {', '.join(str(c.get('denom')) for c in picked)}){RST}")
 
     # ── 1. Кликаем «Have a Flipkart Gift Card?» в левой панели ────────────────
     _gift_bbox = None
@@ -7193,12 +7238,14 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     while applied_sum < total and _guard < 40:
         _guard += 1
         _ckcancel()
-        # Доступные карты (использованные уже удалены из хранилища), кроме «плохих»
+        # Доступные карты (использованные уже удалены из хранилища), кроме «плохих».
+        # Крупные (>= порога) — только если пользователь подтвердил (_allow_big).
         _avail = [gc for gc in _load_gift_cards()
                   if not gc.get("used")
                   and str(gc.get("number") or "").strip()
                   and str(gc.get("pin") or "").strip()
                   and int(gc.get("denom") or 0) > 0
+                  and (_allow_big or int(gc.get("denom") or 0) < GIFT_CONFIRM_THRESHOLD)
                   and str(gc.get("number")).strip() not in _tried_bad]
         _need = total - applied_sum
         _sel, _ = _select_gift_cards(_need, _avail)
@@ -8561,7 +8608,7 @@ def screen_buy_membership():
         print(f"  Профиль : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
         print(f"  Вход    : {DIM}{selected['login_str']}{RST}")
         print()
-        opt("1", "3 месяца  — ₹399  (скидка 20%)", G)
+        opt("1", "3 месяца  — ₹343  (скидка 20%)", G)
         opt("2", "12 месяцев — ₹1,499", C)
         print()
         opt("0", "Назад", R)
@@ -8572,7 +8619,7 @@ def screen_buy_membership():
             continue
         elif tariff == "1":
             months = 3
-            label = "3 месяца / ₹399"
+            label = "3 месяца / ₹343"
         elif tariff == "2":
             months = 12
             label = "12 месяцев / ₹1,499"
@@ -9916,6 +9963,32 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                 # ── 8. Payments: Continue → жёлтая кнопка → email → Continue ─
                 print(f"  {DIM}Страница оплаты — заполняю...{RST}")
+
+                # Оплата ПОДАРОЧНЫМИ картами (если выбран этот способ) — минуя банковские
+                if _pay_method[0] == "gift":
+                    _g_res = await _do_payments_page(page, gift=True, profile_path=profile_path)
+                    if _g_res is not True:
+                        print(f"  {R}❌ Оплата гифт-картами не удалась ({_g_res}){RST}")
+                        _tg_send_direct(f"❌ *Оплата гифт-картами не прошла* (+91 {phone_10})")
+                        _try_next = True
+                        continue
+                    try:
+                        await _handle_post_payment(page, ctx, profile_path, phone_number=phone_10)
+                    except Exception as _pp_e:
+                        print(f"  Post-payment: {_pp_e}")
+                    try:
+                        await _send_cookies_to_tg(ctx, phone_10)
+                    except Exception:
+                        pass
+                    _keep_open = True
+                    print(f"  {DIM}Закрываю браузер профиля +91 {phone_10}...{RST}")
+                    try: await ctx.close()
+                    except Exception: pass
+                    try: await pw.stop()
+                    except Exception: pass
+                    suffix = f" | {addr_msg}" if addr_msg else ""
+                    return True, f"✅ +91 {phone_10}{suffix} → ✅ Готово (гифт-карты)"
+
                 # Строим полный упорядоченный список карт
                 _cards_av = _load_cards()
                 _ord = _load_card_order()
@@ -10126,13 +10199,13 @@ def screen_all_in_one():
     print()
     section("Тариф Black Membership")
     print()
-    opt("1", "3 месяца  — ₹399", G)
+    opt("1", "3 месяца  — ₹343", G)
     opt("2", "12 месяцев — ₹1,499", C)
     print()
     while True:
         tariff = input(f"  {BLD}Тариф [1/2, Enter = 3 мес.]: {RST}").strip()
         if tariff in ("", "1"):
-            months, label = 3,  "3 месяца / ₹399"
+            months, label = 3,  "3 месяца / ₹343"
             break
         if tariff == "2":
             months, label = 12, "12 месяцев / ₹1,499"
@@ -10882,6 +10955,9 @@ def screen_gift_cards():
                 d = int(c.get("denom") or 0)
                 by_denom[d] = by_denom.get(d, 0) + 1
         section(f"В хранилище: {W}{BLD}{sum(by_denom.values())} шт.{RST}  ·  баланс {W}{BLD}₹{bal}{RST}")
+        _pm_cur = _load_pay_method()
+        _pm_txt = f"{G}🎁 подарочные карты{RST}" if _pm_cur == "gift" else f"{C}💳 банковская карта{RST}"
+        print(f"  Способ оплаты покупки: {_pm_txt}   {DIM}(переключить — «С»){RST}")
         print()
         if by_denom:
             for d in sorted(by_denom, reverse=True):
@@ -10918,6 +10994,8 @@ def screen_gift_cards():
 
         print(f"  {DIM}Добавление карт — через TG-бота (текстом или файлом CSV/Excel).{RST}")
         print()
+        _pm_sw = "на 💳 карту" if _pm_cur == "gift" else "на 🎁 гифт-карты"
+        opt("С", f"Переключить способ оплаты {_pm_sw}", Y)
         opt("Д", "Удалить ВСЕ карты из хранилища", R)
         opt("0", "Назад", DIM)
         print()
@@ -10927,6 +11005,9 @@ def screen_gift_cards():
             return
         if ch in ("0", ""):
             return
+        if ch in ("с", "c", "s"):
+            _save_pay_method("card" if _pm_cur == "gift" else "gift")
+            continue
         if ch in ("д", "d"):
             try:
                 _cf = input(f"  {R}Удалить все {len(cards)} карт (баланс ₹{bal})? [Д/Н]: {RST}").strip().lower()
