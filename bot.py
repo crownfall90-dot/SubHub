@@ -213,6 +213,7 @@ def _menu_tg_bot_thread() -> None:
         _sale_input_waiting: dict = {}  # {cid: {"phone": str, "plan": str}} — ждём сумму продажи
         _sales_cost_waiting: dict = {}  # {cid: "3m"|"12m"} — ждём ввод себестоимости
         _note_waiting: dict = {}        # {cid: phone} — ждём текст примечания к профилю
+        _gift_add_waiting: dict = {}    # {cid: denom|"auto"} — ждём номера+PIN гифт-карт
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
@@ -693,9 +694,13 @@ def _menu_tg_bot_thread() -> None:
             otp_b  = "🔑 OTP ✅"     if otp_on else "🔑 OTP ❌"
             upd_b  = (f"⬆️ Обновить ({len(_update_commits)})"
                       if _update_available else "✅ Обновление")
+            _pm_cur = _m("_load_pay_method")()
+            _pm_lbl = "🎁 Оплата: гифт-карты" if _pm_cur == "gift" else "💳 Оплата: карта"
             return {"inline_keyboard": [
                 [{"text": "💳 Порядок карт", "callback_data": "show:cards"},
                  {"text": "🌐 Прокси",      "callback_data": "show:proxy"}],
+                [{"text": "🎁 Гифт-карты",  "callback_data": "gift:menu"},
+                 {"text": _pm_lbl,          "callback_data": "gift:method_toggle"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
                  {"text": "📊 Статистика",  "callback_data": "show:stats"}],
                 [{"text": "💰 Продажи",    "callback_data": "go:sales"}],
@@ -705,6 +710,150 @@ def _menu_tg_bot_thread() -> None:
                  {"text": otp_b,            "callback_data": "t:otp_code"}],
                 [{"text": "◀️ Назад",       "callback_data": "go:main"}],
             ]}
+
+        # ── Гифт-карты ────────────────────────────────────────────────────────
+        def _gift_menu_text():
+            cards = _m("_load_gift_cards")()
+            bal   = _m("_gift_balance")(cards)
+            _pm   = _m("_load_pay_method")()
+            by_denom = {}
+            for c in cards:
+                if c.get("number") and c.get("pin"):
+                    d = int(c.get("denom") or 0)
+                    by_denom[d] = by_denom.get(d, 0) + 1
+            lines = ["🎁 *Подарочные карты (Flipkart Gift Card)*",
+                     "━━━━━━━━━━━━━━━━━━━━━━", "",
+                     f"💰 Баланс в хранилище: *₹{bal}*  ({sum(by_denom.values())} шт.)"]
+            if by_denom:
+                lines.append("")
+                for d in sorted(by_denom, reverse=True):
+                    lines.append(f"   ₹{d} × {by_denom[d]}")
+            else:
+                lines.append("\n_Карт нет — добавьте номер и PIN._")
+            _pm_line = "🎁 гифт-карты" if _pm == "gift" else "💳 банковская карта"
+            lines.append(f"\n⚙️ Способ оплаты покупки: *{_pm_line}*")
+            lines.append("\n_Товар 3 мес ≈ ₹343 — бот сам подберёт комбинацию._")
+            return "\n".join(lines)
+
+        def _gift_menu_kb():
+            _pm = _m("_load_pay_method")()
+            _tog = ("💳 Переключить на карту" if _pm == "gift"
+                    else "🎁 Переключить на гифт-карты")
+            return {"inline_keyboard": [
+                [{"text": "➕ Добавить карты", "callback_data": "gift:add"}],
+                [{"text": "📃 Список", "callback_data": "gift:list"},
+                 {"text": "📜 Использованные", "callback_data": "gift:used"}],
+                [{"text": _tog, "callback_data": "gift:method_toggle"}],
+                [{"text": "🗑 Очистить все", "callback_data": "gift:clear_confirm"}],
+                [{"text": "◀️ Назад", "callback_data": "go:other"}],
+            ]}
+
+        def _parse_gift_cards(text, default_denom=None):
+            """Парсит гифт-карты из текста/CSV. Реальный формат Flipkart:
+               «Серия  PIN  Дата» → 6000170524661453  281697  2027-05-25.
+               Номер — 14–19 цифр, PIN — 4–8 цифр, дата истечения игнорируется.
+               Номинал: default_denom (выбран при добавлении) или число из строки,
+               совпадающее с GIFT_DENOMS. Заголовки таблиц пропускаются.
+               Возвращает (список_карт, список_ошибок)."""
+            import re as _re
+            denoms = set(_m("GIFT_DENOMS"))
+            out, errs = [], []
+            for _ln in text.splitlines():
+                s = _ln.strip()
+                if not s:
+                    continue
+                low = s.lower()
+                # Пропускаем строки-заголовки таблицы / название карты
+                if (("серия" in low or "series" in low)
+                        or ("pin" in low and ("дата" in low or "expir" in low or "истеч" in low))
+                        or ("flipkart" in low and "inr" in low)):
+                    continue
+                # Убираем даты, чтобы не путать с PIN/номером
+                s2 = _re.sub(r"\d{4}[-/.]\d{2}[-/.]\d{2}", " ", s)
+                s2 = _re.sub(r"\d{2}[-/.]\d{2}[-/.]\d{2,4}", " ", s2)
+                # Номер карты — самая длинная последовательность 14–19 цифр
+                m = _re.search(r"\b(\d{14,19})\b", s2)
+                number = m.group(1) if m else ""
+                rest = s2.replace(number, " ", 1) if number else s2
+                # Номинал из строки, если совпадает с GIFT_DENOMS
+                denom = default_denom
+                for t in _re.findall(r"\b(\d{2,4})\b", rest):
+                    if int(t) in denoms:
+                        denom = int(t)
+                        rest = rest.replace(t, " ", 1)
+                        break
+                # PIN — 4–8 цифр из остатка
+                pin = ""
+                for t in _re.findall(r"\b(\d{4,8})\b", rest):
+                    pin = t
+                    break
+                if not number:
+                    errs.append(f"«{s[:40]}» — не нашёл номер (14–19 цифр)")
+                    continue
+                if not pin:
+                    errs.append(f"«{s[:40]}» — не нашёл PIN (4–8 цифр)")
+                    continue
+                if not denom:
+                    errs.append(f"«{s[:40]}» — не указан номинал")
+                    continue
+                out.append({"denom": int(denom), "number": number, "pin": pin, "used": False})
+            return out, errs
+
+        def _gift_bytes_to_text(fname, raw):
+            """Извлекает текст из присланного файла: .csv/.txt как есть; .xlsx через
+            openpyxl (если установлен) → строки «серия pin дата»."""
+            _low = (fname or "").lower()
+            if _low.endswith((".xlsx", ".xlsm", ".xls")):
+                try:
+                    import io as _io2, openpyxl as _oxl
+                    wb = _oxl.load_workbook(_io2.BytesIO(raw), read_only=True, data_only=True)
+                    _lines = []
+                    for ws in wb.worksheets:
+                        for row in ws.iter_rows(values_only=True):
+                            cells = [str(c) for c in row if c is not None]
+                            if cells:
+                                _lines.append(" ".join(cells))
+                    return "\n".join(_lines), ""
+                except ImportError:
+                    return "", ("Excel требует пакет openpyxl. Установите его "
+                                "(«📦 Зависимости») или пришлите CSV.")
+                except Exception as _xe:
+                    return "", f"Не удалось прочитать Excel: {_xe}"
+            # csv / txt / прочее — как текст
+            for enc in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+                try:
+                    return raw.decode(enc), ""
+                except Exception:
+                    continue
+            return raw.decode("utf-8", "replace"), ""
+
+        async def _gift_add_from_text(cid, text, default_denom=None):
+            """Парсит и сохраняет гифт-карты, отвечает результатом."""
+            parsed, errs = _parse_gift_cards(text, default_denom)
+            if not parsed and not errs:
+                await _send(cid, "⚠️ Не нашёл ни одной карты. Формат строки: `номер PIN номинал`",
+                            parse_mode="Markdown")
+                return
+            existing = _m("_load_gift_cards")()
+            _have = {str(c.get("number")) for c in existing}
+            added, dup = 0, 0
+            for c in parsed:
+                if str(c["number"]) in _have:
+                    dup += 1
+                    continue
+                existing.append(c); _have.add(str(c["number"])); added += 1
+            _m("_save_gift_cards")(existing)
+            bal = _m("_gift_balance")(existing)
+            lines = [f"✅ Добавлено карт: *{added}*"]
+            if dup:
+                lines.append(f"♻️ Пропущено дублей: {dup}")
+            if errs:
+                lines.append(f"⚠️ Не распознано строк: {len(errs)}")
+                for e in errs[:5]:
+                    lines.append(f"  • {e}")
+            lines.append(f"\n💰 Баланс хранилища: *₹{bal}*")
+            await _send(cid, "\n".join(lines), parse_mode="Markdown",
+                        reply_markup={"inline_keyboard": [[{"text": "🎁 Гифт-карты", "callback_data": "gift:menu"}]]})
 
         # ── Прокси ────────────────────────────────────────────────────────────
         def _proxy_text():
@@ -1780,6 +1929,13 @@ def _menu_tg_bot_thread() -> None:
         async def _bg_buy(cid, phone, months):
             _bg_ops[phone] = "running"
             _have_lock = False
+            # Подхватываем актуальный способ оплаты (карта / гифт-карты) до покупки
+            _pm = "card"
+            try:
+                _pm = _m("_load_pay_method")()
+                _m("_pay_method")[0] = _pm
+            except Exception:
+                pass
             if _op_lock.locked():
                 try:
                     await _send(cid, f"⏳ <code>{phone}</code> в очереди — ждёт завершения текущей операции…",
@@ -1787,7 +1943,8 @@ def _menu_tg_bot_thread() -> None:
                 except Exception:
                     pass
             tariff = "₹1,499 · 12 мес." if months == 12 else "₹399 · 3 мес."
-            await _send(cid, f"⏳ <b>Покупка Black Membership</b>\n\n<code>{phone}</code>\n💳 {tariff}",
+            _pay_lbl = "🎁 гифт-картами" if _pm == "gift" else f"💳 {tariff}"
+            await _send(cid, f"⏳ <b>Покупка Black Membership</b>\n\n<code>{phone}</code>\n{_pay_lbl}",
                         parse_mode="HTML", reply_markup=_buy_stop_kb())
             try:
                 await _op_lock.acquire()
@@ -2321,6 +2478,9 @@ def _menu_tg_bot_thread() -> None:
                 _sale_input_waiting.pop(cid, None)
                 _note_waiting.pop(cid, None)
                 _card_order_waiting.pop(cid, None)
+                # gift:add сам ставит ожидание ПОСЛЕ этого сброса — не трогаем его
+                if not data.startswith("gift:add"):
+                    _gift_add_waiting.pop(cid, None)
 
             # Навигация: главное меню ──────────────────────────────────────────
             if data in ("go:main", "show:main"):
@@ -3137,6 +3297,109 @@ def _menu_tg_bot_thread() -> None:
                 ]]})
                 return
 
+            # Гифт-карты ───────────────────────────────────────────────────────
+            if data == "gift:menu":
+                await _ack(qid)
+                _gift_add_waiting.pop(cid, None)
+                await _edit(cid, mid, _gift_menu_text(), _gift_menu_kb())
+                return
+
+            if data == "gift:method_toggle":
+                _cur = _m("_load_pay_method")()
+                _new = "card" if _cur == "gift" else "gift"
+                _m("_save_pay_method")(_new)
+                await _ack(qid, "🎁 Оплата: гифт-карты" if _new == "gift" else "💳 Оплата: карта")
+                # Обновляем тот экран, откуда пришли (меню гифт или «Другое»)
+                try:
+                    await _edit(cid, mid, _gift_menu_text(), _gift_menu_kb())
+                except Exception:
+                    await _edit(cid, mid, _other_text(cid), _other_kb(cid))
+                return
+
+            if data == "gift:add":
+                await _ack(qid)
+                _denoms = _m("GIFT_DENOMS")
+                _rows = []
+                _row = []
+                for _d in _denoms:
+                    _row.append({"text": f"₹{_d}", "callback_data": f"gift:add_denom:{_d}"})
+                    if len(_row) == 3:
+                        _rows.append(_row); _row = []
+                if _row:
+                    _rows.append(_row)
+                _rows.append([{"text": "🔢 Авто (номинал в строке)", "callback_data": "gift:add_denom:auto"}])
+                _rows.append([{"text": "❌ Отмена", "callback_data": "gift:menu"}])
+                await _send(cid,
+                    "🎁 *Добавление гифт-карт*\n\n"
+                    "Выберите *номинал* карт, которые пришлёте "
+                    "(в одном файле/сообщении — один номинал):",
+                    parse_mode="Markdown", reply_markup={"inline_keyboard": _rows})
+                return
+
+            if data.startswith("gift:add_denom:"):
+                _dv = data.split(":")[2]
+                _gift_add_waiting[cid] = "auto" if _dv == "auto" else int(_dv)
+                _dlbl = "с номиналом из строки" if _dv == "auto" else f"по ₹{_dv}"
+                await _send(cid,
+                    f"🎁 *Жду карты {_dlbl}*\n\n"
+                    "Пришлите *текстом* или *файлом* (CSV / Excel / .txt). "
+                    "Формат как в экспорте Flipkart — Серия, PIN, дата "
+                    "(дата игнорируется). Каждая карта с новой строки, например:\n"
+                    "`6000170524661453  281697  2027-05-25`",
+                    parse_mode="Markdown",
+                    reply_markup={"inline_keyboard": [[{"text": "❌ Отмена", "callback_data": "gift:menu"}]]})
+                return
+
+            if data == "gift:list":
+                await _ack(qid)
+                cards = _m("_load_gift_cards")()
+                if not cards:
+                    await _send(cid, "🎁 _Список пуст_", parse_mode="Markdown")
+                    return
+                lines = ["🎁 *Гифт-карты в хранилище*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+                for i, c in enumerate(sorted(cards, key=lambda x: -int(x.get("denom") or 0))[:40], 1):
+                    lines.append(f"{i}. ₹{c.get('denom')} · `{_m('_mask_gift')(c.get('number',''))}`")
+                if len(cards) > 40:
+                    lines.append(f"\n_…ещё {len(cards)-40}_")
+                lines.append(f"\n💰 Итого: *₹{_m('_gift_balance')(cards)}*")
+                await _send(cid, "\n".join(lines), parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [[{"text": "◀️ Гифт-карты", "callback_data": "gift:menu"}]]})
+                return
+
+            if data == "gift:used":
+                await _ack(qid)
+                used = _m("_load_gift_used")()
+                if not used:
+                    await _send(cid, "📜 _Использованных карт пока нет_", parse_mode="Markdown")
+                    return
+                lines = ["📜 *Использованные гифт-карты*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+                for u in list(reversed(used))[:30]:
+                    _pr = u.get("profile") or "—"
+                    lines.append(f"₹{u.get('denom')} · `{_m('_mask_gift')(u.get('number',''))}` · "
+                                 f"{u.get('used_str','')} · {_pr}")
+                if len(used) > 30:
+                    lines.append(f"\n_…ещё {len(used)-30}_")
+                await _send(cid, "\n".join(lines), parse_mode="Markdown",
+                            reply_markup={"inline_keyboard": [[{"text": "◀️ Гифт-карты", "callback_data": "gift:menu"}]]})
+                return
+
+            if data == "gift:clear_confirm":
+                await _ack(qid)
+                await _edit(cid, mid,
+                    f"🗑 *Удалить ВСЕ гифт-карты из хранилища?*\n\n"
+                    f"Баланс: ₹{_m('_gift_balance')()}. Использованные в истории останутся.",
+                    {"inline_keyboard": [
+                        [{"text": "🗑 Да, удалить всё", "callback_data": "gift:clear_do"}],
+                        [{"text": "◀️ Отмена", "callback_data": "gift:menu"}],
+                    ]})
+                return
+
+            if data == "gift:clear_do":
+                _m("_save_gift_cards")([])
+                await _ack(qid, "🗑 Хранилище гифт-карт очищено")
+                await _edit(cid, mid, _gift_menu_text(), _gift_menu_kb())
+                return
+
             # Карты ────────────────────────────────────────────────────────────
             if data == "show:cards":
                 await _ack(qid)
@@ -3710,6 +3973,34 @@ def _menu_tg_bot_thread() -> None:
         async def _handle_msg(client, msg):
             cid  = int(msg["chat"]["id"])
             text = (msg.get("text") or "").strip()
+
+            # ── Гифт-карты: приём текста или файла (ДО OTP-перехвата, иначе
+            #    цифры карт улетят в 3DS-OTP) ──────────────────────────────────
+            _gw = _gift_add_waiting.get(cid)
+            if _gw is not None:
+                _def_denom = None if _gw == "auto" else int(_gw)
+                _doc = msg.get("document")
+                if _doc:
+                    _gift_add_waiting.pop(cid, None)
+                    try:
+                        _fid = _doc.get("file_id")
+                        _fname = _doc.get("file_name") or "file"
+                        _gf = await client.get(f"{api}/getFile", params={"file_id": _fid})
+                        _fpath = (_gf.json().get("result") or {}).get("file_path", "")
+                        _durl = f"https://api.telegram.org/file/bot{token}/{_fpath}"
+                        _raw = (await client.get(_durl)).content
+                        _gtext, _ferr = _gift_bytes_to_text(_fname, _raw)
+                        if _ferr:
+                            await _send(cid, f"⚠️ {_ferr}")
+                            return
+                        await _gift_add_from_text(cid, _gtext, _def_denom)
+                    except Exception as _ge:
+                        await _send(cid, f"❌ Ошибка чтения файла: {_ge}")
+                    return
+                if text:
+                    _gift_add_waiting.pop(cid, None)
+                    await _gift_add_from_text(cid, text, _def_denom)
+                    return
 
             # 3DS OTP: ищем 4-8 цифр в любом тексте (fullmatch не ловил forwarded-сообщения)
             import re as _re_otp

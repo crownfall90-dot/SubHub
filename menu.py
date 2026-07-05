@@ -302,6 +302,12 @@ _DATA.mkdir(exist_ok=True)
 TG_SUBSCRIBERS_FILE = _DATA / "tg_subscribers.json"
 TG_STATS_FILE       = _DATA / "tg_stats.json"
 CARDS_FILE          = _DATA / "cards.json"
+GIFT_CARDS_FILE     = _DATA / "gift_cards.json"
+GIFT_USED_FILE      = _DATA / "gift_cards_used.json"  # аудит использованных гифт-карт
+# Способ оплаты для покупки: "card" (банковская карта) | "gift" (подарочные карты).
+# Ставится из TG до начала покупки, читается платёжным потоком.
+_pay_method = ["card"]
+GIFT_DENOMS = (50, 100, 200, 250, 500, 1000)
 
 # Код выхода процесса: 42 = menu.bat должен перезапуститься (применено обновление)
 _exit_code = [0]
@@ -7071,14 +7077,198 @@ async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: st
     return result
 
 
-async def _do_payments_page(page, card: dict | None = None) -> bool:
+async def _read_order_total(page) -> int:
+    """Читает «Total Amount ₹XXX» на странице оплаты. 0 если не найдено."""
+    try:
+        return int(await page.evaluate(r"""() => {
+            const body = document.body ? document.body.innerText : '';
+            // «Total Amount ₹343» / «Amount Payable ₹343»
+            let m = body.match(/(?:total amount|amount payable|total payable|to pay)[^\d₹]*₹?\s*([\d,]+)/i);
+            if (!m) m = body.match(/₹\s*([\d,]+)/);  // первый ₹-номинал как запас
+            return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+        }"""))
+    except Exception:
+        return 0
+
+
+async def _gift_place_order_bbox(page):
+    """Координаты жёлтой кнопки «Place Order» (появляется когда баланса хватает)."""
+    try:
+        return await page.evaluate(r"""() => {
+            for (const el of document.querySelectorAll('button, a, div, span, [role="button"]')) {
+                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (t !== 'place order' && !(t.includes('place order') && t.length < 30)) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 40 || r.height < 15) continue;
+                return {x: r.x + r.width/2, y: r.y + r.height/2};
+            }
+            return null;
+        }""")
+    except Exception:
+        return None
+
+
+async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
+    """Оплата подарочными картами (Flipkart Gift Card).
+    Читает сумму заказа, подбирает набор гифт-карт, по очереди вводит
+    номер+PIN → «Add Gift Card» (баланс начисляется), затем «Place Order».
+    Каждую УСПЕШНО добавленную карту сразу помечает использованной.
+    Возврат: True — оплачено; "gift_insufficient" — не хватает гифт-карт;
+    "gift_failed" — карты отклонены / не удалось оформить."""
+    import re as _rg
+    await page.wait_for_timeout(1_000)
+
+    total = await _read_order_total(page)
+    if total <= 0:
+        try:
+            with open("config.yaml", encoding="utf-8") as _f:
+                total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 343))
+        except Exception:
+            total = 343
+    print(f"  {C}🎁 Оплата гифт-картами. Сумма заказа: ₹{total}{RST}")
+
+    picked, picked_sum = _select_gift_cards(total)
+    if not picked:
+        bal = _gift_balance()
+        print(f"  {R}✘ Гифт-карт не хватает: нужно ₹{total}, доступно ₹{bal}{RST}")
+        _tg_send_direct(f"🎁 *Не хватает гифт-карт*\n\nНужно ₹{total}, в хранилище ₹{bal}.\nДобавьте карты и повторите.")
+        return "gift_insufficient"
+    print(f"  {G}Подобрано {len(picked)} карт на ₹{picked_sum} "
+          f"(номиналы: {', '.join(str(c.get('denom')) for c in picked)}){RST}")
+
+    # ── 1. Кликаем «Have a Flipkart Gift Card?» в левой панели ────────────────
+    _gift_bbox = None
+    for _try in range(3):
+        try:
+            _gift_bbox = await page.evaluate(r"""() => {
+                for (const el of document.querySelectorAll('*')) {
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (!t.includes('gift card')) continue;
+                    if (t.length > 40) continue;  // сам пункт меню, не длинные блоки
+                    const r = el.getBoundingClientRect();
+                    if (r.width >= 50 && r.height >= 10) return {x: r.x + r.width/2, y: r.y + r.height/2};
+                }
+                return null;
+            }""")
+        except Exception:
+            _gift_bbox = None
+        if _gift_bbox:
+            await page.mouse.click(_gift_bbox["x"], _gift_bbox["y"])
+            await page.wait_for_timeout(1_500)
+            break
+        await page.wait_for_timeout(1_500)
+    if not _gift_bbox:
+        print(f"  {R}✘ Пункт «Flipkart Gift Card» не найден на странице оплаты{RST}")
+        return "gift_failed"
+
+    _NUM_SEL = ("input[placeholder*='voucher number' i], input[placeholder*='gift card number' i], "
+                "input[placeholder*='voucher' i]")
+    _PIN_SEL = ("input[placeholder*='voucher pin' i], input[placeholder*='gift card pin' i], "
+                "input[placeholder*='pin' i]")
+    _ADD_SEL = ("button:has-text('Add Gift Card'), button:has-text('Add gift card'), "
+                "[role='button']:has-text('Add Gift Card'), button:has-text('Apply')")
+
+    applied = 0
+    for _i, c in enumerate(picked, 1):
+        _ckcancel()
+        _num = str(c.get("number") or "").strip()
+        _pin = str(c.get("pin") or "").strip()
+        _dn  = int(c.get("denom") or 0)
+        print(f"  🎁 [{_i}/{len(picked)}] Ввожу карту {_mask_gift(_num)} (₹{_dn})...")
+
+        _num_inp = page.locator(_NUM_SEL).first
+        _pin_inp = page.locator(_PIN_SEL).first
+        try:
+            if await _num_inp.count() == 0:
+                print(f"  {Y}⚠ Поле номера гифт-карты не найдено — прекращаю{RST}")
+                break
+            await _num_inp.click()
+            await _num_inp.fill("")
+            await _num_inp.type(_num, delay=40)
+            await _pin_inp.click()
+            await _pin_inp.fill("")
+            await _pin_inp.type(_pin, delay=40)
+            await page.wait_for_timeout(300)
+        except Exception as _fe:
+            print(f"  {Y}⚠ Не удалось заполнить поля: {_fe}{RST}")
+            continue
+
+        # Клик «Add Gift Card»
+        try:
+            _add = page.locator(_ADD_SEL).first
+            if await _add.count() > 0:
+                await _add.click()
+            else:
+                await page.keyboard.press("Enter")
+        except Exception:
+            try:
+                await page.keyboard.press("Enter")
+            except Exception:
+                pass
+        await page.wait_for_timeout(2_500)
+
+        # Проверяем результат: ошибка на странице?
+        _err = ""
+        try:
+            _err = await page.evaluate(r"""() => {
+                const b = (document.body?.innerText || '').toLowerCase();
+                const pat = ['invalid', 'incorrect', 'not valid', 'already', 'expired',
+                             'wrong', 'does not', 'unable', 'cannot be applied', 'no balance'];
+                for (const p of pat) if (b.includes(p)) return p;
+                return '';
+            }""")
+        except Exception:
+            _err = ""
+        if _err:
+            print(f"  {Y}⚠ Карта {_mask_gift(_num)} отклонена ({_err}) — пропускаю (НЕ помечаю использованной){RST}")
+            continue
+
+        # Успех — карта начислена на баланс аккаунта → сразу помечаем использованной
+        applied += 1
+        _mark_gift_used(c, profile_path)
+        print(f"  {G}✔ Карта {_mask_gift(_num)} применена и помечена использованной{RST}")
+
+        # Появилась кнопка Place Order? Значит баланса хватает
+        if await _gift_place_order_bbox(page):
+            print(f"  {G}💰 Баланса достаточно — появилась кнопка Place Order{RST}")
+            break
+
+    # ── 3. Place Order ───────────────────────────────────────────────────────
+    _po = await _gift_place_order_bbox(page)
+    if not _po:
+        await page.wait_for_timeout(2_000)
+        _po = await _gift_place_order_bbox(page)
+    if not _po:
+        print(f"  {R}✘ Кнопка Place Order не появилась — баланса не хватило или карты отклонены{RST}")
+        _tg_send_direct(f"🎁 *Оплата гифт-картами не завершена*\n\nПрименено карт: {applied}. "
+                        f"Кнопка Place Order не появилась.")
+        return "gift_failed"
+
+    print(f"  {G}Нажимаю Place Order...{RST}")
+    await page.mouse.click(_po["x"], _po["y"])
+    # Ждём страницу успеха (уход с payments / баннер)
+    try:
+        await page.wait_for_url(lambda u: "payments" not in u, timeout=30_000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(3_000)
+    print(f"  {G}✅ Заказ оформлен гифт-картами (URL: {page.url.split('?')[0]}){RST}")
+    return True
+
+
+async def _do_payments_page(page, card: dict | None = None,
+                            gift: bool = False, profile_path=None) -> bool:
     """
     На странице payments (flipkart.com/payments):
+      - gift=True — оплата подарочными картами (Flipkart Gift Card).
       - Если передана карта — выбирает «Credit / Debit / ATM Card»,
         заполняет реквизиты и нажимает «Pay» / «Add Address & Pay».
       - Без карты — оставляет страницу открытой (UPI по умолчанию).
     """
     await page.wait_for_timeout(800)
+
+    if gift:
+        return await _do_gift_card_payment(page, profile_path=profile_path)
 
     if card:
         return await _enter_card_on_payments(page, card)
@@ -8047,6 +8237,26 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                         print(f"  {G}💳 Порядок карт применён: {_seq_dbg}{RST}")
         except Exception as _ex:
             print(f"  Ошибка применения порядка карт: {_ex}")
+
+        # ── Оплата ПОДАРОЧНЫМИ картами (вместо перебора банковских) ──────────
+        if _pay_method[0] == "gift":
+            _gift_res = await _do_payments_page(page, gift=True, profile_path=profile_path)
+            if _gift_res is True:
+                try:
+                    _post_result = await _handle_post_payment(
+                        page, ctx, profile_path, phone_number=_pp_phone, months=months)
+                except Exception as _pp_e:
+                    print(f"  Post-payment: {_pp_e}")
+                    _post_result = {}
+                _keep_open = False
+                if _post_result.get("paid"):
+                    return True, "Оплачено подарочными картами"
+                return True, "Гифт-оплата отправлена (подтверждение активации не получено)"
+            if _gift_res == "gift_insufficient":
+                _keep_open = False
+                return False, "Не хватает подарочных карт для оплаты"
+            _keep_open = False
+            return False, "Оплата подарочными картами не удалась"
 
         if card:
             _rest = [c for c in _all_cards if c.get("number") != card.get("number")]
@@ -10369,6 +10579,158 @@ def _load_cards() -> list:
 
 def _save_cards(cards: list) -> None:
     _atomic_write_text(CARDS_FILE, json.dumps(cards, ensure_ascii=False, indent=2))
+
+
+# ── Подарочные карты (Flipkart Gift Card) ────────────────────────────────────
+def _load_gift_cards() -> list:
+    """Список гифт-карт: [{denom:int, number:str, pin:str, used:bool, used_ts}]."""
+    if GIFT_CARDS_FILE.exists():
+        try:
+            v = json.loads(GIFT_CARDS_FILE.read_text(encoding="utf-8"))
+            return v if isinstance(v, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def _save_gift_cards(cards: list) -> None:
+    _atomic_write_text(GIFT_CARDS_FILE, json.dumps(cards, ensure_ascii=False, indent=2))
+
+
+def _mask_gift(number: str) -> str:
+    n = "".join(ch for ch in str(number) if ch.isalnum())
+    return f"…{n[-4:]}" if len(n) >= 4 else (n or "?")
+
+
+def _gift_balance(cards: list | None = None) -> int:
+    """Сумма номиналов неиспользованных гифт-карт."""
+    cards = cards if cards is not None else _load_gift_cards()
+    return sum(int(c.get("denom") or 0) for c in cards
+               if not c.get("used") and c.get("number") and c.get("pin"))
+
+
+def _select_gift_cards(total: int, cards: list | None = None):
+    """Подбирает набор НЕиспользованных гифт-карт с суммой >= total и МИНИМАЛЬНЫМ
+    превышением (меньше «сгорает» баланса), при равенстве — меньше карт.
+    Возвращает (список_карт, сумма_набора) или (None, доступный_баланс)."""
+    cards = cards if cards is not None else _load_gift_cards()
+    unused = [c for c in cards
+              if not c.get("used")
+              and str(c.get("number") or "").strip()
+              and str(c.get("pin") or "").strip()
+              and int(c.get("denom") or 0) > 0]
+    units = [int(c.get("denom")) // 50 for c in unused]  # номиналы кратны 50
+    total_u = -(-int(total) // 50)  # ceil(total/50)
+    max_s = sum(units)
+    if max_s < total_u:
+        return None, max_s * 50
+    # 0/1-рюкзак: для каждой достижимой суммы — набор индексов с наим. числом карт
+    dp: list = [None] * (max_s + 1)
+    dp[0] = []
+    for i, u in enumerate(units):
+        if u <= 0:
+            continue
+        for s in range(max_s, u - 1, -1):
+            if dp[s - u] is not None:
+                cand = dp[s - u] + [i]
+                if dp[s] is None or len(cand) < len(dp[s]):
+                    dp[s] = cand
+    best_s = next((s for s in range(total_u, max_s + 1) if dp[s] is not None), None)
+    if best_s is None:
+        return None, max_s * 50
+    picked = [unused[i] for i in dp[best_s]]
+    if len(picked) > 15:
+        # Flipkart: не более 15 карт за транзакцию — жадно по убыванию (меньше карт)
+        unused.sort(key=lambda c: int(c.get("denom") or 0), reverse=True)
+        picked, acc = [], 0
+        for c in unused:
+            if acc >= total:
+                break
+            picked.append(c)
+            acc += int(c.get("denom") or 0)
+        if len(picked) > 15 or acc < total:
+            return None, _gift_balance(cards)
+        return picked, acc
+    return picked, best_s * 50
+
+
+_PAY_METHOD_FILE = _DATA / "pay_method.txt"
+
+def _load_pay_method() -> str:
+    """Способ оплаты из файла: "card" | "gift". По умолчанию "card"."""
+    try:
+        v = _PAY_METHOD_FILE.read_text(encoding="utf-8").strip().lower()
+        return "gift" if v == "gift" else "card"
+    except Exception:
+        return "card"
+
+def _save_pay_method(m: str) -> None:
+    _pay_method[0] = "gift" if str(m).lower() == "gift" else "card"
+    try:
+        _atomic_write_text(_PAY_METHOD_FILE, _pay_method[0])
+    except Exception:
+        pass
+
+# При импорте модуля восстанавливаем сохранённый способ оплаты
+try:
+    _pay_method[0] = _load_pay_method()
+except Exception:
+    pass
+
+
+def _load_gift_used() -> list:
+    if GIFT_USED_FILE.exists():
+        try:
+            v = json.loads(GIFT_USED_FILE.read_text(encoding="utf-8"))
+            return v if isinstance(v, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def _mark_gift_used(card: dict, profile_path=None) -> None:
+    """Помечает гифт-карту использованной: удаляет из хранилища, пишет в аудит-лог
+    (что/когда/какой профиль) и в мету профиля (gift_cards_used). Одноразово."""
+    import time as _t_gu
+    num = str(card.get("number") or "").strip()
+    denom = int(card.get("denom") or 0)
+    ts = _t_gu.time()
+    prof_name = ""
+    try:
+        prof_name = Path(profile_path).name if profile_path else ""
+    except Exception:
+        prof_name = ""
+    # 1. Удаляем из хранилища (по номеру)
+    try:
+        remaining = [c for c in _load_gift_cards()
+                     if str(c.get("number") or "").strip() != num]
+        _save_gift_cards(remaining)
+    except Exception:
+        pass
+    # 2. Аудит-лог использованных
+    try:
+        log = _load_gift_used()
+        log.append({"denom": denom, "number": num, "used_ts": ts,
+                    "used_str": _fmt_msk(ts), "profile": prof_name})
+        _atomic_write_text(GIFT_USED_FILE, json.dumps(log, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+    # 3. Запись в мету профиля
+    if profile_path:
+        try:
+            _mf = Path(profile_path) / ".profile_meta.json"
+            _meta = json.loads(_mf.read_text(encoding="utf-8")) if _mf.exists() else {}
+            if not isinstance(_meta, dict):
+                _meta = {}
+            _gcu = _meta.get("gift_cards_used")
+            if not isinstance(_gcu, list):
+                _gcu = []
+            _gcu.append({"denom": denom, "number_mask": _mask_gift(num),
+                         "used_ts": ts, "used_str": _fmt_msk(ts)})
+            _meta["gift_cards_used"] = _gcu
+            _atomic_write_text(_mf, json.dumps(_meta, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
 
 
 def _mask_card(number: str) -> str:
