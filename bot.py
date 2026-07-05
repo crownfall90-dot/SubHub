@@ -859,11 +859,14 @@ def _menu_tg_bot_thread() -> None:
                 return
             existing = _m("_load_gift_cards")()
             _have = {str(c.get("number")) for c in existing}
+            import time as _t_ga
+            _now_ga = _t_ga.time()
             added, dup = 0, 0
             for c in parsed:
                 if str(c["number"]) in _have:
                     dup += 1
                     continue
+                c["added_ts"] = _now_ga
                 existing.append(c); _have.add(str(c["number"])); added += 1
             _m("_save_gift_cards")(existing)
             bal = _m("_gift_balance")(existing)

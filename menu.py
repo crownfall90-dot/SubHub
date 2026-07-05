@@ -2405,6 +2405,18 @@ def screen_profiles():
             _sel_note = selected.get("note") or ""
             if _sel_note:
                 print(f"  Примечание: {Y}{_sel_note}{RST}")
+            # Использованные при оплате подарочные карты
+            try:
+                _gcu = _read_profile_meta(selected["path"]).get("gift_cards_used")
+            except Exception:
+                _gcu = None
+            if isinstance(_gcu, list) and _gcu:
+                _sum_g = sum(int(g.get("denom") or 0) for g in _gcu)
+                print(f"  Гифт-карты: {C}{len(_gcu)} шт. на ₹{_sum_g}{RST}")
+                for g in _gcu[-8:]:
+                    _gw = g.get("used_str") or (_fmt_msk(g["used_ts"]) if g.get("used_ts") else "—")
+                    print(f"             {DIM}₹{int(g.get('denom') or 0):<5} "
+                          f"{g.get('number_mask','')}  ·  {_gw}{RST}")
             print()
 
             opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)
@@ -10853,6 +10865,79 @@ def _save_card_order(order: list) -> None:
         pass
 
 
+def screen_gift_cards():
+    """Просмотр подарочных карт: остаток, номиналы, что есть, история активаций."""
+    while True:
+        cls()
+        header("ПОДАРОЧНЫЕ КАРТЫ (Flipkart Gift Card)", C)
+        cards = _load_gift_cards()
+        used  = _load_gift_used()
+        bal   = _gift_balance(cards)
+        print()
+
+        # Сводка по номиналам
+        by_denom: dict = {}
+        for c in cards:
+            if c.get("number") and c.get("pin"):
+                d = int(c.get("denom") or 0)
+                by_denom[d] = by_denom.get(d, 0) + 1
+        section(f"В хранилище: {W}{BLD}{sum(by_denom.values())} шт.{RST}  ·  баланс {W}{BLD}₹{bal}{RST}")
+        print()
+        if by_denom:
+            for d in sorted(by_denom, reverse=True):
+                print(f"    ₹{d:<5} × {by_denom[d]}")
+        else:
+            print(f"    {DIM}Карт нет. Добавляйте через TG-бота: «Другое» → «🎁 Гифт-карты».{RST}")
+        print()
+
+        # Список доступных карт с датой добавления
+        if cards:
+            section(f"Доступные карты  [{len(cards)} шт.]")
+            print()
+            for i, c in enumerate(sorted(cards, key=lambda x: -int(x.get("denom") or 0))[:40], 1):
+                _added = _fmt_msk(c["added_ts"]) if c.get("added_ts") else "—"
+                print(f"  [{i:2}] ₹{int(c.get('denom') or 0):<5} {C}{_mask_gift(c.get('number',''))}{RST}"
+                      f"   {DIM}добавлена: {_added}{RST}")
+            if len(cards) > 40:
+                print(f"  {DIM}…ещё {len(cards)-40}{RST}")
+            print()
+
+        # История активаций / использования
+        if used:
+            section(f"История использования  [{len(used)} шт.]  (новые сверху)")
+            print()
+            for u in list(reversed(used))[:25]:
+                _st = f"{Y}↩ др.аккаунт{RST}" if u.get("status") == "used_elsewhere" else f"{G}✔ применена{RST}"
+                _when = u.get("used_str") or (_fmt_msk(u["used_ts"]) if u.get("used_ts") else "—")
+                _pr = u.get("profile") or "—"
+                print(f"  {_st}  ₹{int(u.get('denom') or 0):<5} {_mask_gift(u.get('number',''))}"
+                      f"   {DIM}{_when}  ·  {_pr}{RST}")
+            if len(used) > 25:
+                print(f"  {DIM}…ещё {len(used)-25}{RST}")
+            print()
+
+        print(f"  {DIM}Добавление карт — через TG-бота (текстом или файлом CSV/Excel).{RST}")
+        print()
+        opt("Д", "Удалить ВСЕ карты из хранилища", R)
+        opt("0", "Назад", DIM)
+        print()
+        try:
+            ch = input(f"  {BLD}Выбор: {RST}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if ch in ("0", ""):
+            return
+        if ch in ("д", "d"):
+            try:
+                _cf = input(f"  {R}Удалить все {len(cards)} карт (баланс ₹{bal})? [Д/Н]: {RST}").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                _cf = "н"
+            if _cf in ("д", "y", "yes", "да"):
+                _save_gift_cards([])
+                print(f"  {Y}🗑 Хранилище гифт-карт очищено.{RST}")
+                time.sleep(1.5)
+
+
 def screen_cards():
     """Управление картами для оплаты."""
     while True:
@@ -10959,6 +11044,8 @@ def screen_main():
 
         section("НАСТРОЙКИ", B)
         opt("0", "Карты для оплаты (добавить / удалить)", C)
+        _gc_bal = _gift_balance()
+        opt("Г", f"🎁 Подарочные карты  {DIM}(баланс ₹{_gc_bal}){RST}", C)
         opt("Р", "Прокси (добавить / удалить / вкл-выкл)  ⛔ врем. отключены", Y)
         opt("4", "Просмотреть логи (automation.log)", B)
         opt("5", "Установить / обновить зависимости", M)
@@ -11010,6 +11097,8 @@ def screen_main():
                 screen_restore_from_cookies()
             elif choice == "0":
                 screen_cards()
+            elif choice in ("Г", "G", "г"):
+                screen_gift_cards()
             elif choice in ("Р", "R"):
                 screen_proxy()
             elif choice in ("У", "U"):
