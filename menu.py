@@ -7273,6 +7273,18 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         except Exception:
             pass
 
+    async def _read_gift_applied():
+        """Сумма, зачисленная гифт-картами (строка «Gift Cards −₹X» в сводке справа)."""
+        try:
+            return int(await page.evaluate(r"""() => {
+                const b = document.body ? document.body.innerText : '';
+                // «Gift Cards  -₹7» / «Gift Card −₹100»
+                const m = b.match(/gift\s*cards?\s*[:\-–—]*\s*-?\s*₹?\s*([\d,]+)/i);
+                return m ? parseInt(m[1].replace(/,/g,''),10) : 0;
+            }"""))
+        except Exception:
+            return 0
+
     applied = 0
     applied_sum = 0
     _tried_bad: set = set()   # номера, отклонённые НЕ как «already used» — не повторяем
@@ -7302,6 +7314,10 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         _pin = str(c.get("pin") or "").strip()
         _dn  = int(c.get("denom") or 0)
         print(f"  🎁 Карта {_mask_gift(_num)} (₹{_dn}); осталось покрыть ₹{_need}...")
+
+        # Снимок «до»: сколько уже зачислено гифтом и текущий Total (для детекции успеха)
+        _applied_before = await _read_gift_applied()
+        _total_before = await _read_order_total(page)
 
         # 1. Открываем форму ввода: жмём «Add Gift Card» и ЖДЁМ появления поля.
         _field_ready = await _voucher_visible()
@@ -7353,50 +7369,43 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         except Exception:
             _errcat = ""
 
-        # Успех: форма закрылась (поле пропало) ИЛИ поле номера очистилось
-        _closed = not await _voucher_visible()
-        _num_empty = False
-        if not _closed:
-            try:
-                _num_empty = (await page.locator(_NUM_SEL).first.input_value()).strip() == ""
-            except Exception:
-                _num_empty = False
-        _success = _closed or _num_empty
+        # Главный сигнал успеха: справа выросла строка «Gift Cards −₹X» и/или
+        # уменьшился «Total Amount» (баланс реально зачислен). Читаем 2 раза с паузой.
+        async def _applied_grew():
+            _aa = await _read_gift_applied()
+            _tt = await _read_order_total(page)
+            return (_aa > _applied_before) or (_total_before > 0 and 0 < _tt < _total_before), _aa, _tt
+        _success, _applied_after, _total_after = await _applied_grew()
+        if not _success:
+            await page.wait_for_timeout(2_500)
+            _success, _applied_after, _total_after = await _applied_grew()
 
         # Уже использована / добавлена на ДРУГОМ аккаунте → пометить, удалить, взять следующую
-        if _errcat == "already":
+        if not _success and _errcat == "already":
             print(f"  {Y}↩ Карта {_mask_gift(_num)} уже использована на другом аккаунте — "
                   f"помечаю и удаляю, беру следующую{RST}")
             _mark_gift_used(c, profile_path, status="used_elsewhere")
             _tg_send_direct(f"🎁 Карта {_mask_gift(_num)} (₹{_dn}) уже использована на другом "
                             f"аккаунте — удалена, пробую следующую.")
-            # закрываем модалку, если осталась
-            try: await page.keyboard.press("Escape")
-            except Exception: pass
-            continue
-
-        if _errcat == "other" and not _success:
-            print(f"  {Y}⚠ Карта {_mask_gift(_num)} отклонена (не «другой аккаунт») — пропускаю{RST}")
-            _tried_bad.add(_num)
             try: await page.keyboard.press("Escape")
             except Exception: pass
             continue
 
         if not _success:
-            # ещё подождём — модалка могла не успеть закрыться
-            await page.wait_for_timeout(2_000)
-            if not await _voucher_visible():
-                _success = True
-        if not _success:
-            print(f"  {Y}⚠ Карта {_mask_gift(_num)} — нет подтверждения применения, пропускаю{RST}")
+            _why = "другой аккаунт" if _errcat == "already" else (_errcat or "нет зачисления")
+            print(f"  {Y}⚠ Карта {_mask_gift(_num)} не зачислилась ({_why}) — пропускаю{RST}")
             _tried_bad.add(_num)
+            try: await page.keyboard.press("Escape")
+            except Exception: pass
             continue
 
-        # Успех — карта начислена на баланс аккаунта → помечаем использованной
+        # Успех — сумма реально зачислена гифт-картой → помечаем использованной.
+        # applied_sum берём из фактически зачисленного справа (точнее суммы номиналов).
         applied += 1
-        applied_sum += _dn
+        applied_sum = _applied_after if _applied_after > applied_sum else (applied_sum + _dn)
         _mark_gift_used(c, profile_path, status="used")
-        print(f"  {G}✔ Карта {_mask_gift(_num)} применена (₹{_dn}). Итого ₹{applied_sum}/{total}{RST}")
+        print(f"  {G}✔ Карта {_mask_gift(_num)} зачислена (₹{_dn}). "
+              f"Гифтом покрыто ₹{applied_sum}, Total сейчас ₹{_total_after}{RST}")
 
         await _ensure_use_checkbox()
         if await _gift_place_order_bbox(page):
