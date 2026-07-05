@@ -3386,6 +3386,8 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 reached = await _viewcheckout_to_payments(page)
             if reached == "OUT_OF_STOCK":
                 return await _oos_delete_return(retry_done=True)
+            if reached == "CAPTCHA":
+                return False, "Капча Flipkart зависла (Are you a human?) — не удалось пройти даже после обновлений. Попробуйте запустить ещё раз позже."
 
         # ── Шаг C: проверяем payments ────────────────────────────────────────
         if "payments" not in page.url:
@@ -7370,10 +7372,14 @@ async def _viewcheckout_to_payments(page) -> bool:
     try:
         await page.wait_for_function("""() => {
             if (location.href.includes('changeShippingAddress') || location.href.includes('add/form')) return true;
+            // Капча «Are you a human?» — не ждём 40с, сразу выходим (обработается ниже)
+            const _t = (document.title || '').toLowerCase();
+            const _bi = (document.body?.innerText || '').toLowerCase();
+            if (_t.includes('captcha') || _bi.includes('are you a human')) return true;
             const body = (document.body?.textContent || '').toLowerCase();
             if (body.includes('currently out of stock') || body.includes('out of stock for') ||
                 body.includes('not deliverable') || body.includes('try another address')) return true;
-            
+
             // Если видна кнопка "Set Location" - выходим мгновенно, чтобы не ждать Continue
             for (const el of document.querySelectorAll('button, div, a, span, [role="button"]')) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
@@ -7449,8 +7455,51 @@ async def _viewcheckout_to_payments(page) -> bool:
             pass
         return False
 
+    async def _is_captcha(page) -> bool:
+        """Страница Flipkart reCAPTCHA «Are you a human? Confirming...»."""
+        try:
+            return bool(await page.evaluate("""() => {
+                const t = (document.title || '').toLowerCase();
+                const b = (document.body?.innerText || '').toLowerCase();
+                return t.includes('captcha') || t.includes('recaptcha')
+                    || b.includes('are you a human')
+                    || (b.includes('confirming') && b.length < 300);
+            }"""))
+        except Exception:
+            return False
+
     for attempt in range(4):
         print(f"  {DIM}viewcheckout→payments попытка {attempt + 1}/4, URL: {page.url[:60]}{RST}")
+
+        # 0a. Капча «Are you a human?» — часто зависает на «Confirming...».
+        # Ждём авто-подтверждение, иначе обновляем страницу (до 5 раз).
+        if await _is_captcha(page):
+            _cap_passed = False
+            for _cap in range(5):
+                print(f"  {Y}⚠ Капча Flipkart — жду авто-подтверждение / обновляю ({_cap + 1}/5)...{RST}")
+                # до 12 сек: challenge может подтвердиться сам
+                for _ in range(12):
+                    _ckcancel()
+                    await page.wait_for_timeout(1_000)
+                    if not await _is_captcha(page):
+                        _cap_passed = True
+                        break
+                if _cap_passed:
+                    break
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=20_000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(2_000)
+            if not _cap_passed and await _is_captcha(page):
+                print(f"  {R}✘ Капча не проходит после обновлений — прекращаю{RST}")
+                return "CAPTCHA"
+            print(f"  {G}✔ Капча пройдена — продолжаю{RST}")
+            if "payments" in page.url:
+                return True
+            # даём странице догрузиться после капчи и повторяем цикл
+            await page.wait_for_timeout(1_500)
+            continue
 
         # OOS — Continue никогда не появится, дальше нет смысла
         if "viewcheckout" in page.url:
@@ -7903,6 +7952,8 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 reached = await _viewcheckout_to_payments(page)
                 if reached == "OUT_OF_STOCK":
                     return False, f"OUT_OF_STOCK|{addr_msg}"
+            if reached == "CAPTCHA":
+                return False, "Капча Flipkart зависла (Are you a human?) — не удалось пройти даже после обновлений. Попробуйте ещё раз позже."
 
         # Номер телефона нужен для TG-ошибок ниже
         _pp_phone = ""
