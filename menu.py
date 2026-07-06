@@ -446,15 +446,19 @@ def _http_do_update() -> tuple[bool, str]:
         if not owner:
             return False, "Не удалось прочитать репозиторий из .git/config"
         _here = Path(__file__).parent
-        _FILES = ["menu.py", "bot.py", "menu.bat", "grizzly_sms.py",
-                  "proxy.py", "grizzly.py", "requirements.txt", ".gitignore",
-                  "config.yaml.example", "secrets.yaml.example"]
+        _FILES = [
+            "menu.py", "bot.py", "main.py", "menu.bat", "grizzly_sms.py",
+            "proxy.py", "grizzly.py", "requirements.txt", ".gitignore",
+            "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
+            "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/monitor.py"
+        ]
         updated = []
         for fname in _FILES:
             try:
                 url  = f"https://raw.githubusercontent.com/{owner}/{repo}/master/{fname}"
                 data = _gh_get(url, token)
                 tgt  = _here / fname
+                tgt.parent.mkdir(parents=True, exist_ok=True)
                 # .bat требует CRLF на Windows — нормализуем при сохранении
                 save = (data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
                         if fname.endswith(".bat") else data)
