@@ -7345,9 +7345,20 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     applied_sum = 0
     _tried_bad: set = set()   # номера, отклонённые НЕ как «already used» — не повторяем
     _guard = 0
-    while applied_sum < total and _guard < 40:
+    _enough = False
+    while _guard < 40:
         _guard += 1
         _ckcancel()
+        # ГЛАВНОЕ: как только баланса хватает и появилась Place Order — карты
+        # больше НЕ добавляем (и если остаток уже покрыт).
+        if await _gift_place_order_bbox(page):
+            _enough = True
+            print(f"  {G}💰 Хватает — кнопка Place Order доступна, гифт-карты больше не использую{RST}")
+            break
+        if applied_sum >= total or (await _read_order_total(page)) <= 0:
+            _enough = True
+            print(f"  {G}💰 Сумма покрыта — гифт-карты больше не использую{RST}")
+            break
         # Доступные карты (использованные уже удалены из хранилища), кроме «плохих».
         # Крупные (>= порога) — только если пользователь подтвердил (_allow_big).
         _avail = [gc for gc in _load_gift_cards()
@@ -7387,8 +7398,8 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             if _field_ready:
                 break
             await _click_add_opener()
-            for _ in range(16):   # до 8 сек ждём поле после клика
-                await page.wait_for_timeout(500)
+            for _ in range(12):   # до ~4.2 сек ждём поле, но ловим сразу как появилось
+                await page.wait_for_timeout(350)
                 if await _voucher_visible():
                     _field_ready = True
                     break
@@ -7402,11 +7413,11 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _pin_inp = page.locator(_PIN_SEL).first
             await _num_inp.click()
             await _num_inp.fill("")
-            await _num_inp.type(_num, delay=40)
+            await _num_inp.type(_num, delay=25)
             await _pin_inp.click()
             await _pin_inp.fill("")
-            await _pin_inp.type(_pin, delay=40)
-            await page.wait_for_timeout(300)
+            await _pin_inp.type(_pin, delay=25)
+            await page.wait_for_timeout(250)
         except Exception as _fe:
             print(f"  {Y}⚠ Не удалось заполнить поля: {_fe}{RST}")
             _tried_bad.add(_num)
@@ -7414,7 +7425,7 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
 
         # 3. Отправляем купон кнопкой «Add Gift Card»
         await _click_add_submit()
-        await page.wait_for_timeout(3_000)
+        await page.wait_for_timeout(1_200)
 
         # 4. Категория ошибки на странице
         _errcat = ""
@@ -7439,7 +7450,7 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             return (_aa > _applied_before) or (_total_before > 0 and 0 < _tt < _total_before), _aa, _tt
         _success, _applied_after, _total_after = await _applied_grew()
         if not _success:
-            await page.wait_for_timeout(2_500)
+            await page.wait_for_timeout(1_200)
             _success, _applied_after, _total_after = await _applied_grew()
 
         # Уже использована / добавлена на ДРУГОМ аккаунте → пометить, удалить, взять следующую
@@ -7469,19 +7480,26 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         print(f"  {G}✔ Карта {_mask_gift(_num)} зачислена (₹{_dn}). "
               f"Гифтом покрыто ₹{applied_sum}, Total сейчас ₹{_total_after}{RST}")
 
+        # Быстрая проверка: не хватает ли уже (Place Order / остаток покрыт).
+        # Выходим сразу как появилось — лишние карты не добавляем.
         await _ensure_use_checkbox()
-        if await _gift_place_order_bbox(page):
-            print(f"  {G}💰 Баланса достаточно — появилась кнопка Place Order{RST}")
+        for _poc in range(3):   # до ~1.5 сек, но обычно ловим сразу
+            if await _gift_place_order_bbox(page) or applied_sum >= total:
+                _enough = True
+                break
+            await page.wait_for_timeout(500)
+        if _enough:
+            print(f"  {G}💰 Баланса достаточно — Place Order доступна, карты больше не добавляю{RST}")
             break
 
     # ── Place Order ───────────────────────────────────────────────────────────
     await _ensure_use_checkbox()
-    # Ждём появления «Place Order» (до ~10 сек — сводка справа обновляется не мгновенно)
+    # Ждём появления «Place Order» (обычно уже есть — ловим сразу)
     _po = await _gift_place_order_bbox(page)
-    for _pw in range(10):
+    for _pw in range(6):
         if _po:
             break
-        await page.wait_for_timeout(1_000)
+        await page.wait_for_timeout(500)
         await _ensure_use_checkbox()
         _po = await _gift_place_order_bbox(page)
     if not _po:
