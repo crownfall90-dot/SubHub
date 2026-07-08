@@ -1405,6 +1405,83 @@ def _menu_tg_bot_thread() -> None:
             else:
                 await _send(cid, f"❌ Профиль <code>{phone}</code> не найден", parse_mode="HTML")
 
+        def _looks_not_logged_in(msg) -> bool:
+            _s = str(msg or "").lower()
+            return ("не залогинен" in _s or "нет входа" in _s
+                    or "not logged" in _s or "not_logged" in _s)
+
+        async def _send_not_logged_in(cid, phone, note=""):
+            """Сообщение «профиль не залогинен» + кнопка «Восстановить профиль»
+            (восстановление сессии из сохранённых куков) сразу в TG."""
+            _bk = Path("cookies_backup") / f"cookies_{phone}.json"
+            _rows = []
+            if _bk.exists():
+                _rows.append([{"text": "🔓 Восстановить профиль (из куков)",
+                               "callback_data": f"profile:restore_session:{phone}"}])
+            _rows.append([{"text": "🍪 Восстановить из свежих куков",
+                           "callback_data": "profiles:cookies_info"}])
+            _extra = f"\n<i>{note}</i>" if note else ""
+            await _send(cid,
+                f"🔒 <b>{phone}</b> — профиль не залогинен (вход слетел).{_extra}\n\n"
+                + ("<i>Есть сохранённые куки — можно восстановить сессию.</i>"
+                   if _bk.exists() else
+                   "<i>Сохранённых куков нет — нужны свежие из браузера с входом.</i>"),
+                parse_mode="HTML", reply_markup={"inline_keyboard": _rows})
+
+        async def _bg_restore_session(cid, phone):
+            """Восстанавливает сессию профиля из бэкапа куков и проверяет вход."""
+            _bg_ops[phone] = "running"
+            await _send(cid, f"🔐 Восстанавливаю сессию <code>{phone}</code> из куков…",
+                        parse_mode="HTML")
+            try:
+                _bk = Path("cookies_backup") / f"cookies_{phone}.json"
+                if not _bk.exists():
+                    await _send(cid, f"❌ Бэкап куков для <code>{phone}</code> не найден.\n"
+                                     f"<i>Нужны свежие куки из браузера с входом.</i>",
+                                parse_mode="HTML",
+                                reply_markup={"inline_keyboard": [[
+                                    {"text": "🍪 Как восстановить из свежих куков",
+                                     "callback_data": "profiles:cookies_info"}]]})
+                    return
+                pp = _find_profile(phone)
+                loop = asyncio.get_running_loop()
+                try:
+                    ok_r, msg_r = await loop.run_in_executor(None, lambda: asyncio.run(
+                        _m("_restore_profile_from_cookies")(_bk, phone, pp)))
+                except Exception as _re:
+                    ok_r, msg_r = False, str(_re)
+
+                def _esc(t):
+                    return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                if not ok_r:
+                    await _send(cid,
+                        f"⚠️ <b>{phone}</b>: куки не дали входа (<i>{_esc(msg_r)}</i>) — устарели.\n"
+                        f"<i>Нужны свежие куки.</i>", parse_mode="HTML",
+                        reply_markup={"inline_keyboard": [[
+                            {"text": "🍪 Как восстановить из свежих куков",
+                             "callback_data": "profiles:cookies_info"}]]})
+                    return
+                # Проверяем активацию после восстановления
+                pp = _find_profile(phone) or pp
+                try:
+                    res = await loop.run_in_executor(None, lambda: asyncio.run(
+                        _m("_check_black_store_activation")(pp, username=phone, headless=True)))
+                    _save_activation_result(pp, res)
+                    _st = res.get("status", "?") if isinstance(res, dict) else "?"
+                except Exception:
+                    _st = "?"
+                await _send(cid,
+                    f"✅ <b>{phone}</b> — сессия восстановлена (статус: {_esc(_st)}).",
+                    parse_mode="HTML",
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "👤 Перейти в профиль", "callback_data": f"profile:menu:{phone}:active"}],
+                        [{"text": "✅ Проверить активацию", "callback_data": f"profile:activate:{phone}"}],
+                    ]})
+            except Exception as e:
+                await _send(cid, f"❌ Ошибка восстановления <code>{phone}</code>: {e}", parse_mode="HTML")
+            finally:
+                _bg_ops.pop(phone, None)
+
         def _link_history_text(meta, phone):
             """Текст истории ссылок профиля из меты (хронологически, первая сверху)."""
             hist = meta.get("link_history")
@@ -1508,10 +1585,12 @@ def _menu_tg_bot_thread() -> None:
                             [{"text": "◀️ В главное меню",
                               "callback_data": "go:main"}],
                         ]})
+                elif st == "not_logged_in":
+                    # Профиль слетел — сразу предлагаем восстановить сессию из куков
+                    await _send_not_logged_in(cid, phone)
                 else:
                     msgs = {
                         "explore_now":   f"✅ <b>{phone}</b> — Explore Now",
-                        "not_logged_in": f"🔒 <b>{phone}</b> — не авторизован",
                         "access_denied": f"🌐 <b>{phone}</b> — нет доступа\n<i>Проверьте подключение к интернету / VPN</i>",
                         "unknown":       f"❓ <b>{phone}</b> — нет ответа от Flipkart\n<i>Проверьте подключение к интернету / VPN</i>",
                     }
@@ -1735,6 +1814,8 @@ def _menu_tg_bot_thread() -> None:
                 elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
                     await _send_oos_confirm(cid, phone, _retry_note)
+                elif _looks_not_logged_in(msg2):
+                    await _send_not_logged_in(cid, phone)
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {msg2_safe}", parse_mode="HTML")
             except Exception as e:
@@ -1792,6 +1873,8 @@ def _menu_tg_bot_thread() -> None:
                 elif msg2 in ("OUT_OF_STOCK", "OUT_OF_STOCK_2"):
                     _retry_note = " (адрес введён 2 раза)" if msg2 == "OUT_OF_STOCK_2" else ""
                     await _send_oos_confirm(cid, phone, _retry_note)
+                elif _looks_not_logged_in(msg2):
+                    await _send_not_logged_in(cid, phone)
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {escape_html(msg2)}", parse_mode="HTML")
             except Exception as e:
@@ -2010,6 +2093,8 @@ def _menu_tg_bot_thread() -> None:
                 elif msg_r.startswith("OUT_OF_STOCK"):
                     _rn = " (адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg_r else ""
                     await _send_oos_confirm(cid, phone, _rn)
+                elif _looks_not_logged_in(msg_r):
+                    await _send_not_logged_in(cid, phone, "Покупка недоступна — Buy Now требует входа.")
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b> — не куплено\n<i>{msg_r_safe or 'неизвестно'}</i>", parse_mode="HTML")
             except Exception as e:
@@ -3908,6 +3993,15 @@ def _menu_tg_bot_thread() -> None:
                     return
                 await _ack(qid, "🔄 Обновляю ссылку...")
                 asyncio.create_task(_bg_refresh_link(cid, phone))
+                return
+
+            if data.startswith("profile:restore_session:"):
+                phone = data.split(":", 2)[2]
+                if _bg_ops.get(phone) == "running":
+                    await _ack(qid, "⚠️ Уже выполняется", alert=True)
+                    return
+                await _ack(qid, "🔐 Восстанавливаю сессию...")
+                asyncio.create_task(_bg_restore_session(cid, phone))
                 return
 
             if data.startswith("profile:link_history:"):
