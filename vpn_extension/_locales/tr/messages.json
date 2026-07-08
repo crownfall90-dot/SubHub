@@ -1,0 +1,10 @@
+{
+   "app_description": {
+      "description": "Uygulamanın açıklaması",
+      "message": "IP'nizi koruyan ve ücretsiz olarak özel gezinmenizi sağlayan Chrome için hızlı, güvenli ve kullanımı kolay VPN uzantısı."
+   },
+   "app_name": {
+      "description": "Uygulamanın adı",
+      "message": "Chrome için Ücretsiz VPN & Proxy - VPNLY"
+   }
+}

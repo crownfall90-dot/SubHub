@@ -1,0 +1,10 @@
+{
+   "app_description": {
+      "description": "アプリケーションの説明",
+      "message": "あなたのIPを保護し、無料でプライベートブラウジングを可能にする、Chrome用の高速で安全で使いやすいVPN拡張機能。"
+   },
+   "app_name": {
+      "description": "アプリケーション名",
+      "message": "Chrome用 無料VPN＆プロキシ - VPNLY"
+   }
+}

@@ -1,0 +1,10 @@
+{
+   "app_description": {
+      "description": "La descripción de la aplicación",
+      "message": "Extensión VPN para Chrome rápida, segura y fácil de usar que protege tu IP y te permite navegar de forma privada de forma gratuita."
+   },
+   "app_name": {
+      "description": "El nombre de la aplicación",
+      "message": "VPN y Proxy Gratis para Chrome - VPNLY"
+   }
+}

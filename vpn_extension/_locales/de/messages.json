@@ -1,11 +1,10 @@
 {
-   "appDescription": {
-      "message": "Erhalten Sie Zugang zu allen Webseiten und Diensten mit unserem kostenlosen VPN Indien Proxy"
+   "app_description": {
+      "description": "Die Beschreibung der Anwendung",
+      "message": "Schnelle, sichere und einfach zu bedienende VPN-Erweiterung für Chrome, die Ihre IP schützt und privates Surfen kostenlos ermöglicht."
    },
-   "appName": {
-      "message": "VPN Indien - Planet VPN lite Proxy"
-   },
-   "appTitle": {
-      "message": "Planet VPN lite"
+   "app_name": {
+      "description": "Der Name der Anwendung",
+      "message": "Kostenloses VPN & Proxy für Chrome - VPNLY"
    }
 }

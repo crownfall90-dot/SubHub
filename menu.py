@@ -939,63 +939,90 @@ async def _vpn_ext_id(context) -> str | None:
 
 
 async def _ensure_vpn_connected(context) -> bool:
-    """Planet VPN (PLY): открывает попап, выбирает страну USA и подключает.
-    Best-effort по тексту (классы минифицированы). Возврат True если, похоже,
-    подключились. Тихо выходит, если расширения нет."""
+    """VPNLY: открывает попап и жмёт «Подключить»/«Connect» (страну не меняем —
+    берётся оптимальная по умолчанию, напр. Germany). Ждёт статус «Защищено».
+    Возврат True если подключились. Тихо выходит, если расширения нет."""
     if not _vpn_extension_dir():
         return False
     eid = await _vpn_ext_id(context)
     if not eid:
         print(f"  {Y}⚠ VPN: не удалось определить ID расширения — пропускаю{RST}")
         return False
+
+    _CONNECTED = ("защищено", "отключить", "protected", "disconnect", "connected")
+    _NOTCONN   = ("не защищено", "не подключено", "подключить", "not protected",
+                  "not connected", "disconnected")
+
+    async def _status(pop) -> str:
+        try:
+            b = (await pop.evaluate("() => document.body ? document.body.innerText : ''")).lower()
+        except Exception:
+            return ""
+        # «отключить»/«disconnect» = уже подключены (кнопка отключения)
+        if any(s in b for s in ("защищено", "отключить", "disconnect")) and "не защищено" not in b:
+            return "connected"
+        if any(s in b for s in _NOTCONN):
+            return "disconnected"
+        if "connected" in b and "disconnected" not in b and "not connected" not in b:
+            return "connected"
+        return "unknown"
+
+    async def _click_connect(pop) -> bool:
+        # Точный текст кнопки «Подключить»/«Connect»
+        for _t in ("Подключить", "Connect", "CONNECT", "Подключиться", "Turn on"):
+            try:
+                _loc = pop.get_by_text(_t, exact=True).first
+                if await _loc.count() > 0 and await _loc.is_visible():
+                    await _loc.click(timeout=1_500)
+                    return True
+            except Exception:
+                pass
+        # Fallback: крупная нижняя кнопка (оранжевая) по координатам через JS
+        try:
+            _bb = await pop.evaluate(r"""() => {
+                const want = ['подключить','connect','подключиться','turn on'];
+                let best=null;
+                for (const el of document.querySelectorAll('button,a,div,span,[role="button"]')) {
+                    const t=(el.innerText||el.textContent||'').trim().toLowerCase();
+                    if (!want.some(w=>t===w || (t.includes(w)&&t.length<20))) continue;
+                    const r=el.getBoundingClientRect();
+                    if (r.width<60||r.height<20||el.offsetParent===null) continue;
+                    if (!best || r.top>best.top) best={x:r.x+r.width/2,y:r.y+r.height/2,top:r.top};
+                }
+                return best;
+            }""")
+            if _bb:
+                await pop.mouse.click(_bb["x"], _bb["y"])
+                return True
+        except Exception:
+            pass
+        return False
+
     pop = None
     try:
         pop = await context.new_page()
         await pop.goto(f"chrome-extension://{eid}/popup.html",
                        wait_until="domcontentloaded", timeout=15_000)
-        await pop.wait_for_timeout(3_000)
+        await pop.wait_for_timeout(2_500)
 
-        async def _click_text(variants, timeout_each=800):
-            for _t in variants:
-                try:
-                    _loc = pop.get_by_text(_t, exact=False).first
-                    if await _loc.count() > 0 and await _loc.is_visible():
-                        await _loc.click(timeout=timeout_each)
-                        return True
-                except Exception:
-                    pass
-            return False
-
-        # Если уже подключено к нужной стране — ничего не делаем
-        try:
-            _txt = (await pop.evaluate("() => document.body.innerText")).lower()
-        except Exception:
-            _txt = ""
-        if "united states" in _txt and ("disconnect" in _txt or "connected" in _txt):
-            print(f"  {G}✔ VPN уже подключён (USA){RST}")
+        if await _status(pop) == "connected":
+            print(f"  {G}✔ VPN уже подключён{RST}")
             return True
 
-        # 1. Открываем список стран (Location/Country/Change) и выбираем USA
-        await _click_text(["Change", "Location", "Country", "Select location",
-                           "Choose location", "Servers"])
-        await pop.wait_for_timeout(1_200)
-        _usa = await _click_text(["United States", "USA", "US "])
-        await pop.wait_for_timeout(1_000)
+        # Жмём «Подключить» (до 3 попыток) и ждём статус «Защищено» (VPN стартует не мгновенно)
+        for _try in range(3):
+            await _click_connect(pop)
+            for _ in range(20):   # до ~20 сек ждём подключения
+                await pop.wait_for_timeout(1_000)
+                if await _status(pop) == "connected":
+                    print(f"  {G}✔ VPN подключён{RST}")
+                    return True
+            print(f"  {Y}VPN ещё не подключился — повтор ({_try + 1}/3)…{RST}")
 
-        # 2. Жмём Connect (если есть отдельная кнопка)
-        _conn = await _click_text(["Connect", "CONNECT", "Quick connect", "Turn on"])
-        await pop.wait_for_timeout(3_000)
-
-        try:
-            _txt2 = (await pop.evaluate("() => document.body.innerText")).lower()
-        except Exception:
-            _txt2 = ""
-        _ok = ("disconnect" in _txt2 or "connected" in _txt2
-               or (_usa and "united states" in _txt2))
-        print(f"  {G if _ok else Y}{'✔ VPN подключён (USA)' if _ok else '⚠ VPN: статус подключения неясен'}{RST}")
-        return _ok
+        print(f"  {Y}⚠ VPN: не удалось подтвердить подключение (проверьте вручную){RST}")
+        return False
     except Exception as _ve:
-        print(f"  {Y}⚠ VPN: ошибка авто-подключения: {_ve}{RST}")
+        print(f"  {Y}⚠ VPN: ошибка подключения: {_ve}{RST}")
         return False
     finally:
         try:
@@ -1043,7 +1070,7 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
         "extra_http_headers": {"Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7"},
         "ignore_https_errors": True,
     }
-    # ── VPN-расширение (напр. PLY): грузим в КАЖДЫЙ профиль, если папка есть ──
+    # ── VPN-расширение (VPNLY): грузим в КАЖДЫЙ профиль, если папка есть ──
     # Кладём распакованное расширение (с manifest.json) в vpn_extension/ в корне
     # проекта — тогда оно ставится и включается для каждого запуска Chrome.
     # ВАЖНО: расширения не работают в старом headless — форсируем видимый режим

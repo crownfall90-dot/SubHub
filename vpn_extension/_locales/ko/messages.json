@@ -1,0 +1,10 @@
+{
+   "app_description": {
+      "description": "애플리케이션에 대한 설명",
+      "message": "IP를 보호하고 무료로 개인적으로 브라우저를 사용할 수 있게 해주는 Chrome용 빠르고 안전하며 사용하기 쉬운 VPN 확장 프로그램."
+   },
+   "app_name": {
+      "description": "애플리케이션 이름",
+      "message": "Chrome용 무료 VPN 및 프록시 - VPNLY"
+   }
+}
