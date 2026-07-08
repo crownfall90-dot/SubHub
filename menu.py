@@ -894,6 +894,26 @@ _MENU_USER_AGENTS = [
 ]
 
 
+def _vpn_extension_dir() -> str | None:
+    """Путь к распакованному VPN-расширению для загрузки в Chrome.
+    Ищет папку с manifest.json: vpn_extension/ в корне (или её единственную
+    подпапку с manifest.json — как распаковывается .crx). Возвращает абсолютный
+    путь строкой или None, если расширения нет."""
+    try:
+        base = Path(__file__).parent / "vpn_extension"
+        if not base.exists():
+            return None
+        if (base / "manifest.json").exists():
+            return str(base.resolve())
+        # .crx часто распаковывается в подпапку (например vpn_extension/<id>/manifest.json)
+        for sub in base.iterdir():
+            if sub.is_dir() and (sub / "manifest.json").exists():
+                return str(sub.resolve())
+    except Exception:
+        pass
+    return None
+
+
 def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
                        force_proxy: bool = False, phone: str = "",
                        skip_servers: set | None = None,
@@ -932,11 +952,29 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
         "extra_http_headers": {"Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7"},
         "ignore_https_errors": True,
     }
+    # ── VPN-расширение (напр. PLY): грузим в КАЖДЫЙ профиль, если папка есть ──
+    # Кладём распакованное расширение (с manifest.json) в vpn_extension/ в корне
+    # проекта — тогда оно ставится и включается для каждого запуска Chrome.
+    # ВАЖНО: расширения не работают в старом headless — форсируем видимый режим
+    # либо новый headless (--headless=new), когда расширение загружается.
+    try:
+        _ext_dir = _vpn_extension_dir()
+        if _ext_dir:
+            args.append(f"--disable-extensions-except={_ext_dir}")
+            args.append(f"--load-extension={_ext_dir}")
+            if headless:
+                # старый headless не поддерживает расширения → включаем новый
+                args.append("--headless=new")
+                headless = False  # Playwright запустит окно, но с --headless=new оно скрыто
+    except Exception:
+        pass
+
     if not headless:
         args.append("--start-maximized")
         kw["no_viewport"] = True
     else:
         kw["viewport"] = vp
+    kw["headless"] = headless
     chrome = _find_chrome()
     if chrome and not use_bundled_chromium:
         kw["executable_path"] = chrome
