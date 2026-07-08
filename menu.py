@@ -825,6 +825,9 @@ def open_chrome(profile_path: Path) -> bool:
         return False
     url  = _profile_url(profile_path)
     args = [chrome, f"--user-data-dir={profile_path.resolve()}"]
+    _ext = _vpn_extension_dir()   # VPN PLY → грузим расширение и в ручном Chrome
+    if _ext:
+        args.append(f"--load-extension={_ext}")
     proxy = _pick_proxy()
     if proxy:
         server = proxy.get("server", "")
@@ -912,6 +915,94 @@ def _vpn_extension_dir() -> str | None:
     except Exception:
         pass
     return None
+
+
+async def _vpn_ext_id(context) -> str | None:
+    """ID загруженного VPN-расширения (из service worker / background page)."""
+    try:
+        for sw in context.service_workers:
+            if sw.url.startswith("chrome-extension://"):
+                return sw.url.split("/")[2]
+    except Exception:
+        pass
+    try:
+        for bp in context.background_pages:
+            if bp.url.startswith("chrome-extension://"):
+                return bp.url.split("/")[2]
+    except Exception:
+        pass
+    try:
+        sw = await context.wait_for_event("serviceworker", timeout=8_000)
+        return sw.url.split("/")[2]
+    except Exception:
+        return None
+
+
+async def _ensure_vpn_connected(context) -> bool:
+    """Planet VPN (PLY): открывает попап, выбирает страну USA и подключает.
+    Best-effort по тексту (классы минифицированы). Возврат True если, похоже,
+    подключились. Тихо выходит, если расширения нет."""
+    if not _vpn_extension_dir():
+        return False
+    eid = await _vpn_ext_id(context)
+    if not eid:
+        print(f"  {Y}⚠ VPN: не удалось определить ID расширения — пропускаю{RST}")
+        return False
+    pop = None
+    try:
+        pop = await context.new_page()
+        await pop.goto(f"chrome-extension://{eid}/popup.html",
+                       wait_until="domcontentloaded", timeout=15_000)
+        await pop.wait_for_timeout(3_000)
+
+        async def _click_text(variants, timeout_each=800):
+            for _t in variants:
+                try:
+                    _loc = pop.get_by_text(_t, exact=False).first
+                    if await _loc.count() > 0 and await _loc.is_visible():
+                        await _loc.click(timeout=timeout_each)
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        # Если уже подключено к нужной стране — ничего не делаем
+        try:
+            _txt = (await pop.evaluate("() => document.body.innerText")).lower()
+        except Exception:
+            _txt = ""
+        if "united states" in _txt and ("disconnect" in _txt or "connected" in _txt):
+            print(f"  {G}✔ VPN уже подключён (USA){RST}")
+            return True
+
+        # 1. Открываем список стран (Location/Country/Change) и выбираем USA
+        await _click_text(["Change", "Location", "Country", "Select location",
+                           "Choose location", "Servers"])
+        await pop.wait_for_timeout(1_200)
+        _usa = await _click_text(["United States", "USA", "US "])
+        await pop.wait_for_timeout(1_000)
+
+        # 2. Жмём Connect (если есть отдельная кнопка)
+        _conn = await _click_text(["Connect", "CONNECT", "Quick connect", "Turn on"])
+        await pop.wait_for_timeout(3_000)
+
+        try:
+            _txt2 = (await pop.evaluate("() => document.body.innerText")).lower()
+        except Exception:
+            _txt2 = ""
+        _ok = ("disconnect" in _txt2 or "connected" in _txt2
+               or (_usa and "united states" in _txt2))
+        print(f"  {G if _ok else Y}{'✔ VPN подключён (USA)' if _ok else '⚠ VPN: статус подключения неясен'}{RST}")
+        return _ok
+    except Exception as _ve:
+        print(f"  {Y}⚠ VPN: ошибка авто-подключения: {_ve}{RST}")
+        return False
+    finally:
+        try:
+            if pop:
+                await pop.close()
+        except Exception:
+            pass
 
 
 def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
@@ -1706,6 +1797,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         if not headless:
             await _maximize_window(ctx, page)
+        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
 
         try:
             await page.goto("https://www.flipkart.com/flipkart-black-store",
@@ -3303,6 +3395,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await _maximize_window(ctx, page)
+        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
 
         # Начальная навигация с одним ретраем — бывает разовый таймаут загрузки
         _nav_ok = False
@@ -6713,6 +6806,7 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
         ctx = await pw.chromium.launch_persistent_context(
             str(profile_path.resolve()), **_browser_launch_kw(phone=phone_digits))
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
 
         # Открываем Flipkart чтобы установить домен, затем добавляем куки
         await page.goto("https://www.flipkart.com/", wait_until="domcontentloaded", timeout=20_000)
@@ -8447,6 +8541,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await _maximize_window(ctx, page)
+        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
 
         # Проверяем — нет ли уже купленного Black Membership
         _bm_phone_label = _phone_from_path(profile_path)
@@ -9569,6 +9664,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 _grizzly_module.update_rental_browser(phone_id, page=page)
                 if not headless:
                     await _maximize_window(ctx, page)
+                await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
 
                 def _on_new_page(p):
                     async def _check():

@@ -1,0 +1,27 @@
+{
+   "action": {
+      "default_icon": {
+         "32": "icons/icon-disconnected.png"
+      },
+      "default_popup": "popup.html",
+      "default_title": "__MSG_appTitle__"
+   },
+   "background": {
+      "service_worker": "background.js",
+      "type": "module"
+   },
+   "default_locale": "en",
+   "description": "__MSG_appDescription__",
+   "host_permissions": [ "http://*/*", "https://*/*" ],
+   "icons": {
+      "128": "icons/icon-128.png",
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAj7ZwyyfRHXe2oBKIZExW3060f9oX1QNHAiztjurhvnkpoZpCyO0ItZUqp6z8Re6/i8euVo/OPyebbfiRIc6eye9xnBIpkkC3ZqMDjL1nayDrh+NAQmD4wOC+Abt8sop+Rh362v/q1QFv4v3n0wLo0X7ioZickUBP6uWsGh1qs/qQHnx6gfhYa+6H5VWVsEcD/gIDGG4vhtwTH4eNgyEjLkd+5Xahu20rSllL9+NV5j4weszDF5Phu67WfHFW464/7b5KHB45lsoCdHvu4ia28VOrc1MKDvR+f2B23pg3AVlWdOaW6CYvaMViFCItLg/2SqKdYt+mDzYcgyjqVokTVwIDAQAB",
+   "manifest_version": 3,
+   "name": "__MSG_appName__",
+   "permissions": [ "proxy", "storage", "webRequest", "webRequestAuthProvider", "management", "offscreen" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "2.2.1"
+}

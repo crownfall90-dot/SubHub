@@ -1,0 +1,1 @@
+(function(){"use strict";const r=new Worker("offscreenWorker.js"),t=e=>{if(e.target!=="offscreen")return!1;if(e.type==="triggerAuth")r.postMessage(e.data);else return!1};chrome.runtime.onMessage.addListener(t)})();
