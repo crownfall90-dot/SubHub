@@ -3785,12 +3785,50 @@ async def _fill_address_form(page, addr: dict) -> bool:
         return '';
     }"""
 
+    async def _click_any_confirm() -> str:
+        """Жмёт ЛЮБУЮ всплывающую кнопку подтверждения (Confirm/Update/OK/Proceed/
+        Yes/Done) сразу, как появилась. Возвращает текст нажатой кнопки или ''."""
+        try:
+            _dlg = await page.evaluate(r"""() => {
+                const want = ['confirm','update address','update','ok','okay',
+                              'proceed','yes','done','continue anyway','got it'];
+                for (const el of document.querySelectorAll('button, a, div, span, [role="button"], input[type="submit"]')) {
+                    const t = (el.innerText || el.value || el.textContent || '').trim().toLowerCase();
+                    if (!want.includes(t)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 30 || r.height < 12 || el.offsetParent === null) continue;
+                    return {x: r.x + r.width/2, y: r.y + r.height/2, t};
+                }
+                return null;
+            }""")
+            if _dlg:
+                await page.mouse.click(_dlg["x"], _dlg["y"])
+                print(f"  {G}✔ Нажал «{_dlg['t']}» (всплывающий диалог){RST}")
+                await page.wait_for_timeout(1_000)
+                return _dlg["t"]
+        except Exception:
+            pass
+        return ""
+
     for _save_try in range(4):
         await _human_click(page, save_loc, before=_r.uniform(0.1, 0.25))
-        await page.wait_for_timeout(2_000)
+        await page.wait_for_timeout(1_800)
 
-        # Диалог "Update with these details?" — нажимаем CONFIRM
+        # Общий обработчик: любой всплывающий Confirm/Update/OK/Proceed — жмём сразу.
+        # Если после нажатия появился ещё один диалог — жмём и его (до 3 подряд).
         _confirmed = False
+        for _dc in range(3):
+            _pressed = await _click_any_confirm()
+            if not _pressed:
+                break
+            _confirmed = True
+            # ушли с формы / кнопка Save пропала — адрес принят
+            if await save_loc.count() == 0 or not await save_loc.is_visible():
+                break
+            if any(s in page.url for s in ("viewcheckout", "payments", "changeShipping")):
+                break
+
+        # Диалог "Update with these details?" — нажимаем CONFIRM (спец. запас)
         try:
             if "#dialogBoxOpen" in page.url or await page.locator("text=Update with these details?").count() > 0:
                 _confirm = page.get_by_text("CONFIRM", exact=True).first
