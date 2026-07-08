@@ -634,6 +634,34 @@ def _ask_delete_profile_console(profile_path, username: str, error_text: str) ->
     return False
 
 
+def _console_offer_restore(profile_path, username: str) -> bool:
+    """Консоль: при not_logged_in предлагает восстановить сессию из бэкапа куков.
+    Возвращает True, если восстановление удалось."""
+    phone = "".join(ch for ch in str(username) if ch.isdigit())[-10:] or str(username)
+    bk = Path("cookies_backup") / f"cookies_{phone}.json"
+    print(f"\n  {Y}🔒 Профиль не залогинен — вход слетел.{RST}")
+    if not bk.exists():
+        print(f"  {DIM}Бэкапа куков нет (cookies_backup/cookies_{phone}.json).{RST}")
+        print(f"  {DIM}Нужны свежие куки — пункт «К» в главном меню.{RST}")
+        return False
+    try:
+        ans = input(f"  {BLD}Восстановить сессию из сохранённых куков? [Д/Н]: {RST}").strip().upper()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    if ans not in ("Д", "ДА", "Y", "YES"):
+        return False
+    print(f"  {DIM}Восстанавливаю сессию из куков…{RST}")
+    try:
+        ok, msg = asyncio.run(_restore_profile_from_cookies(bk, phone, Path(profile_path)))
+    except Exception as e:
+        ok, msg = False, str(e)
+    if ok:
+        print(f"  {G}✅ Сессия восстановлена. Запустите операцию снова.{RST}")
+        return True
+    print(f"  {R}❌ Куки не дали входа: {msg}. Нужны свежие куки (пункт «К»).{RST}")
+    return False
+
+
 def _read_profile_meta(p: Path) -> dict:
     """Читает .profile_meta.json профиля и возвращает обогащённый dict."""
     _raw = p.name[len("profile_"):] if p.name.startswith("profile_") else p.name
@@ -2541,9 +2569,11 @@ def screen_profiles():
                     )
                     if ok6:
                         print(f"\n  {G}{BLD}✅ {msg6}{RST}")
+                        pause()
                     elif msg6.startswith("PROXY_DEAD:"):
                         print(f"\n  {R}❌ {msg6[11:].strip()}{RST}")
                         print(f"  {Y}Перейдите в меню Прокси и нажмите [А] для покупки новых.{RST}")
+                        pause()
                     elif msg6.startswith("OUT_OF_STOCK"):
                         addr_info = msg6.split("|", 1)[1] if "|" in msg6 else ""
                         if addr_info:
@@ -2555,9 +2585,13 @@ def screen_profiles():
                             time.sleep(2)
                             break
                         time.sleep(1)
+                    elif any(x in msg6.lower() for x in ("не залогинен", "нет входа", "not logged")):
+                        # Профиль слетел — сразу предлагаем восстановить сессию из куков
+                        _console_offer_restore(selected["path"], selected["username"])
+                        pause()
                     else:
                         print(f"\n  {R}❌ {msg6}{RST}")
-                    pause()
+                        pause()
                 else:
                     print(f"\n  {R}Неверный выбор.{RST}")
                     time.sleep(2)
