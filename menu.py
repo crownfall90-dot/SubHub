@@ -7195,19 +7195,47 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     import re as _rg
     await page.wait_for_timeout(1_000)
 
-    total = await _read_order_total(page)
-    if total <= 0:
+    _orig_total = await _read_order_total(page)
+    if _orig_total <= 0:
         try:
             with open("config.yaml", encoding="utf-8") as _f:
-                total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 343))
+                _orig_total = int((yaml.safe_load(_f) or {}).get("gift", {}).get("order_total", 343))
         except Exception:
-            total = 343
-    # Гифт-картами платим кратно 50 — сумма к покрытию округляется ВВЕРХ (343 → 350)
-    _gift_need = -(-int(total) // 50) * 50
-    print(f"  {C}🎁 Оплата гифт-картами. Цена ₹{total}"
-          f"{f', гифт-картами нужно ₹{_gift_need}' if _gift_need != total else ''}{RST}")
+            _orig_total = 343
+    print(f"  {C}🎁 Оплата гифт-картами. Цена ₹{_orig_total}{RST}")
 
-    # Сначала пытаемся закрыть сумму МЕЛКИМИ картами (< GIFT_CONFIRM_THRESHOLD).
+    # ── Шаг 0: сначала ПРИМЕНЯЕМ уже имеющийся гифт-баланс галочкой «Use Gift Card».
+    # Карты из хранилища добавляем ТОЛЬКО если этого не хватит (на остаток).
+    try:
+        await page.evaluate(r"""() => {
+            for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                const box = cb.closest('div,label,li,section') || cb.parentElement;
+                const t = (box ? box.innerText : '') || '';
+                if (/use gift card/i.test(t) && !cb.checked) { cb.click(); return; }
+            }
+            for (const el of document.querySelectorAll('[role="checkbox"]')) {
+                const box = el.closest('div,label,li,section') || el.parentElement;
+                const t = (box ? box.innerText : '') || '';
+                if (/use gift card/i.test(t) && el.getAttribute('aria-checked') !== 'true') { el.click(); return; }
+            }
+        }""")
+    except Exception:
+        pass
+    await page.wait_for_timeout(1_500)
+
+    _rem = await _read_order_total(page)
+    if (await _gift_place_order_bbox(page)) or _rem <= 0:
+        # Существующего гифт-баланса уже хватает — карты не нужны, идём к Place Order
+        print(f"  {G}💰 Хватает уже применённого гифт-баланса — карты из хранилища не нужны{RST}")
+        total = 0
+    else:
+        total = _rem
+        if _rem < _orig_total:
+            print(f"  {G}Применён имеющийся гифт-баланс, осталось покрыть ₹{_rem}{RST}")
+    # Гифт-картами платим кратно 50 — остаток к покрытию округляется ВВЕРХ
+    _gift_need = -(-int(total) // 50) * 50 if total > 0 else 0
+
+    # Сначала пытаемся закрыть остаток МЕЛКИМИ картами (< GIFT_CONFIRM_THRESHOLD).
     # Крупные (>= порога, обычно ₹500+) — только с подтверждением пользователя.
     _all_gc = _load_gift_cards()
     def _bal_of(pred):
@@ -7217,7 +7245,10 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     _total_bal = _bal_of(lambda d: d > 0)
     _allow_big = False
 
-    if _small_bal >= total:
+    if total <= 0:
+        # Остаток уже покрыт имеющимся балансом — карты не нужны, сразу к Place Order
+        pass
+    elif _small_bal >= total:
         print(f"  {G}Мелких гифт-карт достаточно (₹{_small_bal}) — крупные (≥₹{GIFT_CONFIRM_THRESHOLD}) не трогаю{RST}")
     elif _total_bal >= total:
         # Мелких мало, но с крупными хватает — спрашиваем подтверждение через TG
@@ -7481,10 +7512,15 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
               f"Гифтом покрыто ₹{applied_sum}, Total сейчас ₹{_total_after}{RST}")
 
         # Быстрая проверка: не хватает ли уже (Place Order / остаток покрыт).
-        # Выходим сразу как появилось — лишние карты не добавляем.
+        # Перечитываем зачисленную сумму и Total — сводка справа обновляется с
+        # задержкой, поэтому проверяем в цикле, чтобы НЕ добавить лишнюю карту.
         await _ensure_use_checkbox()
-        for _poc in range(3):   # до ~1.5 сек, но обычно ловим сразу
-            if await _gift_place_order_bbox(page) or applied_sum >= total:
+        for _poc in range(4):   # до ~2 сек, но выходим сразу как увидели
+            _ca = await _read_gift_applied()
+            if _ca > applied_sum:
+                applied_sum = _ca
+            _ct = await _read_order_total(page)
+            if await _gift_place_order_bbox(page) or applied_sum >= total or _ct <= 0:
                 _enough = True
                 break
             await page.wait_for_timeout(500)
