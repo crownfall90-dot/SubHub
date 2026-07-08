@@ -917,8 +917,32 @@ def _vpn_extension_dir() -> str | None:
     return None
 
 
+def _vpn_ext_id_from_key() -> str | None:
+    """Детерминированный ID расширения из поля manifest.key (как считает Chrome:
+    sha256 от DER публичного ключа, первые 16 байт → буквы a-p). Работает без
+    ожидания service worker (в MV3 он ленивый и может не стартовать сам)."""
+    try:
+        _ext = _vpn_extension_dir()
+        if not _ext:
+            return None
+        import json as _j, base64 as _b64, hashlib as _hl
+        m = _j.loads((Path(_ext) / "manifest.json").read_text(encoding="utf-8"))
+        key = m.get("key")
+        if not key:
+            return None
+        der = _b64.b64decode(key)
+        h = _hl.sha256(der).hexdigest()[:32]
+        return "".join(chr(ord("a") + int(c, 16)) for c in h)
+    except Exception:
+        return None
+
+
 async def _vpn_ext_id(context) -> str | None:
-    """ID загруженного VPN-расширения (из service worker / background page)."""
+    """ID загруженного VPN-расширения. Сначала — детерминированно из manifest.key
+    (надёжно, без ожидания), затем — из service worker / background page."""
+    _id = _vpn_ext_id_from_key()
+    if _id:
+        return _id
     try:
         for sw in context.service_workers:
             if sw.url.startswith("chrome-extension://"):
