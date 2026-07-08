@@ -7138,6 +7138,53 @@ async def _gift_place_order_bbox(page):
         return None
 
 
+async def _click_place_order(page) -> bool:
+    """Надёжно нажимает «Place Order»: locator-клик (авто-скролл) → JS click →
+    клик по координатам. Возвращает True, если удалось кликнуть."""
+    # 1. Playwright locator — сам скроллит к элементу и кликает по центру
+    for _s in ("button:has-text('Place Order')", "button:has-text('PLACE ORDER')",
+               "[role='button']:has-text('Place Order')",
+               "a:has-text('Place Order')"):
+        try:
+            _l = page.locator(_s).last
+            if (await _l.count() > 0) and (await _l.is_visible()):
+                try:
+                    await _l.scroll_into_view_if_needed(timeout=3_000)
+                except Exception:
+                    pass
+                await _l.click(timeout=5_000)
+                return True
+        except Exception:
+            pass
+    # 2. JS: находим элемент по тексту и жмём .click()
+    try:
+        _ok = await page.evaluate(r"""() => {
+            for (const el of document.querySelectorAll('button, a, div, span, [role="button"]')) {
+                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (t !== 'place order' && !(t.includes('place order') && t.length < 30)) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 40 || r.height < 15) continue;
+                el.scrollIntoView({block:'center'});
+                el.click();
+                return true;
+            }
+            return false;
+        }""")
+        if _ok:
+            return True
+    except Exception:
+        pass
+    # 3. Клик по координатам (со скроллом к центру)
+    try:
+        _bb = await _gift_place_order_bbox(page)
+        if _bb:
+            await page.mouse.click(_bb["x"], _bb["y"])
+            return True
+    except Exception:
+        pass
+    return False
+
+
 async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     """Оплата подарочными картами (Flipkart Gift Card).
     Читает сумму заказа, подбирает набор гифт-карт, по очереди вводит
@@ -7429,9 +7476,12 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
 
     # ── Place Order ───────────────────────────────────────────────────────────
     await _ensure_use_checkbox()
+    # Ждём появления «Place Order» (до ~10 сек — сводка справа обновляется не мгновенно)
     _po = await _gift_place_order_bbox(page)
-    if not _po:
-        await page.wait_for_timeout(2_000)
+    for _pw in range(10):
+        if _po:
+            break
+        await page.wait_for_timeout(1_000)
         await _ensure_use_checkbox()
         _po = await _gift_place_order_bbox(page)
     if not _po:
@@ -7440,15 +7490,32 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
                         f"Кнопка Place Order не появилась.")
         return "gift_failed"
 
-    print(f"  {G}Нажимаю Place Order...{RST}")
-    await page.mouse.click(_po["x"], _po["y"])
-    try:
-        await page.wait_for_url(lambda u: "payments" not in u, timeout=30_000)
-    except Exception:
-        pass
+    # Жмём «Place Order» надёжно (locator/JS/координаты); повторяем, если не ушли со страницы
+    _placed = False
+    for _try in range(3):
+        _ckcancel()
+        print(f"  {G}Нажимаю Place Order (попытка {_try + 1}/3)...{RST}")
+        _clicked = await _click_place_order(page)
+        if not _clicked:
+            await page.wait_for_timeout(1_500)
+            continue
+        try:
+            await page.wait_for_url(lambda u: "payments" not in u, timeout=20_000)
+            _placed = True
+            break
+        except Exception:
+            # Ещё на payments — возможно клик не сработал; проверим и повторим
+            await page.wait_for_timeout(1_500)
+            if "payments" not in page.url:
+                _placed = True
+                break
     await page.wait_for_timeout(3_000)
-    print(f"  {G}✅ Заказ оформлен гифт-картами (URL: {page.url.split('?')[0]}){RST}")
-    return True
+    if _placed or "payments" not in page.url:
+        print(f"  {G}✅ Заказ оформлен гифт-картами (URL: {page.url.split('?')[0]}){RST}")
+        return True
+    print(f"  {R}✘ Нажал Place Order, но страница не сменилась — оплата не подтверждена{RST}")
+    _tg_send_direct("🎁 *Place Order нажат, но переход не произошёл* — проверьте заказ вручную.")
+    return "gift_failed"
 
 
 async def _do_payments_page(page, card: dict | None = None,
