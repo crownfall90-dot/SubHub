@@ -7494,33 +7494,47 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
 
         # 3. Отправляем купон кнопкой «Add Gift Card»
         await _click_add_submit()
-        await page.wait_for_timeout(1_200)
 
-        # 4. Категория ошибки на странице
+        # 4. Ждём РЕЗУЛЬТАТ: зачисление (Gift Cards ↑ / Total ↓) ИЛИ явную ошибку.
+        # Сводка справа обновляется с задержкой, поэтому поллим до ~9 сек и выходим
+        # СРАЗУ как увидели изменение — иначе реально списанная карта ошибочно
+        # считалась «не зачислилась».
+        async def _err_now():
+            try:
+                return await page.evaluate(r"""() => {
+                    const b = (document.body ? document.body.innerText : '').toLowerCase();
+                    if (b.includes('another account') ||
+                        (b.includes('already') && b.includes('gift card'))) return 'already';
+                    const pat = ['invalid','incorrect','not valid','expired','wrong',
+                                 'does not','unable','cannot be applied','no balance','not a valid'];
+                    for (const p of pat) if (b.includes(p)) return 'other';
+                    return '';
+                }""")
+            except Exception:
+                return ""
+
+        _success = False
         _errcat = ""
-        try:
-            _errcat = await page.evaluate(r"""() => {
-                const b = (document.body ? document.body.innerText : '').toLowerCase();
-                if (b.includes('another account') ||
-                    (b.includes('already') && b.includes('gift card'))) return 'already';
-                const pat = ['invalid','incorrect','not valid','expired','wrong',
-                             'does not','unable','cannot be applied','no balance','not a valid'];
-                for (const p of pat) if (b.includes(p)) return 'other';
-                return '';
-            }""")
-        except Exception:
-            _errcat = ""
-
-        # Главный сигнал успеха: справа выросла строка «Gift Cards −₹X» и/или
-        # уменьшился «Total Amount» (баланс реально зачислен). Читаем 2 раза с паузой.
-        async def _applied_grew():
+        _applied_after, _total_after = _applied_before, _total_before
+        for _wpoll in range(18):   # до ~9 сек
+            await page.wait_for_timeout(500)
             _aa = await _read_gift_applied()
             _tt = await _read_order_total(page)
-            return (_aa > _applied_before) or (_total_before > 0 and 0 < _tt < _total_before), _aa, _tt
-        _success, _applied_after, _total_after = await _applied_grew()
-        if not _success:
-            await page.wait_for_timeout(1_200)
-            _success, _applied_after, _total_after = await _applied_grew()
+            if _aa > _applied_before or (_total_before > 0 and 0 < _tt < _total_before):
+                _success = True
+                _applied_after, _total_after = _aa, _tt
+                break
+            _errcat = await _err_now()
+            if _errcat:
+                # ошибка — но перепроверим зачисление ещё раз (ошибка могла остаться
+                # от прошлой карты, а эта на самом деле зачислилась)
+                _aa2 = await _read_gift_applied()
+                _tt2 = await _read_order_total(page)
+                if _aa2 > _applied_before or (_total_before > 0 and 0 < _tt2 < _total_before):
+                    _success = True
+                    _applied_after, _total_after = _aa2, _tt2
+                    _errcat = ""
+                break
 
         # Уже использована / добавлена на ДРУГОМ аккаунте → пометить, удалить, взять следующую
         if not _success and _errcat == "already":
