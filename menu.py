@@ -1025,6 +1025,15 @@ async def _ensure_vpn_connected(context) -> bool:
     pop = None
     try:
         pop = await context.new_page()
+        # popup.html НЕ в web_accessible_resources → прямой переход из обычной
+        # вкладки блокируется как ERR_BLOCKED_BY_CLIENT. Сначала открываем
+        # offscreen.html (он web-accessible), страница получает origin
+        # расширения, затем переход на popup.html — уже свой origin (разрешён).
+        try:
+            await pop.goto(f"chrome-extension://{eid}/offscreen.html",
+                           wait_until="domcontentloaded", timeout=15_000)
+        except Exception:
+            pass
         await pop.goto(f"chrome-extension://{eid}/popup.html",
                        wait_until="domcontentloaded", timeout=15_000)
         await pop.wait_for_timeout(2_500)
