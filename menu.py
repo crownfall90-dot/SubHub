@@ -1101,8 +1101,10 @@ async def _ensure_vpn_connected(context) -> bool:
     try:
         # Окну нужно время осесть/получить фокус после запуска — иначе попап
         # зависает в неполном состоянии (без строки страны), а «Подключить»
-        # кликается, но соединение не устанавливается (проверено вживую).
-        await asyncio.sleep(3.0)
+        # кликается, но соединение не устанавливается (проверено вживую). Если
+        # рядом только что закрылся другой Chromium (напр. пинг-проверка),
+        # окну нужно больше времени — поэтому запас увеличен.
+        await asyncio.sleep(4.5)
         pop = await context.new_page()
         await pop.goto(f"chrome-extension://{eid}/popup.html",
                        wait_until="domcontentloaded", timeout=15_000)
@@ -1112,16 +1114,23 @@ async def _ensure_vpn_connected(context) -> bool:
             print(f"  {G}✔ VPN уже подключён{RST}")
             return True
 
-        # Жмём «Подключить» (до 3 попыток) и ждём статус «Защищено».
-        for _try in range(3):
+        # Жмём «Подключить» (до 4 попыток) и ждём статус «Защищено».
+        for _try in range(4):
+            if _try > 0:
+                # Свежая перезагрузка попапа — сброс возможного зависшего состояния.
+                try:
+                    await pop.reload(wait_until="domcontentloaded", timeout=15_000)
+                    await pop.wait_for_timeout(2_000)
+                except Exception:
+                    pass
             await _accept_consent(pop)          # закрыть модалку согласия, если есть
             await _click_connect(pop)
-            for _ in range(20):                 # до ~20 сек ждём подключения
+            for _ in range(25):                 # до ~25 сек ждём подключения
                 await pop.wait_for_timeout(1_000)
                 if await _connected(pop):
                     print(f"  {G}✔ VPN подключён{RST}")
                     return True
-            print(f"  {Y}VPN ещё не подключился — повтор ({_try + 1}/3)…{RST}")
+            print(f"  {Y}VPN ещё не подключился — повтор ({_try + 1}/4)…{RST}")
 
         print(f"  {Y}⚠ VPN: не удалось подтвердить подключение (проверьте вручную){RST}")
         return False
@@ -8709,7 +8718,11 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await _maximize_window(ctx, page)
-        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
+        if _vpn_extension_dir() and not await _ensure_vpn_connected(ctx):
+            print(f"  {Y}Повторная попытка подключить VPN...{RST}")
+            if not await _ensure_vpn_connected(ctx):
+                _keep_open = False
+                return False, "VPN не подключился — покупка отменена (Flipkart недоступен без VPN)"
 
         # Проверяем — нет ли уже купленного Black Membership
         _bm_phone_label = _phone_from_path(profile_path)

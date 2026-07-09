@@ -2139,23 +2139,38 @@ class LoginAutomation:
             logger.debug("Реальный Chrome не найден, используем Playwright Chromium")
 
         use_headless = self.config.headless if headless is None else headless
+
+        args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-popup-blocking",
+            "--disable-notifications",
+            "--disable-save-password-bubble",
+            "--disable-features=TranslateUI,OptimizationHints,MediaRouter",
+            "--disable-renderer-backgrounding",
+            "--disable-ipc-flooding-protection",
+            "--window-size={},{}".format(vp["width"], vp["height"] + 74),
+        ]
+
+        # VPN-расширение: без него Flipkart недоступен (Access Denied). Системный
+        # Chrome 137+ игнорирует --load-extension, поэтому при наличии расширения
+        # форсируем встроенный Chromium от Playwright и настоящее видимое окно
+        # (VPNLY не подключается в headless — проверено вживую).
+        import menu as _menu
+        _vpn_ext = _menu._vpn_extension_dir()
+        if _vpn_ext:
+            args.append(f"--disable-extensions-except={_vpn_ext}")
+            args.append(f"--load-extension={_vpn_ext}")
+            chrome_exe = None
+            use_headless = False
+
         context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile_path),
             executable_path=chrome_exe,   # None → Playwright Chromium
             headless=use_headless,
             slow_mo=0,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-popup-blocking",
-                "--disable-notifications",
-                "--disable-save-password-bubble",
-                "--disable-features=TranslateUI,OptimizationHints,MediaRouter",
-                "--disable-renderer-backgrounding",
-                "--disable-ipc-flooding-protection",
-                "--window-size={},{}".format(vp["width"], vp["height"] + 74),
-            ],
+            args=args,
             ignore_https_errors=True,
             viewport=vp,
             user_agent=ua,
@@ -2172,6 +2187,8 @@ class LoginAutomation:
                 "**/*.{png,jpg,jpeg,gif,svg,webp,ico,avif,woff,woff2,ttf,otf,eot,mp4,mp3}",
                 lambda route: route.abort()
             )
+        if _vpn_ext:
+            await _menu._ensure_vpn_connected(context)
         logger.debug(f"Контекст: {profile_path.name} | {vp['width']}×{vp['height']} | {ua[:40]}...")
         return context
 
