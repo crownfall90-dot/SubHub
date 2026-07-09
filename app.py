@@ -331,6 +331,8 @@ class SubHubApp(ctk.CTk):
         self._ggs_filter = "new"
         self._ggs_selected_id: int | None = None
         self._ggs_loading = False
+        self._profile_filter = "all"
+        self._prof_busy: set[str] = set()
 
         self.withdraw()
         _cleanup_legacy_branding()
@@ -825,10 +827,19 @@ class SubHubApp(ctk.CTk):
             ).grid(row=r, column=c, sticky="ew", padx=4, pady=4)
         return grid
 
-    def _list_panel(self, parent, height: int = 420) -> ctk.CTkScrollableFrame:
-        return ctk.CTkScrollableFrame(
-            parent, height=height, fg_color=BG_ELEVATED, corner_radius=12,
-        )
+    def _list_panel(self, parent, height: int | None = 420) -> ctk.CTkScrollableFrame:
+        kw: dict[str, Any] = {"fg_color": BG_ELEVATED, "corner_radius": 12}
+        if height is not None:
+            kw["height"] = height
+        return ctk.CTkScrollableFrame(parent, **kw)
+
+    def _page_fill(self, name: str) -> ctk.CTkFrame:
+        """Страница с растягиванием списка до низа окна."""
+        frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(3, weight=1)
+        self._pages[name] = frame
+        return frame
 
     def _action_btn(self, parent, text: str, cmd: Callable, color: str = ACCENT, **kw) -> ctk.CTkButton:
         return ctk.CTkButton(
@@ -1075,24 +1086,42 @@ class SubHubApp(ctk.CTk):
         self.run_status.pack(anchor="w")
 
     def _build_profiles(self) -> None:
-        p = self._page("profiles")
-        self._page_header(p, "Профили", "Активные Chrome-сессии Flipkart", SVC_YOUTUBE)
+        p = self._page_fill("profiles")
 
-        toolbar = self._toolbar(p)
-        for txt, w, cmd, color in [
-            ("🔄", 44, self._refresh_profiles, BTN_SECONDARY),
-            ("🌐 Chrome", 100, self._profile_open_chrome, BTN_SECONDARY),
-            ("🛒 3 мес", 90, lambda: self._profile_buy(3), SVC_YOUTUBE),
-            ("🛒 12 мес", 96, lambda: self._profile_buy(12), SVC_YOUTUBE),
-            ("📍 Адрес", 90, self._profile_fill_address, BTN_SECONDARY),
-        ]:
-            ctk.CTkButton(
-                toolbar, text=txt, width=w, height=36, corner_radius=8,
-                fg_color=color, command=cmd,
-            ).pack(side="left", padx=3)
+        hdr = ctk.CTkFrame(p, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew")
+        self._page_header(hdr, "Профили", "Активные Chrome-сессии Flipkart", SVC_YOUTUBE)
 
-        self.profile_list = self._list_panel(p, height=440)
-        self.profile_list.pack(fill="both", expand=True)
+        toolbar = ctk.CTkFrame(p, fg_color="transparent")
+        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ctk.CTkButton(
+            toolbar, text="🔄", width=44, height=36, corner_radius=8,
+            fg_color=BTN_SECONDARY, command=self._refresh_profiles,
+        ).pack(side="left", padx=(0, 6))
+        self._profile_filter_btns: dict[str, ctk.CTkButton] = {}
+        for key, label in (
+            ("all", "Все"),
+            ("noaddr", "🟢 Доступные"),
+            ("hasaddr", "🟠 С данными"),
+            ("paid", "🟣 Оплаченные"),
+            ("active", "🔵 Выданные"),
+        ):
+            btn = ctk.CTkButton(
+                toolbar, text=label, height=32, corner_radius=8,
+                font=ctk.CTkFont(size=11),
+                fg_color=SVC_YOUTUBE if key == "all" else BTN_SECONDARY,
+                command=lambda k=key: self._set_profile_filter(k),
+            )
+            btn.pack(side="left", padx=3)
+            self._profile_filter_btns[key] = btn
+
+        ctk.CTkLabel(
+            p, text="Двойной клик по профилю — меню действий",
+            font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, anchor="w",
+        ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        self.profile_list = self._list_panel(p, height=None)
+        self.profile_list.grid(row=3, column=0, sticky="nsew")
 
     def _build_archive(self) -> None:
         p = self._page("archive")
@@ -2075,6 +2104,66 @@ class SubHubApp(ctk.CTk):
             lines.append(f"{ok}  {name}")
         self.settings_keys.configure(text="\n".join(lines))
 
+    def _set_profile_filter(self, flt: str) -> None:
+        self._profile_filter = flt
+        for key, btn in getattr(self, "_profile_filter_btns", {}).items():
+            btn.configure(fg_color=SVC_YOUTUBE if key == flt else BTN_SECONDARY)
+        self._refresh_profiles()
+
+    def _profile_category(self, meta: dict) -> str:
+        vt = meta.get("black_valid_till") or ""
+        st = meta.get("status") or ""
+        is_issued = bool(meta.get("issued_ts"))
+        has_link = bool(
+            meta.get("black_activation_link") or meta.get("black_short_link")
+            or meta.get("issued_link") or meta.get("activation_url")
+        )
+        is_subact = st in ("activated", "explore_now", "activate_now") or bool(vt)
+        if is_issued:
+            return "active"
+        if (has_link or is_subact) and not is_issued:
+            return "paid"
+        if meta.get("prepared_ts") or meta.get("buyer_email") or st == "email_completed":
+            return "hasaddr"
+        return "noaddr"
+
+    def _profile_row_meta(self, prof: dict) -> tuple[str, str, str]:
+        import menu as m
+        phone = m._disp_phone(prof.get("username", "?"))
+        cat = self._profile_category(prof)
+        icons = {"noaddr": "🟢", "hasaddr": "🟠", "paid": "🟣", "active": "🔵"}
+        icon = icons.get(cat, "•")
+        vt = prof.get("black_valid_till") or prof.get("subscription_expires_str") or ""
+        st = prof.get("status") or ""
+        link = (
+            prof.get("issued_link") or prof.get("black_short_link")
+            or prof.get("black_activation_link") or ""
+        )
+        inv = prof.get("issued_invoice_id") or ""
+        email = prof.get("buyer_email") or ""
+        issued = prof.get("issued_str") or ""
+        parts: list[str] = []
+        if cat == "active":
+            parts.append("выдан")
+        elif cat == "paid":
+            parts.append(st or "оплачен")
+        elif cat == "hasaddr":
+            parts.append("с данными")
+        else:
+            parts.append(st or "доступен")
+        if vt:
+            parts.append(f"до {vt}")
+        if issued:
+            parts.append(f"выдан {issued[:10]}")
+        if inv:
+            parts.append(f"#{inv}")
+        if email:
+            parts.append(email[:28])
+        if link:
+            short = link.replace("https://", "")[:32]
+            parts.append(f"🔗 {short}{'…' if len(link) > 36 else ''}")
+        return icon, phone, " · ".join(parts)
+
     def _refresh_profiles(self) -> None:
         import menu as m
         for w in self.profile_list.winfo_children():
@@ -2084,25 +2173,48 @@ class SubHubApp(ctk.CTk):
         if not self._profile_rows:
             ctk.CTkLabel(self.profile_list, text="Нет профилей", text_color=TEXT_DIM).pack(pady=24)
             return
-        for p in self._profile_rows:
-            phone = m._disp_phone(p.get("username", "?"))
-            status = p.get("status") or "готов"
+        flt = self._profile_filter
+        shown = [
+            p for p in self._profile_rows
+            if flt == "all" or self._profile_category(p) == flt
+        ]
+        if not shown:
+            ctk.CTkLabel(
+                self.profile_list, text="В этой категории профилей нет", text_color=TEXT_DIM,
+            ).pack(pady=24)
+            return
+        for prof in shown:
+            icon, phone, sub = self._profile_row_meta(prof)
             row = ctk.CTkFrame(self.profile_list, fg_color=BG_CARD, corner_radius=10)
             row.pack(fill="x", pady=3, padx=4)
+            inner = ctk.CTkFrame(row, fg_color="transparent")
+            inner.pack(fill="x", padx=10, pady=8)
+            ctk.CTkLabel(
+                inner, text=f"{icon}  {phone}", font=ctk.CTkFont(size=14, weight="bold"),
+                anchor="w", text_color="#f0f6fc",
+            ).pack(fill="x")
+            if sub:
+                ctk.CTkLabel(
+                    inner, text=sub, font=ctk.CTkFont(size=10),
+                    anchor="w", text_color=TEXT_DIM, wraplength=520, justify="left",
+                ).pack(fill="x", pady=(2, 0))
 
-            def _sel(prof=p, r=row):
-                self._selected_profile = prof
+            def _sel(e=None, p=prof, r=row):
+                self._selected_profile = p
                 for c in self.profile_list.winfo_children():
                     if isinstance(c, ctk.CTkFrame):
-                        c.configure(fg_color=BG_CARD)
-                r.configure(fg_color=ACCENT)
+                        c.configure(fg_color=BG_CARD, border_width=0)
+                r.configure(fg_color=BG_CARD_HOVER, border_width=1, border_color=SVC_YOUTUBE)
 
-            row.bind("<Button-1>", lambda e, fn=_sel: fn())
-            ctk.CTkLabel(row, text=f"  {phone}", font=ctk.CTkFont(size=14, weight="bold"),
-                         anchor="w").pack(side="left", padx=8, pady=10)
-            ctk.CTkLabel(row, text=status, text_color=TEXT_DIM).pack(side="right", padx=12)
-            for child in row.winfo_children():
-                child.bind("<Button-1>", lambda e, fn=_sel: fn())
+            def _open(e=None, p=prof):
+                self._open_profile_menu(p)
+
+            for w in (row, inner):
+                w.bind("<Button-1>", _sel)
+                w.bind("<Double-Button-1>", _open)
+            for child in inner.winfo_children():
+                child.bind("<Button-1>", _sel)
+                child.bind("<Double-Button-1>", _open)
 
     def _refresh_archive(self) -> None:
         import menu as m
@@ -2384,13 +2496,192 @@ class SubHubApp(ctk.CTk):
 
     # ── Profiles ──────────────────────────────────────────────────────────────
 
+    def _profile_menu_info(self, prof: dict) -> str:
+        import menu as m
+        phone = m._disp_phone(prof.get("username", "?"))
+        lines = [phone, ""]
+        if prof.get("login_str"):
+            lines.append(f"📆 Создан: {prof['login_str']}")
+        if prof.get("issued_str"):
+            lines.append(f"✅ Выдан: {prof['issued_str']}")
+        inv = prof.get("issued_invoice_id")
+        if inv:
+            em = prof.get("buyer_email") or ""
+            lines.append(f"📦 Заказ #{inv}" + (f" · {em}" if em else ""))
+        vt = prof.get("black_valid_till") or prof.get("subscription_expires_str")
+        if vt:
+            lines.append(f"⏳ До: {vt}")
+        link = (
+            prof.get("issued_link") or prof.get("black_short_link")
+            or prof.get("black_activation_link") or ""
+        )
+        if link:
+            lines.append(f"🔗 {link}")
+        note = prof.get("note") or ""
+        if note:
+            lines.append(f"📝 {note}")
+        return "\n".join(lines)
+
+    def _open_profile_menu(self, prof: dict) -> None:
+        import menu as m
+        self._selected_profile = prof
+        phone = str(prof.get("username", ""))
+        path = prof.get("path")
+        cat = self._profile_category(prof)
+        has_link = bool(
+            prof.get("black_activation_link") or prof.get("black_short_link")
+            or prof.get("issued_link")
+        )
+        is_issued = bool(prof.get("issued_ts"))
+        busy = phone in self._prof_busy
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"Профиль · {m._disp_phone(phone)}")
+        win.geometry("440x560")
+        win.transient(self)
+        win.grab_set()
+
+        ctk.CTkLabel(
+            win, text=self._profile_menu_info(prof), justify="left", anchor="nw",
+            font=ctk.CTkFont(size=12), text_color=TEXT_DIM, wraplength=400,
+        ).pack(fill="x", padx=16, pady=(14, 8))
+        if busy:
+            ctk.CTkLabel(win, text="⏳ Операция выполняется…", text_color=WARNING).pack(
+                anchor="w", padx=16,
+            )
+
+        scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=12, pady=4)
+
+        def _btn(txt: str, cmd: Callable, color: str = BTN_SECONDARY) -> None:
+            state = "disabled" if busy else "normal"
+            ctk.CTkButton(
+                scroll, text=txt, height=36, corner_radius=RADIUS_BTN,
+                fg_color=color, state=state,
+                command=lambda c=cmd: (win.destroy(), c()),
+            ).pack(fill="x", pady=3)
+
+        _btn("🌐 Открыть Chrome", lambda: self._prof_chrome(path), BTN_SECONDARY)
+        _btn("🌑 Проверить активацию (фон)", lambda: self._prof_activate(phone, path), SUCCESS)
+
+        if cat in ("noaddr", "hasaddr"):
+            _btn("🥈 Купить 3 мес · ₹343", lambda: self._profile_buy_for(prof, 3), SVC_YOUTUBE)
+            _btn("🥇 Купить 12 мес · ₹1499", lambda: self._profile_buy_for(prof, 12), SVC_YOUTUBE)
+            _btn("📍 Заполнить адрес", lambda: self._profile_fill_address_for(prof), BTN_SECONDARY)
+            _btn("⚡ Заполнить данные (до оплаты)", lambda: self._prof_fill_data(phone, path), WARNING)
+            if not is_issued:
+                _btn("🗑 Удалить профиль", lambda: self._prof_delete(phone, path), ERROR)
+
+        if cat == "paid":
+            _btn("🔵 Поставить статус «выдан»", lambda: self._prof_set_issued(path), BTN_SECONDARY)
+            if has_link:
+                _btn("🔄 Заменить ссылку", lambda: self._prof_activate(phone, path), WARNING)
+
+        if cat == "active":
+            if prof.get("issued_invoice_id"):
+                inv = int(prof["issued_invoice_id"])
+
+                def _go_order() -> None:
+                    self._enter_service("ggsell")
+                    self._ggs_selected_id = inv
+                    self.show_page("ggsell")
+                    self.after(400, self._refresh_ggsell)
+
+                _btn(f"📋 Заказ GGSell #{inv}", _go_order, SVC_GGSELL)
+            _btn("📦 Перенести в архив", lambda: self._prof_archive(phone, path), BTN_SECONDARY)
+
+        ctk.CTkButton(
+            scroll, text="Закрыть", height=34, fg_color=BTN_SECONDARY, command=win.destroy,
+        ).pack(fill="x", pady=(8, 4))
+
+    def _prof_run(self, phone: str, label: str, fn: Callable[[], None]) -> None:
+        if phone in self._prof_busy:
+            self._log(f"⚠ {phone}: уже выполняется")
+            return
+        self._prof_busy.add(phone)
+        self._log(label)
+
+        def _w():
+            try:
+                fn()
+            except Exception as e:
+                self._log(f"Ошибка: {e}")
+            finally:
+                self._prof_busy.discard(phone)
+                self.after(0, self._refresh_profiles)
+
+        threading.Thread(target=_w, daemon=True, name=f"prof-{phone}").start()
+
+    def _prof_chrome(self, path) -> None:
+        import menu as m
+        ok = m.open_chrome(path)
+        self._log("Chrome: VPN → Flipkart" if ok else "Ошибка Chrome")
+
+    def _prof_activate(self, phone: str, path) -> None:
+        def _w():
+            import menu as m
+            result = asyncio.run(m._check_black_store_activation(path, username=phone, headless=True))
+            st = result.get("status", "?") if isinstance(result, dict) else "?"
+            vt = (result.get("valid_till") or "") if isinstance(result, dict) else ""
+            link = (result.get("short_link") or result.get("activation_url") or "") if isinstance(result, dict) else ""
+            self._log(f"{'✓' if st == 'activated' else '•'} {phone}: {st}" + (f" до {vt}" if vt else ""))
+            if link:
+                self._log(f"   🔗 {link}")
+        self._prof_run(phone, f"Проверка активации {phone}…", _w)
+
+    def _prof_fill_data(self, phone: str, path) -> None:
+        def _w():
+            import menu as m
+            addr = m._gen_indian_address()
+            ok, msg = asyncio.run(m._do_fill_address(path, addr, stop_at_payment=True))
+            self._log(f"{'✓' if ok else '✗'} {phone}: {msg}")
+        self._prof_run(phone, f"Заполнение данных {phone}…", _w)
+
+    def _prof_set_issued(self, path) -> None:
+        import menu as m
+        import time as _t
+        if m._save_meta_field(path, issued_ts=_t.time()):
+            self._log("✓ Статус «выдан» установлен")
+            self._refresh_profiles()
+        else:
+            self._log("✗ Не удалось обновить статус")
+
+    def _prof_archive(self, phone: str, path) -> None:
+        if not messagebox.askyesno("Архив", f"Перенести профиль {phone} в архив?"):
+            return
+
+        def _w():
+            import menu as m
+            ok = m._archive_profile(path)
+            self._log(f"{'✓' if ok else '✗'} Архив: {phone}")
+        self._prof_run(phone, f"Архивация {phone}…", _w)
+
+    def _prof_delete(self, phone: str, path) -> None:
+        if not messagebox.askyesno("Удаление", f"Удалить профиль {phone} безвозвратно?"):
+            return
+
+        def _w():
+            import shutil
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+                self._log(f"✓ Профиль {phone} удалён")
+            except Exception as e:
+                self._log(f"✗ Удаление: {e}")
+        self._prof_run(phone, f"Удаление {phone}…", _w)
+
+    def _profile_buy_for(self, prof: dict, months: int) -> None:
+        self._selected_profile = prof
+        self._profile_buy(months)
+
+    def _profile_fill_address_for(self, prof: dict) -> None:
+        self._selected_profile = prof
+        self._profile_fill_address()
+
     def _profile_open_chrome(self) -> None:
         if not self._selected_profile:
-            self._log("Выберите профиль")
+            self._log("Выберите профиль (или двойной клик)")
             return
-        import menu as m
-        ok = m.open_chrome(self._selected_profile["path"])
-        self._log("Chrome: VPN в фоне → Flipkart" if ok else "Ошибка открытия Chrome")
+        self._prof_chrome(self._selected_profile["path"])
 
     def _profile_buy(self, months: int) -> None:
         if not self._selected_profile:
