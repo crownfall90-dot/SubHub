@@ -4,6 +4,7 @@ Interactive console menu for Login Automation
 """
 
 import asyncio
+import contextlib
 import os
 os.makedirs("debug", exist_ok=True)
 import random
@@ -28,7 +29,7 @@ if os.name == "nt":
             _m   = ctypes.wintypes.DWORD()
             if _k32.GetConsoleMode(_hnd, ctypes.byref(_m)):
                 _k32.SetConsoleMode(_hnd, _m.value | _ENABLE_VT)
-        _k32.SetConsoleTitleW("Flipkart Automation")
+        _k32.SetConsoleTitleW("SubHub")
     except Exception:
         os.system("")   # fallback
 
@@ -47,6 +48,7 @@ PROFILES_DIR        = Path("./chrome_profiles")
 DONE_PROFILES_DIR   = Path("./chrome_profiles_done")
 USED_PROFILES_DIR   = Path("./chrome_profiles_used")
 BACKUP_PROFILES_DIR = Path("./chrome_profiles_backup")
+_VPN_PING_PROFILE_DIR = Path("./data/_vpn_ping_profile")
 _HERE               = Path(__file__).parent
 _AUTOMATION_LOG     = _HERE / "automation.log"
 
@@ -316,23 +318,139 @@ _shutting_down = False
 
 MSK = timezone(timedelta(hours=3))
 
-# ── Heartbeat для серверного режима ───────────────────────────────────────────
-# Пишет файл data/console_heartbeat.json каждые 30 сек, пока этот процесс жив.
-# bot.py на сервере читает его чтобы понять — запущена ли консоль локально.
+# ── Heartbeat + runtime sync (app / console / Telegram) ─────────────────────
+_RUNTIME_STATE_FILE = _DATA / "runtime_state.json"
+_runtime_lock = threading.Lock()
+
+
+def _host_kind() -> str:
+    base = os.path.basename(sys.argv[0] or "").lower()
+    if base == "app.py" or any("app.py" in (a or "") for a in sys.argv):
+        return "app"
+    return "console"
+
+
+def _pid_alive(pid: int) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return False
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def _read_runtime_state() -> dict:
+    try:
+        if _RUNTIME_STATE_FILE.exists():
+            v = json.loads(_RUNTIME_STATE_FILE.read_text(encoding="utf-8"))
+            return v if isinstance(v, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _write_runtime_state(data: dict) -> None:
+    try:
+        _atomic_write_text(_RUNTIME_STATE_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+
+def _patch_runtime_state(**kwargs) -> dict:
+    with _runtime_lock:
+        st = _read_runtime_state()
+        st.update(kwargs)
+        st["ts"] = time.time()
+        _write_runtime_state(st)
+        return st
+
+
+def runtime_touch(event: str = "") -> None:
+    """Сигнал для GUI: данные изменились (карты, гифт-карты, оплата и т.д.)."""
+    _patch_runtime_state(last_event=event, last_event_ts=time.time())
+
+
+def _read_host_heartbeat(host: str) -> dict:
+    p = _DATA / f"heartbeat_{host}.json"
+    try:
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def active_host() -> str:
+    """Кто сейчас хост: app (приоритет) или console."""
+    now = time.time()
+    app_hb = _read_host_heartbeat("app")
+    con_hb = _read_host_heartbeat("console")
+    app_ok = now - float(app_hb.get("ts") or 0) < 90
+    con_ok = now - float(con_hb.get("ts") or 0) < 90
+    if app_ok:
+        return "app"
+    if con_ok:
+        return "console"
+    return ""
+
+
+def is_host_running() -> bool:
+    return bool(active_host())
+
+
+def set_automation_proc(pid: int, mode: str = "", owner: str = "") -> None:
+    _patch_runtime_state(
+        automation_pid=int(pid or 0),
+        automation_mode=mode or "",
+        automation_owner=owner or _host_kind(),
+        automation_started=time.time() if pid else 0,
+    )
+    if pid:
+        runtime_touch("automation_started")
+
+
+def clear_automation_proc() -> None:
+    _patch_runtime_state(
+        automation_pid=0, automation_mode="", automation_owner="", automation_started=0,
+    )
+    runtime_touch("automation_finished")
+
+
+def shared_automation_running() -> tuple[bool, dict]:
+    st = _read_runtime_state()
+    pid = int(st.get("automation_pid") or 0)
+    if pid and _pid_alive(pid):
+        return True, st
+    if pid:
+        clear_automation_proc()
+    return False, st
+
+
 def _start_heartbeat():
-    import threading as _th, time as _ti, json as _js
-    _hb_file = _DATA / "console_heartbeat.json"
+    import threading as _th
+    host = _host_kind()
+    _hb_file = _DATA / f"heartbeat_{host}.json"
+    _patch_runtime_state(host=host, host_pid=os.getpid())
 
     def _beat():
         while True:
             try:
-                _hb_file.write_text(_js.dumps({"ts": _ti.time(), "pid": os.getpid()}),
-                                    encoding="utf-8")
+                payload = {"ts": time.time(), "pid": os.getpid(), "host": host}
+                _hb_file.write_text(json.dumps(payload), encoding="utf-8")
+                _patch_runtime_state(host=host, host_pid=os.getpid())
             except Exception:
                 pass
-            _ti.sleep(30)
+            time.sleep(20)
 
-    t = _th.Thread(target=_beat, daemon=True, name="console-heartbeat")
+    t = _th.Thread(target=_beat, daemon=True, name=f"heartbeat-{host}")
     t.start()
 
 _start_heartbeat()
@@ -358,7 +476,18 @@ _GIT = _find_git()
 
 # ── GitHub HTTP-обновление (работает без git, только stdlib) ──────────────────
 _GH_OWNER = "crownfall90-dot"
-_GH_REPO  = "flipkart-automation"
+_GH_REPO  = "flipkart-automation"  # GitHub-репозиторий (OTA-обновления через raw/master)
+
+# Файлы, которые скачиваются при «Обновить» в SubHub (коллеги получают то же через git pull)
+_UPDATE_FILES = [
+    "README.md",
+    "menu.py", "bot.py", "main.py", "app.py",
+    "menu.bat", "app.bat", "app_launch.vbs", "create_shortcut.bat",
+    "grizzly_sms.py", "proxy.py", "grizzly.py", "requirements.txt", ".gitignore",
+    "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
+    "assets/app.ico",
+    "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/monitor.py",
+]
 
 def _parse_git_remote() -> tuple[str, str, str]:
     """Читает .git/config → (owner, repo, token). Fallback: secrets.yaml → константы."""
@@ -446,12 +575,7 @@ def _http_do_update() -> tuple[bool, str]:
         if not owner:
             return False, "Не удалось прочитать репозиторий из .git/config"
         _here = Path(__file__).parent
-        _FILES = [
-            "menu.py", "bot.py", "main.py", "menu.bat", "grizzly_sms.py",
-            "proxy.py", "grizzly.py", "requirements.txt", ".gitignore",
-            "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
-            "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/monitor.py"
-        ]
+        _FILES = list(_UPDATE_FILES)
         updated = []
         for fname in _FILES:
             try:
@@ -494,15 +618,7 @@ def _http_do_update() -> tuple[bool, str]:
         return False, str(e)
 
 # ── Импорты из выделенных модулей ────────────────────────────────────────────
-import proxy as _proxy_module
-from proxy import (
-    _proxy_cfg_path, _read_proxy_cfg, _write_proxy_cfg, _load_proxy_list,
-    _proxy_server_bare, _is_proxy_error, _mark_proxy_failed, _mark_proxy_ok,
-    _phone_from_path, _pick_proxy, _lp_pipe, _lp_handle,
-    _start_local_auth_proxy, _stop_local_auth_proxy,
-    _p6_cfg, _p6_write_cfg, _p6_api, _p6_balance, _p6_buy, _p6_getlist,
-    _p6_prolong, _p6_buy_affordable,
-)
+from proxy import _phone_from_path
 
 import grizzly as _grizzly_module
 from grizzly import (
@@ -511,12 +627,13 @@ from grizzly import (
 )
 
 import bot as _bot_module
-from bot import _tg_status_line, _menu_tg_bot_thread
+from bot import _tg_status_line, _menu_tg_bot_thread, ensure_tg_bot
 
 # module-level fallback values (перезаписываются _check_updates_bg при проверке)
 _update_available: bool = False
 _update_commits:   list = []
 _update_checked:   bool = False
+_update_checked_at: float = 0.0
 
 
 # ── Утилиты ───────────────────────────────────────────────────────────────────
@@ -828,26 +945,45 @@ def _bundled_chromium_path() -> str | None:
         return None
 
 
-def _connect_vpn_over_cdp(port: int) -> bool:
-    """Подключается к уже запущенному (subprocess) браузеру по CDP и включает
-    VPN через _ensure_vpn_connected, затем отсоединяется — браузер остаётся
-    открытым для ручной работы. Возвращает True при успехе."""
+def _chrome_executable_for_profile(
+    profile_path: Path | str | None = None, *, force_bundled: bool = False,
+) -> str | None:
+    """Системный Google Chrome, если VPN уже в профиле; иначе Playwright Chromium."""
+    if force_bundled:
+        return _bundled_chromium_path() or _find_chrome()
+    chrome = _find_chrome()
+    if chrome and not _needs_load_extension(profile_path):
+        return chrome
+    if _needs_load_extension(profile_path):
+        return _bundled_chromium_path() or chrome
+    return chrome or _bundled_chromium_path()
+
+
+def _connect_vpn_over_cdp(port: int, target_url: str | None = None) -> bool:
+    """Подключается к уже запущенному (subprocess) браузеру по CDP, включает VPN,
+    затем при необходимости открывает target_url. Браузер остаётся открытым."""
     async def _run() -> bool:
         from playwright.async_api import async_playwright as _ap
         async with _ap() as pw:
             br = None
-            for _ in range(20):
+            for _ in range(30):
                 try:
                     br = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
                     break
                 except Exception:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.5)
             if not br or not br.contexts:
                 return False
-            ok = await _ensure_vpn_connected(br.contexts[0])
-            # НЕ вызываем br.close() — иначе закроется весь браузер; просто
-            # выходим из async_playwright, соединение CDP разорвётся, а сам
-            # процесс Chromium (запущен subprocess) продолжит работать.
+            ctx = br.contexts[0]
+            ok = await _ensure_vpn_connected(ctx)
+            if ok and target_url:
+                try:
+                    await _close_junk_tabs(ctx)
+                    page = await _main_work_page(ctx)
+                    await page.goto(target_url, wait_until="domcontentloaded", timeout=45_000)
+                except Exception:
+                    pass
+            # НЕ вызываем br.close() — иначе закроется весь браузер.
             return ok
     try:
         return asyncio.run(_run())
@@ -856,77 +992,48 @@ def _connect_vpn_over_cdp(port: int) -> bool:
 
 
 def open_chrome(profile_path: Path) -> bool:
-    """Открывает браузер с профилем и прокси-туннелем (если настроен).
-    Если есть VPN-расширение — запускает встроенный Chromium (грузит расширение,
-    в отличие от системного Chrome 137+) и авто-включает VPN через CDP."""
-    _ext = _vpn_extension_dir()   # VPNLY → грузим расширение и в ручном браузере
-    _dbg_port = 0
-    if _ext:
-        chrome = _bundled_chromium_path() or _find_chrome()
-    else:
-        chrome = _find_chrome()
+    """Фон: расширение + VPN. Затем видимый Chrome → Flipkart."""
+    profile_path = Path(profile_path)
+    chrome = _chrome_executable_for_profile(profile_path)
     if not chrome:
         print(f"\n{R}  Chrome не найден. Запустите вручную:{RST}")
         print(f"  chrome.exe --user-data-dir=\"{profile_path.resolve()}\"")
         return False
-    url  = _profile_url(profile_path)
-    args = [chrome, f"--user-data-dir={profile_path.resolve()}"]
-    if _ext:
-        args.append(f"--disable-extensions-except={_ext}")
-        args.append(f"--load-extension={_ext}")
-        # свободный порт для CDP → авто-подключение VPN
+    url = _profile_url(profile_path)
+    if _vpn_extension_dir():
+        ok, err = prepare_profile_vpn_sync(profile_path)
+        if not ok:
+            print(f"  {Y}⚠ VPN фон: {err}{RST}")
+            print(f"  {Y}  Браузер откроется — при необходимости включите VPN вручную.{RST}")
+        _dbg_port = 0
+        args = [chrome, f"--user-data-dir={profile_path.resolve()}"]
+        if _needs_load_extension(profile_path):
+            _ext = _vpn_extension_dir()
+            args.append(f"--disable-extensions-except={_ext}")
+            args.append(f"--load-extension={_ext}")
         try:
             import socket as _sk
             with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as _s:
-                _s.bind(("127.0.0.1", 0)); _dbg_port = _s.getsockname()[1]
+                _s.bind(("127.0.0.1", 0))
+                _dbg_port = _s.getsockname()[1]
             args.append(f"--remote-debugging-port={_dbg_port}")
         except Exception:
             _dbg_port = 0
-    proxy = _pick_proxy()
-    if proxy:
-        server = proxy.get("server", "")
-        uname  = proxy.get("username", "")
-        pwd    = proxy.get("password", "")
-        bare   = _proxy_server_bare(server)
-        if server and uname and pwd and ":" in bare:
-            up_host, up_port_str = bare.rsplit(":", 1)
-            try:
-                import base64 as _b64, socket as _sock
-                auth_b64  = _b64.b64encode(f"{uname}:{pwd}".encode()).decode()
-                up_port   = int(up_port_str)
-                ready_evt = threading.Event()
-                def _tunnel_thread():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    async def _run():
-                        srv = await asyncio.start_server(
-                            lambda r, w: _lp_handle(r, w, up_host, up_port, auth_b64),
-                            "127.0.0.1", local_port)
-                        ready_evt.set()
-                        async with srv:
-                            await srv.serve_forever()
-                    loop.run_until_complete(_run())
-                with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _s:
-                    _s.bind(("127.0.0.1", 0))
-                    local_port = _s.getsockname()[1]
-                threading.Thread(target=_tunnel_thread, daemon=True, name="chrome-proxy").start()
-                ready_evt.wait(timeout=2.0)
-                args.append(f"--proxy-server=http://127.0.0.1:{local_port}")
-                print(f"  {DIM}Прокси: {bare} (авто-авторизация){RST}")
-            except Exception as _pe:
-                print(f"  {Y}⚠ Прокси-туннель не запустился: {_pe} — Chrome без прокси{RST}")
-        elif server:
-            args.append(f"--proxy-server={server}")
-            print(f"  {DIM}Прокси: {bare}{RST}")
-    args.append(url)
-    subprocess.Popen(args)
-    # Авто-подключение VPN в открытом браузере (через порт отладки)
-    if _ext and _dbg_port:
-        print(f"  {DIM}VPN: подключаю…{RST}")
-        if _connect_vpn_over_cdp(_dbg_port):
-            print(f"  {G}✔ VPN подключён{RST}")
-        else:
-            print(f"  {Y}⚠ VPN не подключился автоматически — включите вручную в расширении{RST}")
+        args.append("about:blank" if _dbg_port else url)
+        subprocess.Popen(args)
+        if _dbg_port:
+            _phone = _phone_from_path(profile_path)
+
+            def _visible() -> None:
+                print(f"  {DIM}Открываю Flipkart (+91 {_phone})…{RST}")
+                if _connect_vpn_over_cdp(_dbg_port, url):
+                    print(f"  {G}✔ Flipkart открыт{RST}")
+                else:
+                    print(f"  {Y}⚠ Откройте Flipkart вручную или включите VPN{RST}")
+
+            threading.Thread(target=_visible, daemon=True, name=f"fk-{_phone}").start()
+        return True
+    subprocess.Popen([chrome, f"--user-data-dir={profile_path.resolve()}", url])
     return True
 
 
@@ -998,6 +1105,164 @@ def _vpn_ext_id_from_key() -> str | None:
         return None
 
 
+def _profile_has_vpn_extension(profile_path: Path | str | None) -> bool:
+    """True, если VPN-расширение уже сохранено в профиле Chrome."""
+    eid = _vpn_ext_id_from_key()
+    if not eid or not profile_path:
+        return False
+    p = Path(profile_path)
+    ext_root = p / "Default" / "Extensions" / eid
+    if not ext_root.is_dir():
+        return False
+    try:
+        return any(ext_root.iterdir())
+    except Exception:
+        return False
+
+
+def _needs_load_extension(profile_path: Path | str | None) -> bool:
+    """Нужно ли передавать --load-extension при запуске браузера."""
+    if not _vpn_extension_dir():
+        return False
+    if profile_path is None:
+        return True
+    return not _profile_has_vpn_extension(profile_path)
+
+
+def _iter_profile_dirs() -> list[Path]:
+    """Все папки профилей Chrome в проекте."""
+    out: list[Path] = []
+    for d in (DONE_PROFILES_DIR, PROFILES_DIR):
+        if d.exists():
+            out.extend(sorted(p for p in d.glob("profile_*") if p.is_dir()))
+    _VPN_PING_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    if _VPN_PING_PROFILE_DIR not in out:
+        out.insert(0, _VPN_PING_PROFILE_DIR)
+    return out
+
+
+async def _close_extension_startup_tabs(context) -> None:
+    """Закрывает мусорные вкладки расширения (vpnlyprotect.ru и т.п.) сразу после старта."""
+    await asyncio.sleep(0.4)
+    await _close_junk_tabs(context)
+    for p in list(context.pages):
+        try:
+            url = (p.url or "").lower()
+            if _is_junk_url(url) or url.startswith("chrome-extension://"):
+                await p.close()
+        except Exception:
+            pass
+
+
+async def _bg_install_extensions_on_profiles(browser_only: bool = False) -> int:
+    """Установка расширения: только копирование файлов. Браузер — только по кнопке вручную."""
+    if not _vpn_extension_dir():
+        return 0
+    if not browser_only:
+        return install_extensions_filesystem_all()
+
+    missing = [p for p in _iter_profile_dirs() if not _profile_has_vpn_extension(p)]
+    if not missing:
+        return 0
+
+    from playwright.async_api import async_playwright
+    installed = 0
+    with _chrome_window_hider():
+        for i, profile_path in enumerate(missing, 1):
+            if _install_extension_filesystem(profile_path):
+                installed += 1
+                continue
+            _set_vpn_bg_status("warming", f"Браузер [{i}/{len(missing)}] {profile_path.name}…")
+            print(f"  {DIM}[{i}/{len(missing)}] Браузер (headless) → {profile_path.name}{RST}")
+            if i > 1:
+                await _vpn_chrome_cooldown(extra=2.0)
+            pw = await async_playwright().start()
+            ctx = None
+            try:
+                kw = _browser_launch_kw(
+                    headless=True, profile_path=profile_path,
+                    use_bundled_chromium=True, background_install=True,
+                )
+                kw["args"] = _hidden_chrome_args(kw.get("args", []))
+                ctx = await pw.chromium.launch_persistent_context(
+                    str(profile_path.resolve()), **kw)
+                await _close_extension_startup_tabs(ctx)
+                await asyncio.sleep(3.0)
+                await _close_extension_startup_tabs(ctx)
+                if _profile_has_vpn_extension(profile_path):
+                    installed += 1
+                    print(f"  {G}✔ {profile_path.name}{RST}")
+            except Exception as exc:
+                print(f"  {Y}⚠ {profile_path.name}: {exc}{RST}")
+            finally:
+                if ctx:
+                    try:
+                        await ctx.close()
+                    finally:
+                        _note_chromium_closed()
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+    return installed
+
+
+async def _bg_vpn_warmup_ping() -> bool:
+    """Фон: ping-профиль — расширение + подключение VPN (скрытое окно)."""
+    if not _vpn_extension_dir():
+        return False
+    _VPN_PING_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile = _VPN_PING_PROFILE_DIR
+    if not _profile_has_vpn_extension(profile):
+        await _bg_install_extensions_on_profiles()
+    _set_vpn_bg_status("warming", "Проверка VPN (фон)…")
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as pw:
+            kw = _browser_launch_kw(
+                headless=False, profile_path=profile,
+            )
+            kw["args"] = _hidden_chrome_args(kw.get("args", []))
+            ctx = await pw.chromium.launch_persistent_context(
+                str(profile.resolve()), **kw)
+            try:
+                ok = await _vpn_connect_on_use(ctx, profile)
+                scan = scan_profiles_extension_status()
+                if ok:
+                    _set_vpn_bg_status(
+                        "ready",
+                        f"VPN OK · расширение {scan['with_ext']}/{scan['total']} проф.",
+                    )
+                else:
+                    _set_vpn_bg_status(
+                        "error",
+                        f"VPN не подключился · расширение {scan['with_ext']}/{scan['total']}",
+                    )
+                return ok
+            finally:
+                try:
+                    await ctx.close()
+                finally:
+                    _note_chromium_closed()
+    except Exception as exc:
+        _set_vpn_bg_status("error", f"VPN: {str(exc)[:80]}")
+        return False
+
+
+async def _vpn_connect_on_use(context, profile_path: Path | str | None = None) -> bool:
+    """Включает VPN при использовании профиля (расширение уже в профиле или только что загружено)."""
+    if not _vpn_extension_dir():
+        return True
+    await _close_junk_tabs(context)
+    wait = 1.5 if profile_path and _profile_has_vpn_extension(profile_path) else 3.5
+    await asyncio.sleep(wait)
+    if await _ensure_vpn_connected(context):
+        return True
+    print(f"  {Y}Повторная попытка подключить VPN...{RST}")
+    await _vpn_chrome_cooldown(extra=3.0)
+    return await _ensure_vpn_connected(context)
+
+
 async def _vpn_ext_id(context) -> str | None:
     """ID загруженного VPN-расширения. Сначала — детерминированно из manifest.key
     (надёжно, без ожидания), затем — из service worker / background page."""
@@ -1021,6 +1286,407 @@ async def _vpn_ext_id(context) -> str | None:
         return sw.url.split("/")[2]
     except Exception:
         return None
+
+
+_LAST_CHROMIUM_CLOSED_AT: float = 0.0
+_VPN_CHROME_COOLDOWN_SEC = 10.0
+_vpn_bg_status: dict = {"state": "idle", "message": ""}
+_vpn_bg_lock = threading.Lock()
+_bg_bootstrap_started = False
+_bg_bootstrap_lock = threading.Lock()
+
+
+def get_vpn_bg_status() -> dict:
+    with _vpn_bg_lock:
+        return dict(_vpn_bg_status)
+
+
+def _set_vpn_bg_status(state: str, message: str = "") -> None:
+    global _vpn_bg_status
+    with _vpn_bg_lock:
+        _vpn_bg_status = {"state": state, "message": message}
+
+
+def scan_profiles_extension_status() -> dict:
+    """Быстрая проверка профилей на VPN-расширение (без браузера)."""
+    profiles = _iter_profile_dirs()
+    with_ext = [p for p in profiles if _profile_has_vpn_extension(p)]
+    missing = [p for p in profiles if not _profile_has_vpn_extension(p)]
+    return {
+        "total": len(profiles),
+        "with_ext": len(with_ext),
+        "missing": len(missing),
+        "missing_names": [p.name for p in missing],
+    }
+
+
+def _hidden_chrome_args(args: list[str]) -> list[str]:
+    """Аргументы Chrome — headless + окно за пределами экрана."""
+    out = [a for a in args if a != "--start-maximized"]
+    out.extend([
+        "--headless=new",
+        "--window-position=-32000,-32000",
+        "--start-minimized",
+        "--disable-gpu",
+    ])
+    return out
+
+
+@contextlib.contextmanager
+def _chrome_window_hider():
+    """Windows: прячет окна Chrome/Chromium пока идёт фоновая операция."""
+    if os.name != "nt":
+        yield
+        return
+    import ctypes
+    stop = threading.Event()
+
+    def _loop() -> None:
+        user32 = ctypes.windll.user32
+        SW_HIDE = 0
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def _cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd):
+                cls = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cls, 256)
+                c = cls.value.lower()
+                if "chrome_widgetwin" in c:
+                    user32.ShowWindow(hwnd, SW_HIDE)
+            return True
+
+        while not stop.is_set():
+            user32.EnumWindows(WNDENUMPROC(_cb), 0)
+            stop.wait(0.2)
+
+    t = threading.Thread(target=_loop, daemon=True, name="chrome-hider")
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+
+
+def _register_vpn_extension_prefs(
+    profile_path: Path, eid: str, version: str, manifest: dict,
+) -> None:
+    """Регистрирует расширение в Preferences профиля Chrome."""
+    prefs_path = profile_path / "Default" / "Preferences"
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+    prefs: dict = {}
+    if prefs_path.exists():
+        try:
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+        except Exception:
+            prefs = {}
+    perms = manifest.get("permissions", [])
+    hosts = manifest.get("host_permissions", [])
+    perm_block = {
+        "api": perms,
+        "explicit_host": hosts,
+        "manifest_permissions": perms,
+    }
+    now = str(int(time.time() * 1_000_000))
+    prefs.setdefault("extensions", {}).setdefault("settings", {})[eid] = {
+        "account_extension_type": 0,
+        "active_permissions": perm_block,
+        "creation_flags": 38,
+        "first_install_time": now,
+        "from_webstore": False,
+        "granted_permissions": perm_block,
+        "last_update_time": now,
+        "location": 4,
+        "manifest": manifest,
+        "path": f"{eid}/{version}",
+        "state": 1,
+        "was_installed_by_default": False,
+        "was_installed_by_oem": False,
+    }
+    # Не восстанавливать вкладки (vpnlyprotect.ru и т.п.) при следующем запуске Chrome
+    prefs.setdefault("session", {})["restore_on_startup"] = 5
+    prefs["session"]["startup_urls"] = []
+    prefs_path.write_text(json.dumps(prefs, ensure_ascii=False), encoding="utf-8")
+
+
+def _install_extension_filesystem(profile_path: Path) -> bool:
+    """Копирует VPN-расширение в профиль без запуска браузера."""
+    if _profile_has_vpn_extension(profile_path):
+        return True
+    ext_dir = _vpn_extension_dir()
+    eid = _vpn_ext_id_from_key()
+    if not ext_dir or not eid:
+        return False
+    try:
+        src = Path(ext_dir)
+        manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+        version = str(manifest.get("version", "1.0.0"))
+        dest = profile_path / "Default" / "Extensions" / eid / version
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest)
+        _register_vpn_extension_prefs(profile_path, eid, version, manifest)
+        return _profile_has_vpn_extension(profile_path)
+    except Exception as exc:
+        print(f"  {Y}⚠ FS {profile_path.name}: {exc}{RST}")
+        return False
+
+
+def install_extensions_filesystem_all() -> int:
+    """Устанавливает расширение во все профили, где его нет (без браузера)."""
+    if not _vpn_extension_dir():
+        return 0
+    installed = 0
+    for p in _iter_profile_dirs():
+        if _profile_has_vpn_extension(p):
+            continue
+        _set_vpn_bg_status("warming", f"Расширение → {p.name} (файлы)…")
+        if _install_extension_filesystem(p):
+            installed += 1
+            print(f"  {G}✔ {p.name} (без браузера){RST}")
+    return installed
+
+
+async def _ensure_extension_in_profile(profile_path: Path) -> bool:
+    """Ставит VPN-расширение в профиль: файлы, при неудаче — скрытый браузер."""
+    profile_path = Path(profile_path)
+    if _profile_has_vpn_extension(profile_path):
+        return True
+    if not _vpn_extension_dir():
+        return False
+    if _install_extension_filesystem(profile_path):
+        return True
+    from playwright.async_api import async_playwright
+    pw = None
+    ctx = None
+    try:
+        await _vpn_chrome_cooldown(extra=1.0)
+        pw = await async_playwright().start()
+        _pre_inject_chrome_prefs(profile_path)
+        kw = _browser_launch_kw(
+            headless=True, profile_path=profile_path, background_install=True,
+        )
+        kw["args"] = _hidden_chrome_args(kw.get("args", []))
+        with _chrome_window_hider():
+            ctx = await pw.chromium.launch_persistent_context(
+                str(profile_path.resolve()), **kw)
+            await _close_extension_startup_tabs(ctx)
+            await asyncio.sleep(2.5)
+        return _profile_has_vpn_extension(profile_path)
+    except Exception as exc:
+        print(f"  {Y}⚠ Расширение {profile_path.name}: {exc}{RST}")
+        return False
+    finally:
+        if ctx:
+            try:
+                await ctx.close()
+            finally:
+                _note_chromium_closed()
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
+
+async def _prepare_profile_vpn(profile_path: Path | str, *, label: str = "") -> tuple[bool, str]:
+    """Фон: расширение (если нет) + VPN + проверка Flipkart. Браузер закрывается."""
+    if not _vpn_extension_dir():
+        return True, ""
+    profile_path = Path(profile_path)
+    tag = label or _phone_from_path(profile_path) or profile_path.name
+    if _is_profile_locked(profile_path):
+        _clear_stale_profile_locks(profile_path)
+    _set_vpn_bg_status("warming", f"VPN фон · {profile_path.name}")
+    print(f"  {DIM}[{tag}] VPN в фоне: расширение + подключение…{RST}")
+    if not await _ensure_extension_in_profile(profile_path):
+        _set_vpn_bg_status("error", f"Нет расширения · {profile_path.name}")
+        return False, "VPN-расширение не установлено в профиль"
+    await _vpn_chrome_cooldown(extra=1.0)
+    pw = None
+    ctx = None
+    try:
+        from playwright.async_api import async_playwright
+        pw = await async_playwright().start()
+        _pre_inject_chrome_prefs(profile_path)
+        kw = _browser_launch_kw(
+            headless=True, profile_path=profile_path, background_install=True,
+        )
+        kw["args"] = _hidden_chrome_args(kw.get("args", []))
+        with _chrome_window_hider():
+            ctx = await pw.chromium.launch_persistent_context(
+                str(profile_path.resolve()), **kw)
+            await _close_extension_startup_tabs(ctx)
+            if not await _vpn_connect_on_use(ctx, profile_path):
+                return False, "VPN не подключился (фон)"
+            page = await _main_work_page(ctx)
+            if not await _verify_flipkart_reachable(page, "https://www.flipkart.com/"):
+                return False, "Flipkart недоступен после VPN"
+        print(f"  {G}✔ [{tag}] VPN готов — можно открывать Flipkart{RST}")
+        _set_vpn_bg_status("ready", f"VPN OK · {profile_path.name}")
+        return True, ""
+    except Exception as exc:
+        err = str(exc)[:120]
+        _set_vpn_bg_status("error", err)
+        return False, err
+    finally:
+        if ctx:
+            try:
+                await ctx.close()
+            finally:
+                _note_chromium_closed()
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+        await _vpn_chrome_cooldown(extra=2.0)
+
+
+def prepare_profile_vpn_sync(profile_path: Path | str, *, label: str = "") -> tuple[bool, str]:
+    try:
+        return asyncio.run(_prepare_profile_vpn(profile_path, label=label))
+    except RuntimeError:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(_prepare_profile_vpn(profile_path, label=label)),
+            ).result()
+    except Exception as exc:
+        return False, str(exc)[:120]
+
+
+async def _warmup_vpn_extension() -> bool:
+    """Устаревшее имя — только установка расширений в профили без VPN."""
+    n = await _bg_install_extensions_on_profiles()
+    _set_vpn_bg_status("ready", f"Расширения установлены ({n} проф.)" if n else "Расширения на месте")
+    return True
+
+
+def start_background_bootstrap(force: bool = False) -> None:
+    """Фон при старте: только скан + копирование файлов. Chrome НЕ открывается."""
+    global _bg_bootstrap_started
+
+    with _bg_bootstrap_lock:
+        if _bg_bootstrap_started and not force:
+            return
+        _bg_bootstrap_started = True
+
+    def _worker():
+        try:
+            time.sleep(4.0)
+
+            if not _vpn_extension_dir():
+                _set_vpn_bg_status("no_ext", "vpn_extension/ не найдено")
+                return
+
+            _set_vpn_bg_status("installing", "Проверка зависимостей…")
+            screen_install(auto=True)
+
+            scan = scan_profiles_extension_status()
+            _set_vpn_bg_status(
+                "warming",
+                f"Скан: {scan['with_ext']}/{scan['total']} с расширением…",
+            )
+
+            n = install_extensions_filesystem_all()
+            scan = scan_profiles_extension_status()
+
+            if scan["missing"]:
+                _set_vpn_bg_status(
+                    "ready",
+                    f"Расширение {scan['with_ext']}/{scan['total']} · "
+                    f"без {scan['missing']} (установка при запуске автоматизации)",
+                )
+                if n:
+                    print(f"  {G}✔ Расширение скопировано в {n} профил(ей) без Chrome{RST}")
+                print(
+                    f"  {DIM}Профили без расширения: {', '.join(scan['missing_names'][:5])}"
+                    f"{'…' if scan['missing'] > 5 else ''}{RST}"
+                )
+            else:
+                _set_vpn_bg_status(
+                    "ready",
+                    f"Расширение {scan['total']}/{scan['total']} проф. · VPN при использовании",
+                )
+                if n:
+                    print(f"  {G}✔ Расширение установлено в {n} профил(ей) без Chrome{RST}")
+        except Exception as exc:
+            _set_vpn_bg_status("error", str(exc)[:120])
+
+    threading.Thread(target=_worker, daemon=True, name="bg-bootstrap").start()
+
+
+def _note_chromium_closed() -> None:
+    """Фиксирует момент закрытия Chromium — VPNLY не успевает в новом окне сразу."""
+    global _LAST_CHROMIUM_CLOSED_AT
+    _LAST_CHROMIUM_CLOSED_AT = time.monotonic()
+
+
+def _is_junk_url(url: str) -> bool:
+    u = (url or "").lower()
+    return ("vpnlyprotect.ru" in u or "errors.edgesuite.net" in u
+            or u in ("about:blank", "chrome://newtab/"))
+
+
+async def _close_junk_tabs(context) -> None:
+    """Закрывает vpnlyprotect.ru (403) — не трогает последнюю рабочую вкладку."""
+    pages = list(context.pages)
+    if len(pages) <= 1:
+        return
+    for p in pages:
+        try:
+            url = p.url or ""
+            if "vpnlyprotect.ru" in url.lower() or "errors.edgesuite.net" in url.lower():
+                await p.close()
+        except Exception:
+            pass
+
+
+async def _main_work_page(context):
+    """Рабочая вкладка: закрыть vpnlyprotect, взять не-мусорную или создать новую."""
+    await _close_junk_tabs(context)
+    for p in context.pages:
+        url = (p.url or "").lower()
+        if "vpnlyprotect.ru" not in url and "errors.edgesuite.net" not in url:
+            return p
+    return await context.new_page()
+
+
+async def _vpn_chrome_cooldown(extra: float = 0.0) -> None:
+    """Пауза после закрытия предыдущего Chromium, чтобы VPNLY успел в новом окне."""
+    elapsed = time.monotonic() - _LAST_CHROMIUM_CLOSED_AT
+    wait = max(0.0, _VPN_CHROME_COOLDOWN_SEC + extra - elapsed)
+    if wait > 0:
+        print(f"  {DIM}Пауза {wait:.0f}s — ждём готовности VPN в новом браузере...{RST}")
+        await asyncio.sleep(wait)
+
+
+async def _require_vpn_connected(context) -> bool:
+    """Подключает VPN; при наличии расширения без VPN — False (2 попытки)."""
+    if not _vpn_extension_dir():
+        return True
+    await _close_junk_tabs(context)
+    if await _ensure_vpn_connected(context):
+        return True
+    print(f"  {Y}Повторная попытка подключить VPN...{RST}")
+    await _vpn_chrome_cooldown(extra=3.0)
+    return await _ensure_vpn_connected(context)
+
+
+async def _verify_flipkart_reachable(page, url: str = "https://www.flipkart.com/account/login?ret=/") -> bool:
+    """Проверяет, что Flipkart открывается без Access Denied в текущем браузере."""
+    try:
+        r = await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+        body = (await page.evaluate(
+            "() => document.body ? document.body.innerText.slice(0, 300) : ''"
+        )).lower()
+        if "access denied" in body or "permission to access" in body:
+            return False
+        return bool(r) and r.status < 400
+    except Exception:
+        return False
 
 
 async def _ensure_vpn_connected(context) -> bool:
@@ -1099,12 +1765,11 @@ async def _ensure_vpn_connected(context) -> bool:
 
     pop = None
     try:
-        # Окну нужно время осесть/получить фокус после запуска — иначе попап
-        # зависает в неполном состоянии (без строки страны), а «Подключить»
-        # кликается, но соединение не устанавливается (проверено вживую). Если
-        # рядом только что закрылся другой Chromium (напр. пинг-проверка),
-        # окну нужно больше времени — поэтому запас увеличен.
-        await asyncio.sleep(4.5)
+        # Окну нужно время осесть после запуска; если только что закрылся другой
+        # Chromium (пинг-проверка) — ждём cooldown, иначе VPNLY не подключается.
+        await _vpn_chrome_cooldown()
+        await _close_junk_tabs(context)
+        await asyncio.sleep(3.5)
         pop = await context.new_page()
         await pop.goto(f"chrome-extension://{eid}/popup.html",
                        wait_until="domcontentloaded", timeout=15_000)
@@ -1145,15 +1810,11 @@ async def _ensure_vpn_connected(context) -> bool:
             pass
 
 
-def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
-                       force_proxy: bool = False, phone: str = "",
-                       skip_servers: set | None = None,
-                       forced_proxy_dict: dict | None = None,
-                       use_bundled_chromium: bool = False,
-                       local_proxy_port: int | None = None) -> dict:
+def _browser_launch_kw(headless: bool = False, use_bundled_chromium: bool = False,
+                       phone: str = "", profile_path: Path | str | None = None,
+                       background_install: bool = False, **_) -> dict:
     """Возвращает kwargs для launch_persistent_context.
-    local_proxy_port — порт локального туннеля (без диалога авторизации Chrome).
-    forced_proxy_dict — конкретный прокси dict (минует _pick_proxy)."""
+    --load-extension только если расширения ещё нет в profile_path."""
     vp = random.choice(_MENU_VIEWPORTS)
     ua = random.choice(_MENU_USER_AGENTS)
     args = [
@@ -1183,28 +1844,20 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
         "extra_http_headers": {"Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7"},
         "ignore_https_errors": True,
     }
-    # ── VPN-расширение (VPNLY): грузим в КАЖДЫЙ профиль, если папка есть ──
-    # Кладём распакованное расширение (с manifest.json) в vpn_extension/ в корне
-    # проекта — тогда оно ставится и включается для каждого запуска Chrome.
-    # ВАЖНО: расширения не работают в старом headless — форсируем видимый режим
-    # либо новый headless (--headless=new), когда расширение загружается.
+    # ── VPN-расширение: bundled Chromium только при первой загрузке --load-extension ──
     try:
         _ext_dir = _vpn_extension_dir()
         if _ext_dir:
-            args.append(f"--disable-extensions-except={_ext_dir}")
-            args.append(f"--load-extension={_ext_dir}")
-            # ВАЖНО: системный Chrome 137+ ИГНОРИРУЕТ --load-extension (Google
-            # отключил загрузку распакованных расширений из командной строки).
-            # Встроенный Chromium от Playwright такого ограничения не имеет и
-            # грузит VPNLY нормально → форсируем его, когда есть VPN-расширение.
-            use_bundled_chromium = True
-            # ВАЖНО: VPNLY НЕ подключается ни в headless=new, ни в реальном окне,
-            # выведенном за пределы экрана (--window-position=-3000,-3000) — в обоих
-            # случаях попап зависает на "Not Protected" и клик «Подключить» падает
-            # с «Oops! Something went wrong» (проверено вживую). Единственный
-            # надёжный режим — настоящее видимое окно. Поэтому при наличии
-            # VPN-расширения headless всегда принудительно отключается.
-            headless = False
+            if background_install:
+                use_bundled_chromium = True
+                headless = True
+            else:
+                use_bundled_chromium = _needs_load_extension(profile_path)
+                if _needs_load_extension(profile_path):
+                    headless = False
+            if _needs_load_extension(profile_path):
+                args.append(f"--disable-extensions-except={_ext_dir}")
+                args.append(f"--load-extension={_ext_dir}")
     except Exception:
         pass
 
@@ -1214,36 +1867,11 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
     else:
         kw["viewport"] = vp
     kw["headless"] = headless
-    chrome = _find_chrome()
-    if chrome and not use_bundled_chromium:
-        kw["executable_path"] = chrome
-    if local_proxy_port is not None:
-        kw["proxy"] = {"server": f"http://127.0.0.1:{local_proxy_port}"}
-        print(f"  {DIM}Прокси: туннель 127.0.0.1:{local_proxy_port}{RST}")
-    elif forced_proxy_dict is not None:
-        server   = forced_proxy_dict.get("server", "")
-        username = forced_proxy_dict.get("username", "")
-        password = forced_proxy_dict.get("password", "")
-        if username and password:
-            kw["proxy"] = {"server": server, "username": username, "password": password}
-        else:
-            kw["proxy"] = {"server": server}
-        print(f"  {DIM}Прокси (оплата): {_proxy_server_bare(server)}{RST}")
-    elif use_proxy or force_proxy:
-        _proxy_enabled = bool((_read_proxy_cfg() or {}).get("enabled"))
-        if _proxy_enabled:
-            proxy = _pick_proxy(force=force_proxy, phone=phone, skip_servers=skip_servers)
-            if proxy:
-                server   = proxy.get("server", "")
-                username = proxy.get("username", "")
-                password = proxy.get("password", "")
-                if username and password:
-                    kw["proxy"] = {"server": server, "username": username, "password": password}
-                else:
-                    kw["proxy"] = {"server": server}
-                print(f"  {DIM}Прокси: {server}{RST}")
-            else:
-                print(f"  {Y}⚠ proxy.enabled=true но список прокси пуст{RST}")
+    exe = _chrome_executable_for_profile(
+        profile_path, force_bundled=use_bundled_chromium,
+    )
+    if exe:
+        kw["executable_path"] = exe
     return kw
 
 
@@ -1299,254 +1927,6 @@ def _pre_inject_chrome_prefs(profile_path: Path) -> None:
     except Exception:
         pass
 
-
-
-def screen_proxy():
-    """Управление прокси: список, добавление, удаление, вкл/выкл."""
-    while True:
-        cls()
-        header("ПРОКСИ", Y)
-        pcfg   = _read_proxy_cfg()
-        p6cfg  = _p6_cfg()
-        enabled = bool(pcfg.get("enabled"))
-        proxies_raw = pcfg.get("list") or []
-        single = pcfg.get("server", "")
-        p6key  = p6cfg.get("api_key", "").strip()
-
-        # Собираем единый список для отображения
-        display: list[dict] = []
-        if proxies_raw:
-            display = [p for p in proxies_raw if p and p.get("server")]
-        elif single:
-            display = [{"server": single,
-                        "username": pcfg.get("username", ""),
-                        "password": pcfg.get("password", "")}]
-
-        status_str = f"{G}ВКЛ{RST}" if enabled else f"{R}ВЫКЛ{RST}"
-        print(f"  Статус прокси: {status_str}  ({len(display)} шт.)")
-        # Прокси принудительно отключены глобально (proxy.py:_read_proxy_cfg).
-        # Честно предупреждаем, чтобы переключатель «вкл» не вводил в заблуждение.
-        print(f"  {R}{BLD}⛔ ПРОКСИ ВРЕМЕННО ОТКЛЮЧЕНЫ ГЛОБАЛЬНО{RST}")
-        print(f"  {DIM}   Настройки сохраняются, но к браузеру НЕ применяются "
-              f"(включён глобальный обход).{RST}")
-        print(f"  {Y}⚠  Flipkart требует индийский IP — используйте прокси Индия{RST}\n")
-
-        if display:
-            for i, p in enumerate(display, 1):
-                u   = p.get("username", "")
-                exp = p.get("expires", "")
-                exp_str = f"  {DIM}до {exp[:10]}{RST}" if exp else ""
-                ctry = p.get("country", "")
-                ctry_str = f" [{ctry}]" if ctry else ""
-                auth = f"  {DIM}({u}){RST}" if u else ""
-                print(f"  [{i}] {p['server']}{ctry_str}{auth}{exp_str}")
-        else:
-            print(f"  {DIM}  Список пуст{RST}")
-
-        # ── Proxy6.net блок ──────────────────────────────────────────────────
-        print()
-        print(f"  {C}{BLD}── Proxy6.net ────────────────────────────────{RST}")
-        if p6key:
-            key_hint = p6key[:6] + "…"
-            p6_count  = p6cfg.get("default_count",  10)
-            p6_period = p6cfg.get("default_period",  7)
-            p6_country = p6cfg.get("country", "in").upper()
-            print(f"  API ключ : {G}{key_hint}{RST}  "
-                  f"По умолч.: {C}{p6_count} шт.{RST} · "
-                  f"{C}{p6_period} дн.{RST} · "
-                  f"{C}{p6_country}{RST}")
-            print(f"  {G}[А]{RST}  Автопокупка индийских прокси ({p6_count} шт. · {p6_period} дн.)")
-            print(f"  {C}[С]{RST}  Синхронизировать активные из Proxy6 → заменить список")
-            print(f"  {B}[Б]{RST}  Показать баланс Proxy6")
-            print(f"  {Y}[Н]{RST}  Настроить количество / период / ключ")
-        else:
-            print(f"  {R}  API ключ не настроен{RST}")
-            print(f"  {Y}[Н]{RST}  Ввести API ключ Proxy6.net")
-
-        # ── Ручное управление ────────────────────────────────────────────────
-        print()
-        print(f"  {C}── Ручное ──────────────────────────────────────{RST}")
-        print(f"  {G}[Д]{RST}  Добавить прокси вручную (ip:port:user:pass)")
-        print(f"  {R}[У]{RST}  Удалить прокси (номер)")
-        toggle_lbl = f"{R}Выключить{RST}" if enabled else f"{G}Включить{RST}"
-        print(f"  {Y}[В]{RST}  {toggle_lbl} прокси")
-        print(f"  {DIM}[Q]{RST}  Назад")
-        print()
-
-        try:
-            act = input(f"  {BLD}Действие: {RST}").strip().upper()
-        except KeyboardInterrupt:
-            return
-
-        if act in ("Q", ""):
-            return
-
-        # ── Proxy6 автопокупка ───────────────────────────────────────────────
-        elif act in ("А", "A") and p6key:
-            p6_count  = p6cfg.get("default_count",  10)
-            p6_period = p6cfg.get("default_period",  7)
-            p6_country = p6cfg.get("country", "in")
-            p6_type    = p6cfg.get("type", "http")
-            print(f"\n  {C}Покупаю {p6_count} прокси ({p6_country.upper()}, "
-                  f"{p6_period} дн., {p6_type})...{RST}")
-            try:
-                new_proxies, buy_msg = _p6_buy_affordable(
-                    p6key, p6_count, p6_period, country=p6_country, proxy_type=p6_type)
-                if not new_proxies:
-                    print(f"  {R}Proxy6 вернул пустой список — проверьте баланс и доступность{RST}")
-                    time.sleep(3)
-                    continue
-                # После покупки сразу синхронизируем — берём полный актуальный список
-                print(f"  {DIM}Синхронизирую актуальный список...{RST}")
-                try:
-                    active = _p6_getlist(p6key, state="active")
-                except Exception:
-                    active = new_proxies  # fallback: хотя бы только что купленные
-                pcfg_new = dict(pcfg)
-                pcfg_new["list"] = active
-                pcfg_new.pop("server", None)
-                pcfg_new.pop("username", None)
-                pcfg_new.pop("password", None)
-                pcfg_new["enabled"] = True
-                _write_proxy_cfg(pcfg_new)
-                exp0 = new_proxies[0].get("expires", "")[:10] if new_proxies else ""
-                print(f"\n  {G}✅ {buy_msg}{RST}" + (f"  (до {exp0})" if exp0 else ""))
-                print(f"  {DIM}В списке {len(active)} активных прокси{RST}")
-            except Exception as exc:
-                print(f"\n  {R}❌ Ошибка Proxy6: {exc}{RST}")
-            time.sleep(3)
-
-        # ── Proxy6 синхронизация ─────────────────────────────────────────────
-        elif act in ("С", "C") and p6key:
-            print(f"\n  {C}Загружаю активные прокси из Proxy6...{RST}")
-            try:
-                active = _p6_getlist(p6key, state="active")
-                if not active:
-                    print(f"  {Y}Активных прокси в аккаунте нет{RST}")
-                    time.sleep(3)
-                    continue
-                pcfg_new = dict(pcfg)
-                pcfg_new["list"] = active
-                pcfg_new.pop("server", None)
-                pcfg_new.pop("username", None)
-                pcfg_new.pop("password", None)
-                pcfg_new["enabled"] = True
-                _write_proxy_cfg(pcfg_new)
-                print(f"\n  {G}✅ Синхронизировано: {len(active)} прокси{RST}")
-                for ap in active:
-                    exp = ap.get("expires", "")[:10]
-                    print(f"     {DIM}{ap['server']}  до {exp}{RST}")
-            except Exception as exc:
-                print(f"\n  {R}❌ Ошибка: {exc}{RST}")
-            time.sleep(3)
-
-        # ── Proxy6 баланс ────────────────────────────────────────────────────
-        elif act in ("Б", "B", "Z") and p6key:
-            print(f"\n  {C}Запрашиваю баланс Proxy6...{RST}")
-            try:
-                bal, cur = _p6_balance(p6key)
-                print(f"\n  {G}💰 Баланс Proxy6: {BLD}{bal} {cur}{RST}")
-            except Exception as exc:
-                print(f"\n  {R}❌ Ошибка: {exc}{RST}")
-            time.sleep(3)
-
-        # ── Настройки Proxy6 ─────────────────────────────────────────────────
-        elif act in ("Н", "N"):
-            cls()
-            header("НАСТРОЙКИ PROXY6", C)
-            p6new = dict(p6cfg)
-            print(f"  Текущий API ключ: {p6key[:8] + '…' if p6key else R + 'не задан' + RST}")
-            print(f"  Количество по умолч.: {p6cfg.get('default_count', 10)}")
-            print(f"  Период (дней):        {p6cfg.get('default_period', 7)}")
-            print(f"  Страна:               {p6cfg.get('country', 'in').upper()}")
-            print(f"  Тип:                  {p6cfg.get('type', 'http')}")
-            print()
-            try:
-                v = input(f"  {BLD}API ключ (Enter = не менять): {RST}").strip()
-                _new_p6_key = v if v else None
-                v = input(f"  {BLD}Кол-во прокси [{p6cfg.get('default_count',10)}]: {RST}").strip()
-                if v.isdigit() and int(v) > 0: p6new["default_count"] = int(v)
-                v = input(f"  {BLD}Период дней   [{p6cfg.get('default_period',7)}]: {RST}").strip()
-                if v.isdigit() and int(v) > 0: p6new["default_period"] = int(v)
-                v = input(f"  {BLD}Страна        [{p6cfg.get('country','in')}]: {RST}").strip()
-                if v: p6new["country"] = v.lower()
-                v = input(f"  {BLD}Тип (http/socks5) [{p6cfg.get('type','http')}]: {RST}").strip()
-                if v in ("http", "https", "socks5"): p6new["type"] = v
-            except KeyboardInterrupt:
-                continue
-            p6new.pop("api_key", None)   # api_key не пишем в config.yaml
-            _p6_write_cfg(p6new)
-            if _new_p6_key:
-                _write_secret("proxy6", "api_key", _new_p6_key)
-            print(f"\n  {G}✅ Сохранено{RST}")
-            time.sleep(1.5)
-
-        # ── Добавить вручную ─────────────────────────────────────────────────
-        elif act in ("Д", "D"):
-            print(f"\n  Формат: ip:port:user:pass  или  ip:port")
-            try:
-                raw = input(f"  {BLD}Прокси: {RST}").strip()
-            except KeyboardInterrupt:
-                continue
-            if not raw:
-                continue
-            parts = raw.split(":")
-            if len(parts) >= 4:
-                host, port, user, pwd = parts[0], parts[1], parts[2], ":".join(parts[3:])
-            elif len(parts) == 2:
-                host, port, user, pwd = parts[0], parts[1], "", ""
-            else:
-                print(f"  {R}Неверный формат{RST}")
-                time.sleep(3)
-                continue
-            server = f"http://{host}:{port}"
-            new_entry: dict = {"server": server}
-            if user: new_entry["username"] = user
-            if pwd:  new_entry["password"] = pwd
-            new_list = display + [new_entry]
-            pcfg_new = dict(pcfg)
-            pcfg_new["list"] = new_list
-            pcfg_new.pop("server", None)
-            pcfg_new.pop("username", None)
-            pcfg_new.pop("password", None)
-            pcfg_new["enabled"] = True
-            _write_proxy_cfg(pcfg_new)
-            print(f"  {G}✅ Добавлено: {server}{RST}")
-            time.sleep(1.2)
-
-        elif act == "У":
-            if not display:
-                print(f"  {R}Список пуст{RST}")
-                time.sleep(3)
-                continue
-            try:
-                num = int(input(f"  {BLD}Номер для удаления [1-{len(display)}]: {RST}").strip())
-            except (ValueError, KeyboardInterrupt):
-                continue
-            if not 1 <= num <= len(display):
-                print(f"  {R}Неверный номер{RST}")
-                time.sleep(3)
-                continue
-            removed = display.pop(num - 1)
-            pcfg_new = dict(pcfg)
-            pcfg_new["list"] = display
-            pcfg_new.pop("server", None)
-            pcfg_new.pop("username", None)
-            pcfg_new.pop("password", None)
-            _write_proxy_cfg(pcfg_new)
-            print(f"  {R}Удалено: {removed['server']}{RST}")
-            time.sleep(1.2)
-
-        elif act in ("В", "V"):
-            pcfg_new = dict(pcfg)
-            pcfg_new["enabled"] = not enabled
-            _write_proxy_cfg(pcfg_new)
-            # Сбрасываем кэш — при следующем обращении читаем свежие настройки
-            _proxy_module._proxy_cache_loaded = False
-            _proxy_module._proxy_list_cache   = None
-            lbl = f"{G}включён{RST}" if not enabled else f"{R}выключен{RST}"
-            print(f"  Прокси {lbl}")
-            time.sleep(1)
 
 
 def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
@@ -1937,15 +2317,25 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
     pw = None
     ctx = None
     try:
+        if _vpn_extension_dir():
+            ok, err = await _prepare_profile_vpn(profile_path, label=username)
+            if not ok:
+                result["status"] = "vpn_failed"
+                result["error"] = err
+                return result
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
             str(profile_path.resolve()),
-            **_browser_launch_kw(headless=headless, force_proxy=True, phone=username))
+            **_browser_launch_kw(headless=headless, phone=username,
+                                 profile_path=profile_path))
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         if not headless:
             await _maximize_window(ctx, page)
-        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
+        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
+            result["status"] = "vpn_failed"
+            result["error"] = "VPN не подключился"
+            return result
 
         try:
             await page.goto("https://www.flipkart.com/flipkart-black-store",
@@ -2360,15 +2750,6 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         return result
     except Exception as e:
         result["error"] = str(e)
-        _proxy_enabled = False
-        try:
-            _proxy_enabled = bool((_read_proxy_cfg() or {}).get("enabled"))
-        except Exception:
-            pass
-        if _proxy_enabled and _is_proxy_error(e):
-            _mark_proxy_failed(_proxy_module._last_proxy_server)
-            result["error"] = ("PROXY_DEAD: Прокси недоступен — обновите список "
-                               "(Прокси → [А] или [С])")
         return result
     finally:
         if ctx:
@@ -2847,10 +3228,6 @@ def screen_profiles():
                     )
                     if ok6:
                         print(f"\n  {G}{BLD}✅ {msg6}{RST}")
-                        pause()
-                    elif msg6.startswith("PROXY_DEAD:"):
-                        print(f"\n  {R}❌ {msg6[11:].strip()}{RST}")
-                        print(f"  {Y}Перейдите в меню Прокси и нажмите [А] для покупки новых.{RST}")
                         pause()
                     elif msg6.startswith("OUT_OF_STOCK"):
                         addr_info = msg6.split("|", 1)[1] if "|" in msg6 else ""
@@ -3365,6 +3742,10 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
     """Headless-проверка: сессия профиля ещё активна на Flipkart?"""
     from playwright.async_api import async_playwright as _apw
     try:
+        if _vpn_extension_dir():
+            ok, _ = await _prepare_profile_vpn(profile_path)
+            if not ok:
+                return False
         async with _apw() as _pw2:
             _ctx2 = await _pw2.chromium.launch_persistent_context(
                 str(profile_path),
@@ -3498,29 +3879,23 @@ async def _check_recent_black_orders(page) -> list:
 
 @_serialize_purchase
 async def _do_fill_address(profile_path: Path, addr: dict,
-                           _skip_proxies: set | None = None,
-                           _retry_n: int = 0,
-                           _use_proxy: bool | None = None,
                            stop_at_payment: bool = False) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
-    if _retry_n == 0:
+    if _vpn_extension_dir():
+        ok, err = await _prepare_profile_vpn(profile_path)
+        if not ok:
+            return False, err
+    else:
         print(f"  {DIM}Проверка доступности Flipkart...{RST}")
         if not await _check_flipkart_accessible():
             _ping_msg = "Flipkart недоступен"
             print(f"\n  {R}⚠ {_ping_msg}{RST}")
-            print(f"  {Y}Покупка Membership невозможна. Повторите позже.{RST}")
+            print(f"  {Y}Заполнение адреса невозможно. Повторите позже.{RST}")
             return False, _ping_msg
         print(f"  {G}Flipkart доступен.{RST}")
 
-    if _use_proxy is None:
-        _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
-    _MAX_PROXY_RETRIES = 3
-    if _skip_proxies is None:
-        _skip_proxies = set()
     if _is_profile_locked(profile_path):
         print(f"  {Y}Профиль занят — закрываю Chrome и очищаю локи...{RST}")
-        _clear_stale_profile_locks(profile_path)
-    elif _retry_n > 0:
         _clear_stale_profile_locks(profile_path)
     try:
         from playwright.async_api import async_playwright
@@ -3534,16 +3909,16 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
             str(profile_path.resolve()),
-            **_browser_launch_kw(use_proxy=_use_proxy, force_proxy=_use_proxy,
-                                  phone=_phone_from_path(profile_path),
-                                  skip_servers=_skip_proxies))
+            **_browser_launch_kw(phone=_phone_from_path(profile_path),
+                                 profile_path=profile_path))
         _stealth2 = _build_stealth_js_m()
         if _stealth2:
             await ctx.add_init_script(_stealth2)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        page = await _main_work_page(ctx)
         await _maximize_window(ctx, page)
-        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
+        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
+            return False, "VPN не подключился — заполнение адреса отменено"
 
         # Начальная навигация с одним ретраем — бывает разовый таймаут загрузки
         _nav_ok = False
@@ -3813,18 +4188,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             _keep_open = False
             return False, "CANCELLED"
         msg = str(exc)
-        if _use_proxy and _is_proxy_error(exc) and not _keep_open and _retry_n < _MAX_PROXY_RETRIES:
-            svr = _proxy_module._last_proxy_server
-            if svr:
-                _mark_proxy_failed(svr)
-                _skip_proxies.add(_proxy_server_bare(svr))
-            print(f"  {Y}⚠ Прокси недоступен — пробую следующий "
-                  f"({_retry_n + 1}/{_MAX_PROXY_RETRIES})...{RST}")
-            return await _do_fill_address(profile_path, addr, _skip_proxies, _retry_n + 1, _use_proxy, stop_at_payment)
-        if _use_proxy and _is_proxy_error(exc) and not _keep_open:
-            print(f"  {Y}⚠ Все прокси недоступны — пробую без прокси...{RST}")
-            return await _do_fill_address(profile_path, addr, set(), 1, _use_proxy=False, stop_at_payment=stop_at_payment)
-        # На ошибке закрываем браузер (не оставляем висеть → иначе жёсткое убийство даёт EPIPE)
         _keep_open = False
         return False, msg
     finally:
@@ -6949,12 +7312,18 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
     pw = None
     ctx = None
     try:
+        if _vpn_extension_dir():
+            ok, err = await _prepare_profile_vpn(profile_path, label=phone_digits)
+            if not ok:
+                return False, err
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
-            str(profile_path.resolve()), **_browser_launch_kw(phone=phone_digits))
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
+            str(profile_path.resolve()),
+            **_browser_launch_kw(phone=phone_digits, profile_path=profile_path))
+        page = await _main_work_page(ctx)
+        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
+            return False, "VPN не подключился — восстановление куков отменено"
 
         # Открываем Flipkart чтобы установить домен, затем добавляем куки
         await page.goto("https://www.flipkart.com/", wait_until="domcontentloaded", timeout=20_000)
@@ -8576,36 +8945,18 @@ async def _navigate_search_buy(page, months: int) -> str | None:
     return await _click_buy_now(page, _BLACK_URLS[months])
 
 
-_VPN_PING_PROFILE_DIR = Path("./data/_vpn_ping_profile")
-
 
 async def _check_flipkart_accessible() -> bool:
-    """Проверяет доступность Flipkart. Raw TCP-сокет НЕ учитывает VPN-расширение
-    (оно работает только внутри Chrome через chrome.proxy), поэтому если сайт
-    заблокирован без VPN, такая проверка ничего не значит. Порядок: сначала
-    грузим расширение и включаем VPN (в отдельном лёгком видимом браузере — VPNLY
-    не подключается в headless/офф-скрин режиме), затем проверяем реальный доступ
-    через него. Без расширения — быстрая raw TCP проверка."""
+    """Фон: расширение + VPN + доступность Flipkart для тестового профиля."""
     if _vpn_extension_dir():
         try:
-            from playwright.async_api import async_playwright
             _VPN_PING_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            async with async_playwright() as pw:
-                ctx = await pw.chromium.launch_persistent_context(
-                    str(_VPN_PING_PROFILE_DIR.resolve()),
-                    **_browser_launch_kw(headless=True, use_proxy=False))
-                try:
-                    await _ensure_vpn_connected(ctx)
-                    pg = await ctx.new_page()
-                    r = await pg.goto("https://www.flipkart.com/", timeout=20_000)
-                    body = (await pg.evaluate(
-                        "() => document.body ? document.body.innerText.slice(0, 200) : ''"
-                    )).lower()
-                    return bool(r) and r.status < 400 and "access denied" not in body
-                finally:
-                    await ctx.close()
+            with_ext = [p for p in _iter_profile_dirs() if _profile_has_vpn_extension(p)]
+            profile = with_ext[0] if with_ext else _VPN_PING_PROFILE_DIR
+            ok, _ = await _prepare_profile_vpn(profile)
+            return ok
         except Exception:
-            pass  # браузерная проверка не удалась — пробуем raw TCP ниже
+            pass
     try:
         _rd, _wr = await asyncio.wait_for(
             asyncio.open_connection("www.flipkart.com", 443),
@@ -8630,99 +8981,48 @@ def _is_flipkart_accessible_sync() -> bool:
 
 @_serialize_purchase
 async def _do_buy_membership(profile_path: Path, months: int, card: dict | None = None,
-                             _skip_proxies: set | None = None,
-                             _retry_n: int = 0,
-                             _use_proxy: bool | None = None,
-                             _forced_proxy: dict | None = None,
-                             _skip_proxy_loop: bool = False,
                              _skip_ping: bool = False) -> tuple[bool, str]:
-    """Buy Now → адрес (если нужен) → viewcheckout → Continue → оплата.
-    Прокси используется для всего (навигация + оплата) через встроенный Playwright
-    Chromium — CDP Fetch.authRequired обрабатывает авторизацию без диалога."""
-    if _retry_n == 0 and not _skip_ping:
-        print(f"  {DIM}Проверка доступности Flipkart...{RST}")
-        if not await _check_flipkart_accessible():
-            _ping_msg = "Flipkart недоступен"
-            print(f"\n  {R}⚠ {_ping_msg}{RST}")
-            print(f"  {Y}Покупка Membership невозможна. Повторите позже.{RST}")
-            return False, _ping_msg
-        print(f"  {G}Flipkart доступен.{RST}")
+    """Buy Now → адрес (если нужен) → viewcheckout → Continue → оплата."""
+    if not _skip_ping:
+        if _vpn_extension_dir():
+            ok, err = await _prepare_profile_vpn(profile_path)
+            if not ok:
+                print(f"\n  {R}⚠ {err}{RST}")
+                return False, err
+        else:
+            print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+            if not await _check_flipkart_accessible():
+                _ping_msg = "Flipkart недоступен"
+                print(f"\n  {R}⚠ {_ping_msg}{RST}")
+                print(f"  {Y}Покупка Membership невозможна. Повторите позже.{RST}")
+                return False, _ping_msg
+            print(f"  {G}Flipkart доступен.{RST}")
 
-    if _use_proxy is None:
-        _use_proxy = bool((_read_proxy_cfg() or {}).get("enabled", False))
-    _MAX_PROXY_RETRIES = 3
-    _auto_close = _forced_proxy is not None   # proxy-попытки всегда закрывают браузер
-    if _skip_proxies is None:
-        _skip_proxies = set()
     if _is_profile_locked(profile_path):
         print(f"  {Y}Профиль занят — закрываю Chrome и очищаю локи...{RST}")
-        _clear_stale_profile_locks(profile_path)
-    elif _retry_n > 0:
         _clear_stale_profile_locks(profile_path)
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         return False, "playwright не установлен  (pip install playwright)"
 
-    # Подавляем ConnectionResetError от Windows ProactorEventLoop при закрытии прокси-туннеля
-    _loop = asyncio.get_event_loop()
-    _orig_exc_handler = _loop.get_exception_handler()
-    def _suppress_conn_reset(loop, ctx):
-        exc = ctx.get("exception")
-        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
-            return
-        (_orig_exc_handler(loop, ctx) if _orig_exc_handler
-         else loop.default_exception_handler(ctx))
-    _loop.set_exception_handler(_suppress_conn_reset)
-
     pw = await async_playwright().start()
     ctx = None
     _keep_open = False
-    _local_proxy_port: int | None = None
     try:
-        # Выбираем прокси и поднимаем локальный туннель (без диалога авторизации Chrome)
-        _chosen_proxy: dict | None = None
-        _last_proxy_server = ""
-        _proxy_cfg_enabled = bool((_read_proxy_cfg() or {}).get("enabled"))
-        if _forced_proxy is not None:
-            _chosen_proxy = _forced_proxy
-        elif _use_proxy and _proxy_cfg_enabled:
-            _chosen_proxy = _pick_proxy(force=True,
-                                         phone=_phone_from_path(profile_path),
-                                         skip_servers=_skip_proxies)
-        if _chosen_proxy:
-            _last_proxy_server = _chosen_proxy.get("server", "")
-            _pu = _chosen_proxy.get("username", "")
-            _pp = _chosen_proxy.get("password", "")
-            if _pu and _pp:
-                _bare = _proxy_server_bare(_last_proxy_server)
-                try:
-                    _ph, _pport_s = _bare.rsplit(":", 1)
-                    _local_proxy_port = await _start_local_auth_proxy(
-                        _ph, int(_pport_s), _pu, _pp)
-                    print(f"  {DIM}Туннель: 127.0.0.1:{_local_proxy_port} -> {_bare}{RST}")
-                except Exception as _te:
-                    print(f"  {Y}⚠ Туннель не запущен: {_te}{RST}")
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
             str(profile_path.resolve()),
-            **_browser_launch_kw(
-                use_proxy=False,
-                phone=_phone_from_path(profile_path),
-                local_proxy_port=_local_proxy_port,
-                forced_proxy_dict=_chosen_proxy if not _local_proxy_port else None,
-                use_bundled_chromium=True))
+            **_browser_launch_kw(phone=_phone_from_path(profile_path),
+                                 profile_path=profile_path))
         _stealth = _build_stealth_js_m()
         if _stealth:
             await ctx.add_init_script(_stealth)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await _maximize_window(ctx, page)
-        if _vpn_extension_dir() and not await _ensure_vpn_connected(ctx):
-            print(f"  {Y}Повторная попытка подключить VPN...{RST}")
-            if not await _ensure_vpn_connected(ctx):
-                _keep_open = False
-                return False, "VPN не подключился — покупка отменена (Flipkart недоступен без VPN)"
+        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
+            return False, "VPN не подключился — покупка отменена (Flipkart недоступен без VPN)"
 
         # Проверяем — нет ли уже купленного Black Membership
         _bm_phone_label = _phone_from_path(profile_path)
@@ -8914,7 +9214,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             except Exception:
                 pass
         if "payments" not in page.url:
-            _keep_open = not _auto_close
+            _keep_open = True
             _send_tg_error(_pp_phone, f"Не удалось перейти на страницу оплаты ({page.url.split('?')[0].split('/')[-1]})")
             return True, (f"{'✅ ' + addr_msg if addr_msg else '✅ Адрес уже был сохранён'}"
                           f" → ⚠️ Оплата не загрузилась ({page.url.split('?')[0].split('/')[-1]})"
@@ -9079,12 +9379,9 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
 
         base = f"✅ {addr_msg}" if addr_msg else "✅ Адрес уже был сохранён"
         if _post_result.get("paid"):
-            _keep_open = False  # оплата прошла → закрываем браузер автоматически
+            _keep_open = False
             vt = _post_result.get("valid_till", "")
-            if _last_proxy_server:
-                _mark_proxy_ok(_last_proxy_server)
             return True, base + f" → ✅ Оплата прошла{(' (до ' + vt + ')') if vt else ''}"
-        _keep_open = not _auto_close
         return True, base + (" → ⚠️ Оплата не подтверждена, браузер оставлен открытым"
                               if _keep_open else " → ⚠️ Оплата не подтверждена")
     except _PurchaseCancelled:
@@ -9098,28 +9395,9 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             _keep_open = False
             return False, "CANCELLED"
         msg = str(exc)
-        if _use_proxy and _is_proxy_error(exc) and _retry_n < _MAX_PROXY_RETRIES:
-            svr = _last_proxy_server
-            if svr:
-                _mark_proxy_failed(svr)
-                _skip_proxies.add(_proxy_server_bare(svr))
-            print(f"  {Y}⚠ Прокси недоступен — пробую следующий "
-                  f"({_retry_n + 1}/{_MAX_PROXY_RETRIES})...{RST}")
-            return await _do_buy_membership(profile_path, months, card,
-                                            _skip_proxies, _retry_n + 1, _use_proxy,
-                                            _skip_ping=True)
-        if _use_proxy and _is_proxy_error(exc):
-            print(f"  {Y}⚠ Все прокси недоступны — пробую без прокси...{RST}")
-            return await _do_buy_membership(profile_path, months, card,
-                                            set(), 1, _use_proxy=False,
-                                            _skip_ping=True)
-        _keep_open = False  # ошибка — закрываем браузер (иначе EPIPE при жёстком убийстве)
+        _keep_open = False
         return False, msg
     finally:
-        _loop.set_exception_handler(_orig_exc_handler)
-        if _local_proxy_port:
-            try: await _stop_local_auth_proxy(_local_proxy_port)
-            except Exception: pass
         if not _keep_open:
             if ctx:
                 try: await ctx.close()
@@ -9239,9 +9517,6 @@ def screen_buy_membership():
         ok, msg = asyncio.run(_do_buy_membership(selected["path"], months, card=None))
         if ok:
             print(f"  {G}{msg}{RST}")
-        elif msg.startswith("PROXY_DEAD:"):
-            print(f"  {R}❌ {msg[11:].strip()}{RST}")
-            print(f"  {Y}Перейдите в меню Прокси и нажмите [А] для покупки новых.{RST}")
         elif msg.startswith("OUT_OF_STOCK"):
             addr_info = msg.split("|", 1)[1] if "|" in msg else ""
             if addr_info:
@@ -9755,12 +10030,13 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
         except Exception as exc:
             print(f"  {DIM}Проверка старых активаций: {exc}{RST}")
 
-        # Проверяем доступность Flipkart один раз перед стартом.
-        # Повторные попытки (следующий номер, карта и т.д.) проверку не делают.
-        print(f"  {DIM}Проверка доступности Flipkart...{RST}")
-        if not await _check_flipkart_accessible():
-            return False, "Flipkart недоступен — запуск отменён"
-        print(f"  {G}Flipkart доступен.{RST}")
+        # Проверяем доступность Flipkart один раз перед стартом (только если нет VPN —
+        # с VPN пинг делается в CLI; повторный пинг здесь ломает VPN в рабочем браузере).
+        if not _vpn_extension_dir():
+            print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+            if not await _check_flipkart_accessible():
+                return False, "Flipkart недоступен — запуск отменён"
+            print(f"  {G}Flipkart доступен.{RST}")
 
         attempt = 0
         while True:
@@ -9832,26 +10108,49 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                 _grizzly_module.update_rental_browser(phone_id, profile_path=profile_path)
 
+                if _vpn_extension_dir():
+                    ok, err = await _prepare_profile_vpn(profile_path, label=phone_10)
+                    if not ok:
+                        print(f"  {R}VPN фон: {err} — вход отменён{RST}")
+                        _try_next = True
+                        _grizzly_module.mark_failed(phone_id)
+                        continue
+
+                await _vpn_chrome_cooldown(extra=3.0)
                 ctx = await pw.chromium.launch_persistent_context(
                     str(profile_path.resolve()),
-                    **_browser_launch_kw(headless=headless, phone=phone_10))
+                    **_browser_launch_kw(headless=headless, phone=phone_10,
+                                         profile_path=profile_path))
+                await asyncio.sleep(2.0 if _profile_has_vpn_extension(profile_path) else 4.0)
+                await _close_junk_tabs(ctx)
                 _grizzly_module.update_rental_browser(phone_id, ctx=ctx)
 
                 stealth = _build_stealth_js_m()
                 if stealth:
                     await ctx.add_init_script(stealth)
                 await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+                page = await _main_work_page(ctx)
                 _grizzly_module.update_rental_browser(phone_id, page=page)
                 if not headless:
                     await _maximize_window(ctx, page)
-                await _ensure_vpn_connected(ctx)   # VPN PLY → USA (если расширение есть)
+                if _vpn_extension_dir():
+                    if not await _vpn_connect_on_use(ctx, profile_path):
+                        print(f"  {R}VPN не подключился — вход отменён (Flipkart заблокирован без VPN){RST}")
+                        _try_next = True
+                        _grizzly_module.mark_failed(phone_id)
+                        continue
+                    if not await _verify_flipkart_reachable(page, login_url):
+                        print(f"  {R}Flipkart Access Denied — VPN не работает, вход отменён{RST}")
+                        _try_next = True
+                        _grizzly_module.mark_failed(phone_id)
+                        continue
+                    print(f"  {G}Flipkart доступен через VPN.{RST}")
 
                 def _on_new_page(p):
                     async def _check():
                         try:
                             await p.wait_for_load_state("domcontentloaded", timeout=5_000)
-                            if "terms" in p.url.lower():
+                            if "terms" in p.url.lower() or _is_junk_url(p.url):
                                 await p.close()
                                 await page.bring_to_front()
                         except Exception:
@@ -9936,9 +10235,17 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         _pre_inject_chrome_prefs(n_profile_path)
                         _grizzly_module.update_rental_browser(nid, profile_path=n_profile_path)
 
+                        if _vpn_extension_dir():
+                            ok, err = await _prepare_profile_vpn(n_profile_path, label=nph10)
+                            if not ok:
+                                print(f"  {R}VPN фон: {err}{RST}")
+                                _grizzly_module.mark_failed(nid)
+                                return
+
                         n_ctx = await pw.chromium.launch_persistent_context(
                             str(n_profile_path.resolve()),
-                            **_browser_launch_kw(headless=headless, phone=nph10)
+                            **_browser_launch_kw(headless=headless, phone=nph10,
+                                                 profile_path=n_profile_path)
                         )
                         _grizzly_module.update_rental_browser(nid, ctx=n_ctx)
 
@@ -10874,9 +11181,6 @@ def screen_all_in_one():
             print(f"  [{i+1}/{_n}] {'✅' if ok else '❌'} {msg}")
             if ok:
                 ok_count += 1
-            elif "PROXY_DEAD" in msg:
-                print(f"  {R}  Прерываю — прокси мёртв.{RST}")
-                break
             else:
                 # Новый аккаунт не вышел — пробуем оплату на всех существующих профилях
                 _done_pfs = (sorted(DONE_PROFILES_DIR.glob("profile_*"))
@@ -11149,7 +11453,7 @@ def _update_notify_loop() -> None:
 
 def _check_updates_bg() -> None:
     """Фоновая проверка. Git если есть .git папка, иначе GitHub API."""
-    global _update_available, _update_commits, _update_checked
+    global _update_available, _update_commits, _update_checked, _update_checked_at
     _cwd = Path(__file__).parent
     lines: list[str] = []
     _git_ok = False
@@ -11169,11 +11473,13 @@ def _check_updates_bg() -> None:
     _update_available = bool(lines)
     _update_commits   = lines
     _update_checked   = True
+    _update_checked_at = time.time()
     # Синхронизируем с bot-модулем (он хранит канонические значения для UI)
     try:
         _bot_module._update_available = _update_available
         _bot_module._update_commits   = list(lines)
         _bot_module._update_checked   = True
+        _bot_module._update_checked_at = _update_checked_at
     except Exception:
         pass
 
@@ -11326,6 +11632,7 @@ def _load_cards() -> list:
 
 def _save_cards(cards: list) -> None:
     _atomic_write_text(CARDS_FILE, json.dumps(cards, ensure_ascii=False, indent=2))
+    runtime_touch("cards")
 
 
 # ── Подарочные карты (Flipkart Gift Card) ────────────────────────────────────
@@ -11342,6 +11649,116 @@ def _load_gift_cards() -> list:
 
 def _save_gift_cards(cards: list) -> None:
     _atomic_write_text(GIFT_CARDS_FILE, json.dumps(cards, ensure_ascii=False, indent=2))
+    runtime_touch("gift_cards")
+
+
+def _parse_gift_cards(text: str, default_denom: int | None = None) -> tuple[list, list]:
+    """Парсит гифт-карты из текста/CSV. Возвращает (список_карт, ошибки)."""
+    import re as _re
+    denoms = set(GIFT_DENOMS)
+    out, errs = [], []
+    for _ln in text.splitlines():
+        s = _ln.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if (("серия" in low or "series" in low)
+                or ("pin" in low and ("дата" in low or "expir" in low or "истеч" in low))
+                or ("flipkart" in low and "inr" in low)):
+            continue
+        s2 = _re.sub(r"\d{4}[-/.]\d{2}[-/.]\d{2}", " ", s)
+        s2 = _re.sub(r"\d{2}[-/.]\d{2}[-/.]\d{2,4}", " ", s2)
+        m = _re.search(r"\b(\d{14,19})\b", s2)
+        number = m.group(1) if m else ""
+        rest = s2.replace(number, " ", 1) if number else s2
+        denom = default_denom
+        for t in _re.findall(r"\b(\d{2,4})\b", rest):
+            if int(t) in denoms:
+                denom = int(t)
+                rest = rest.replace(t, " ", 1)
+                break
+        pin = ""
+        for t in _re.findall(r"\b(\d{4,8})\b", rest):
+            pin = t
+            break
+        if not number:
+            errs.append(f"«{s[:40]}» — не найден номер (14–19 цифр)")
+            continue
+        if not pin:
+            errs.append(f"«{s[:40]}» — не найден PIN (4–8 цифр)")
+            continue
+        if not denom:
+            errs.append(f"«{s[:40]}» — не указан номинал")
+            continue
+        out.append({"denom": int(denom), "number": number, "pin": pin, "used": False})
+    return out, errs
+
+
+def _gift_bytes_to_text(fname: str, raw: bytes) -> tuple[str, str]:
+    """Извлекает текст из файла гифт-карт (HTML/Excel/CSV/TXT)."""
+    import re as _re2
+    _low = (fname or "").lower()
+    _sniff = raw[:400].lstrip(b"\xef\xbb\xbf").lstrip().lower()
+    if (_sniff.startswith(b"<html") or _sniff.startswith(b"<table")
+            or b"excel.sheet" in _sniff or b"<table" in raw[:2000].lower()):
+        try:
+            html = raw.decode("utf-8", "replace")
+            _lines = []
+            for _tr in _re2.findall(r"<tr[^>]*>(.*?)</tr>", html, _re2.I | _re2.S):
+                _cells = _re2.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", _tr, _re2.I | _re2.S)
+                _vals = [_re2.sub(r"<[^>]+>", "", c).strip() for c in _cells]
+                _vals = [v for v in _vals if v]
+                if _vals:
+                    _lines.append(" ".join(_vals))
+            if _lines:
+                return "\n".join(_lines), ""
+        except Exception as _he:
+            return "", f"Не удалось прочитать HTML-таблицу: {_he}"
+    if _low.endswith((".xlsx", ".xlsm", ".xls")):
+        try:
+            import io as _io2
+            import openpyxl as _oxl
+            wb = _oxl.load_workbook(_io2.BytesIO(raw), read_only=True, data_only=True)
+            _lines = []
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        _lines.append(" ".join(cells))
+            return "\n".join(_lines), ""
+        except ImportError:
+            return "", "Excel требует openpyxl (pip install openpyxl)"
+        except Exception as _xe:
+            return "", f"Не удалось прочитать Excel: {_xe}"
+    for enc in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+        try:
+            return raw.decode(enc), ""
+        except Exception:
+            continue
+    return raw.decode("utf-8", "replace"), ""
+
+
+def _add_gift_cards_from_text(text: str, default_denom: int | None = None) -> dict:
+    """Добавляет гифт-карты из текста. Возвращает {added, dup, errs, balance}."""
+    parsed, errs = _parse_gift_cards(text, default_denom)
+    existing = _load_gift_cards()
+    _have = {str(c.get("number")) for c in existing}
+    _now = time.time()
+    added = dup = 0
+    for c in parsed:
+        if str(c["number"]) in _have:
+            dup += 1
+            continue
+        c["added_ts"] = _now
+        existing.append(c)
+        _have.add(str(c["number"]))
+        added += 1
+    if added:
+        _save_gift_cards(existing)
+    return {
+        "added": added, "dup": dup, "errs": errs,
+        "balance": _gift_balance(existing), "total": len(existing),
+    }
 
 
 def _mask_gift(number: str) -> str:
@@ -11440,6 +11857,7 @@ def _save_pay_method(m: str) -> None:
         _atomic_write_text(_PAY_METHOD_FILE, _pay_method[0])
     except Exception:
         pass
+    runtime_touch("pay_method")
 
 # При импорте модуля восстанавливаем сохранённый способ оплаты
 try:
@@ -11757,7 +12175,6 @@ def screen_main():
         opt("0", "Карты для оплаты (добавить / удалить)", C)
         _gc_bal = _gift_balance()
         opt("Г", f"🎁 Подарочные карты  {DIM}(баланс ₹{_gc_bal}){RST}", C)
-        opt("Р", "Прокси (добавить / удалить / вкл-выкл)  ⛔ врем. отключены", Y)
         opt("4", "Просмотреть логи (automation.log)", B)
         opt("5", "Установить / обновить зависимости", M)
         _upd_lbl = (f"Обновить до последней версии  {Y}[{len(_upd_commits)} новых]{RST}"
@@ -11810,8 +12227,6 @@ def screen_main():
                 screen_cards()
             elif choice in ("Г", "G", "г"):
                 screen_gift_cards()
-            elif choice in ("Р", "R"):
-                screen_proxy()
             elif choice in ("У", "U"):
                 screen_update()
             elif choice in ("В", "Q"):
@@ -11840,10 +12255,9 @@ def _init_secrets() -> None:
     _SECRET_KEYS = [
         ("grizzlysms", "api_key"),
         ("telegram", "token"),
-        ("proxy6", "api_key"),
     ]
     _PLACEHOLDERS = {
-        "", "YOUR_GRIZZLYSMS_API_KEY", "YOUR_TELEGRAM_BOT_TOKEN", "YOUR_PROXY6_API_KEY",
+        "", "YOUR_GRIZZLYSMS_API_KEY", "YOUR_TELEGRAM_BOT_TOKEN",
     }
 
     def _real(val) -> bool:
@@ -11931,7 +12345,6 @@ def _check_setup() -> None:
 
     grizzly_ok  = _real((secrets.get("grizzlysms") or {}).get("api_key"))
     telegram_ok = _real((secrets.get("telegram")   or {}).get("token"))
-    proxy6_ok   = _real((secrets.get("proxy6")     or {}).get("api_key"))
 
     if grizzly_ok and telegram_ok:
         return  # всё настроено — продолжаем нормальный запуск
@@ -11997,15 +12410,6 @@ def _check_setup() -> None:
         print(f"       token: ВАШ_ТОКЕН    {DIM}← @BotFather в Telegram → /newbot{RST}")
     else:
         print(f"  {G}✓  telegram.token — заполнен{RST}")
-
-    print()
-
-    if not proxy6_ok:
-        print(f"  {DIM}○  proxy6:{RST}")
-        print(f"  {DIM}     api_key: (необязательно)  ← px6.link → API → Ключ{RST}")
-        print(f"  {DIM}   Без прокси всё работает. Прокси нужен для покупок с индийского IP.{RST}")
-    else:
-        print(f"  {G}✓  proxy6.api_key — заполнен (прокси доступен){RST}")
 
     print()
 
@@ -12227,20 +12631,23 @@ if __name__ == "__main__":
                 import grizzly as _gz_s
                 _gz_s.reset_run_stats()
 
-                # ── Проверка доступности Flipkart перед покупкой номеров ──────
-                print(f"  {DIM}Проверка доступности Flipkart...{RST}")
-                if await _check_flipkart_accessible():
-                    print(f"  {G}Flipkart доступен.{RST}")
+                # ── Проверка Flipkart (без VPN — отдельный браузер не нужен) ──────
+                if _vpn_extension_dir():
+                    print(f"  {DIM}VPN: подключится при использовании профиля{RST}")
                 else:
-                    _ping_msg = "Flipkart недоступен"
-                    print(f"\n  {R}⚠ {_ping_msg}{RST}")
-                    print(f"  {Y}Номера покупаться не будут. Повторите позже.{RST}")
-                    try:
-                        _send_tg_error("", f"🌐 {_ping_msg}")
-                    except Exception:
-                        pass
-                    _exit_code[0] = 2
-                    return
+                    print(f"  {DIM}Проверка доступности Flipkart...{RST}")
+                    if await _check_flipkart_accessible():
+                        print(f"  {G}Flipkart доступен.{RST}")
+                    else:
+                        _ping_msg = "Flipkart недоступен"
+                        print(f"\n  {R}⚠ {_ping_msg}{RST}")
+                        print(f"  {Y}Номера покупаться не будут. Повторите позже.{RST}")
+                        try:
+                            _send_tg_error("", f"🌐 {_ping_msg}")
+                        except Exception:
+                            pass
+                        _exit_code[0] = 2
+                        return
 
                 # max_concurrent_accounts из config.yaml
                 try:
@@ -12400,11 +12807,14 @@ if __name__ == "__main__":
                     _ggsel_start(_gs_key, _gs_sid)
                 except Exception as _e:
                     pass  # GGSell не обязателен
-                # TG-бот стартует после инициализации секретов (токен уже в config.yaml)
-                threading.Thread(target=_menu_tg_bot_thread, daemon=True, name="tg-menu").start()
+                # TG-бот: консоль стартует только если приложение не запущено
+                _tg_started = ensure_tg_bot("console")
+                if _tg_started == "blocked_by_app":
+                    print(f"  {DIM}Telegram-бот работает в десктоп-приложении (app.bat){RST}")
                 # Фоновая проверка обновлений (один раз при старте)
                 threading.Thread(target=_check_updates_bg, daemon=True, name="update-check").start()
                 screen_install(auto=True)
+                start_background_bootstrap()
                 # Ждём первый ответ от Telegram API (макс 12 сек)
                 for _ in range(24):
                     if _bot_module._tg_status != "starting":

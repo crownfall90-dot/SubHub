@@ -3,3 +3,6 @@ loguru==0.7.3
 playwright==1.60.0
 pyyaml
 openpyxl
+customtkinter>=5.2.0
+pystray>=0.19.5
+Pillow>=10.0.0

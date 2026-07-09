@@ -1,13 +1,14 @@
 """
-bot.py — Telegram bot background thread.
-Integrated Flipkart accessibility checks and update notifications persistence.
+bot.py — Telegram-бот SubHub (фоновый поток).
 """
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import threading
+import time
 import warnings
 from pathlib import Path
 
@@ -39,11 +40,6 @@ except ImportError:
     _aiohttp = None
     _aio_web = None
 
-from proxy import (
-    _read_proxy_cfg, _write_proxy_cfg,
-    _p6_cfg, _p6_buy_affordable, _p6_getlist, _p6_balance,
-)
-
 # ── ANSI (консоль) ────────────────────────────────────────────────────────────
 R = "\033[91m"; G = "\033[92m"; Y = "\033[93m"
 DIM = "\033[90m"; BLD = "\033[1m"; RST = "\033[0m"
@@ -57,9 +53,12 @@ def _m(name):
 # ── Глобальные ────────────────────────────────────────────────────────────────
 _tg_status: str  = "not_configured"
 _ggsel_status: str = ""   # "" — не настроен / "ok" — активен / "error:..." — ошибка
+_tg_thread = None
+_tg_owner: str = ""
 _update_available: bool = False
 _update_commits: list   = []
 _update_checked: bool   = False
+_update_checked_at: float = 0.0
 def _load_notified_updates() -> set:
     p = Path(__file__).parent / "data" / "notified_updates.json"
     if p.exists():
@@ -87,6 +86,8 @@ def _tg_status_line() -> str:
         tg_part = f"{DIM}○ Telegram: не настроен{RST}"
     elif _tg_status == "starting":
         tg_part = f"{Y}◎ Telegram: подключение...{RST}"
+    elif _tg_status == "ok:app":
+        tg_part = f"{G}● Telegram в приложении{RST}"
     elif _tg_status.startswith("error:"):
         tg_part = f"{R}✗ Telegram: {_tg_status[6:]}{RST}"
     else:
@@ -101,6 +102,42 @@ def _tg_status_line() -> str:
         ggsel_part = ""
 
     return tg_part + ggsel_part
+
+
+def ensure_tg_bot(owner: str = "console") -> str:
+    """Запускает Telegram-бот (один экземпляр). Приоритет: app > console.
+    Возвращает: started | active | blocked_by_app | no_token."""
+    global _tg_thread, _tg_owner, _tg_status
+    try:
+        token = (_m("_read_secrets")().get("telegram") or {}).get("token", "").strip()
+    except Exception:
+        token = ""
+    if not token:
+        _tg_status = "not_configured"
+        return "no_token"
+
+    active = _m("active_host")()
+    if owner == "console" and active == "app":
+        _tg_status = "ok:app"
+        return "blocked_by_app"
+
+    if _tg_thread and _tg_thread.is_alive():
+        return "active"
+
+    st = _m("_read_runtime_state")()
+    bot_pid = int(st.get("tg_bot_pid") or 0)
+    bot_owner = st.get("tg_bot_owner") or ""
+    if bot_pid and _m("_pid_alive")(bot_pid) and bot_owner and bot_owner != owner:
+        if owner == "console" and bot_owner == "app":
+            _tg_status = "ok:app"
+            return "blocked_by_app"
+
+    _m("_patch_runtime_state")(tg_bot_owner=owner, tg_bot_pid=os.getpid())
+    _tg_owner = owner
+    _tg_thread = threading.Thread(
+        target=_menu_tg_bot_thread, daemon=True, name=f"tg-{owner}")
+    _tg_thread.start()
+    return "started"
 
 
 def _menu_tg_bot_thread() -> None:
@@ -139,7 +176,9 @@ def _menu_tg_bot_thread() -> None:
     _HEARTBEAT_FILE = Path(__file__).resolve().parent / "data" / "console_heartbeat.json"
 
     def _is_console_running() -> bool:
-        """True если консоль (menu.py/main.py) сейчас запущена."""
+        """True если запущено приложение или консоль."""
+        if _m("is_host_running")():
+            return True
         if _server_mode:
             try:
                 import time as _t
@@ -147,7 +186,7 @@ def _menu_tg_bot_thread() -> None:
                 return _t.time() - float(raw.get("ts", 0)) < 120
             except Exception:
                 return False
-        return True  # не server_mode → консоль локально = всегда доступна
+        return True
 
     TG_SUBSCRIBERS_FILE = _m("TG_SUBSCRIBERS_FILE")
     TG_STATS_FILE       = _m("TG_STATS_FILE")
@@ -223,7 +262,10 @@ def _menu_tg_bot_thread() -> None:
 
         def _running():
             p = _proc[0]
-            return p is not None and p.returncode is None
+            if p is not None and p.returncode is None:
+                return True
+            ext, _ = _m("shared_automation_running")()
+            return ext
 
         def _mode_label(m):
             if m.startswith("wz:"):
@@ -266,11 +308,6 @@ def _menu_tg_bot_thread() -> None:
 
         def _main_text():
             avail, archiv = _cnt_profiles()
-            pcfg  = _read_proxy_cfg()
-            px_on = pcfg.get("enabled", False)
-            px_n  = len(pcfg.get("list") or [])
-            px_s  = (f"✅ вкл · {px_n} шт." if px_on and px_n
-                     else "✅ вкл" if px_on else "❌ выкл")
             upd_s = (f"⬆️ {len(_update_commits)} новых коммита"
                      if _update_available else "✅ Версия актуальна")
             proc_line = ""
@@ -279,10 +316,9 @@ def _menu_tg_bot_thread() -> None:
                 st  = "⏸ Пауза" if _paused[0] else "🟢"
                 proc_line = f"\n\n{st} _{lbl}_"
             return (
-                "🤖 *Flipkart Automation*\n"
+                "🤖 *SubHub*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"📁 Профилей: *{avail}* готово · *{archiv}* в архиве\n"
-                f"🌐 Прокси: {px_s}\n"
                 f"🔄 {upd_s}"
                 + proc_line
             )
@@ -672,16 +708,11 @@ def _menu_tg_bot_thread() -> None:
         def _other_text(cid):
             buy_on = _get(cid, "buy_number")
             otp_on = _get(cid, "otp_code")
-            pcfg   = _read_proxy_cfg()
-            px_on  = pcfg.get("enabled", False)
-            px_n   = len(pcfg.get("list") or [])
-            px_s   = f"✅ {px_n} шт." if px_on and px_n else ("✅" if px_on else "❌")
             upd_s  = (f"⬆️ {len(_update_commits)} новых"
                       if _update_available else "✅ актуальна")
             return (
                 "⚙️ *Настройки и утилиты*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🌐 Прокси: {px_s}\n"
                 f"📣 Покупка: {'✅ вкл' if buy_on else '❌ выкл'}\n"
                 f"🔑 OTP: {'✅ вкл' if otp_on else '❌ выкл'}\n"
                 f"🔄 Версия: {upd_s}"
@@ -697,8 +728,7 @@ def _menu_tg_bot_thread() -> None:
             _pm_cur = _m("_load_pay_method")()
             _pm_lbl = "🎁 Оплата: гифт-карты" if _pm_cur == "gift" else "💳 Оплата: карта"
             return {"inline_keyboard": [
-                [{"text": "💳 Порядок карт", "callback_data": "show:cards"},
-                 {"text": "🌐 Прокси",      "callback_data": "show:proxy"}],
+                [{"text": "💳 Порядок карт", "callback_data": "show:cards"}],
                 [{"text": "🎁 Гифт-карты",  "callback_data": "gift:menu"},
                  {"text": _pm_lbl,          "callback_data": "gift:method_toggle"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
@@ -882,43 +912,7 @@ def _menu_tg_bot_thread() -> None:
             await _send(cid, "\n".join(lines), parse_mode="Markdown",
                         reply_markup={"inline_keyboard": [[{"text": "🎁 Гифт-карты", "callback_data": "gift:menu"}]]})
 
-        # ── Прокси ────────────────────────────────────────────────────────────
-        def _proxy_text():
-            pcfg    = _read_proxy_cfg()
-            enabled = pcfg.get("enabled", False)
-            proxies = pcfg.get("list") or []
-            single  = pcfg.get("server", "")
-            st = "✅ включён" if enabled else "❌ выключен"
-            lines = ["🌐 *Прокси*", "━━━━━━━━━━━━━━━━━━━━━━", "", f"Статус: {st}"]
-            if proxies:
-                lines.append(f"Серверов: *{len(proxies)} шт.*")
-                lines.append("")
-                for p in proxies[:3]:
-                    lines.append(f"`{p.get('server','').replace('http://','')}`")
-                if len(proxies) > 3:
-                    lines.append(f"_...ещё {len(proxies)-3}_")
-            elif single:
-                lines.append(f"`{single.replace('http://','')}`")
-            else:
-                lines.append("_Прокси не настроены_")
-            return "\n".join(lines)
-
-        def _proxy_kb():
-            pcfg  = _read_proxy_cfg()
-            p6cfg = _p6_cfg()
-            tog   = "🔴 Выключить" if pcfg.get("enabled") else "🟢 Включить"
-            rows  = [[{"text": tog, "callback_data": "proxy:toggle"}]]
-            if p6cfg.get("api_key", "").strip():
-                cnt = p6cfg.get("default_count", 10)
-                rows += [
-                    [{"text": "💰 Баланс Proxy6",  "callback_data": "proxy6:balance"},
-                     {"text": f"🛒 Купить {cnt}",  "callback_data": "proxy6:buy"}],
-                    [{"text": "🔄 Синхронизировать", "callback_data": "proxy6:sync"}],
-                ]
-            rows.append([{"text": "◀️ Назад", "callback_data": "go:other"}])
-            return {"inline_keyboard": rows}
-
-        # ── GGSell — handler инициализируется ниже, после _edit/_send/_ack ──────
+        # ── Порядок карт ──────────────────────────────────────────────────────
         _ggsel_handler = [None]  # [GGSellBotHandler]
 
 
@@ -2293,6 +2287,7 @@ def _menu_tg_bot_thread() -> None:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, p.wait)
             code = p.returncode
+            _m("clear_automation_proc")()
             _paused[0] = False
             text = ("✅ Автоматизация завершена успешно" if code == 0
                     else "🛑 Автоматизация остановлена" if code in (-1, None, -15)
@@ -2333,6 +2328,7 @@ def _menu_tg_bot_thread() -> None:
                 proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
                 _proc[0]   = proc
                 _mode[0]   = mode
+                _m("set_automation_proc")(proc.pid, mode, _m("_host_kind")())
                 _paused[0] = False
                 _notify[0] = {cid}
                 if mid:
@@ -2364,6 +2360,7 @@ def _menu_tg_bot_thread() -> None:
                 proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
                 _proc[0]   = proc
                 _mode[0]   = f"full:{','.join(set(str(m) for m in tariffs))}:{mode}"
+                _m("set_automation_proc")(proc.pid, _mode[0], _m("_host_kind")())
                 _paused[0] = False
                 _notify[0] = {cid}
                 if mid:
@@ -2404,6 +2401,7 @@ def _menu_tg_bot_thread() -> None:
                 proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
                 _proc[0]   = proc
                 _mode[0]   = f"wz:{br}:{mode}:{tariff}"
+                _m("set_automation_proc")(proc.pid, _mode[0], _m("_host_kind")())
                 _paused[0] = False
                 _notify[0] = {cid}
                 if mid:
@@ -2475,7 +2473,7 @@ def _menu_tg_bot_thread() -> None:
 
         async def _bg_update_loop():
             global _update_available, _update_commits, _update_checked, \
-                   _notified_update_hashes
+                   _notified_update_hashes, _update_checked_at
             _cwd = Path(__file__).parent
 
             def _fetch():
@@ -2534,6 +2532,7 @@ def _menu_tg_bot_thread() -> None:
                 _update_available = bool(_init)
                 _update_commits   = _init
                 _update_checked   = True
+                _update_checked_at = time.time()
                 if _init:
                     fhash = {c.split()[0] for c in _init if c}
                     new_h = fhash - _notified_update_hashes
@@ -2554,6 +2553,7 @@ def _menu_tg_bot_thread() -> None:
                     _update_available = bool(fetched)
                     _update_commits   = fetched
                     _update_checked   = True
+                    _update_checked_at = time.time()
                     if new_h:
                         _notified_update_hashes.update(fhash)
                         _save_notified_updates(_notified_update_hashes)
@@ -2605,9 +2605,9 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid)
                 if _server_mode and not _is_console_running():
                     await _edit(cid, mid,
-                        "❌ *Консоль не запущена*\n\n"
-                        "_Бот работает в серверном режиме._\n"
-                        "_Для запуска автоматизации запустите_ `menu.py` _или_ `main.py` _локально._",
+                        "❌ *Хост не запущен*\n\n"
+                        "_Запустите_ `app.bat` _или_ `menu.bat` _локально._\n"
+                        "_Приоритет у десктоп-приложения._",
                         {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:main"}]]})
                     return
                 await _edit(cid, mid, _launch_text(), _launch_kb())
@@ -3237,85 +3237,6 @@ def _menu_tg_bot_thread() -> None:
                                            "callback_data": "go:profiles"}]]})
                 return
 
-            # Прокси ───────────────────────────────────────────────────────────
-            if data == "show:proxy":
-                await _ack(qid)
-                await _edit(cid, mid, _proxy_text(), _proxy_kb())
-                return
-
-            if data == "proxy:toggle":
-                pcfg = _read_proxy_cfg()
-                pcfg["enabled"] = not pcfg.get("enabled", False)
-                _write_proxy_cfg(pcfg)
-                st = "включён ✅" if pcfg["enabled"] else "выключен ❌"
-                await _ack(qid, f"Прокси {st}")
-                await _edit(cid, mid, _proxy_text(), _proxy_kb())
-                return
-
-            if data == "proxy6:balance":
-                await _ack(qid)
-                key = _p6_cfg().get("api_key", "").strip()
-                if not key:
-                    await _ack(qid, "API ключ Proxy6 не настроен", alert=True)
-                else:
-                    try:
-                        bal, cur = _p6_balance(key)
-                        await _ack(qid, f"💰 Баланс: {bal} {cur}", alert=True)
-                    except Exception as exc:
-                        await _ack(qid, f"❌ {exc}", alert=True)
-                await _edit(cid, mid, _proxy_text(), _proxy_kb())
-                return
-
-            if data == "proxy6:buy":
-                await _ack(qid)
-                p6  = _p6_cfg()
-                key = p6.get("api_key", "").strip()
-                if not key:
-                    await _ack(qid, "API ключ не настроен", alert=True)
-                    await _edit(cid, mid, _proxy_text(), _proxy_kb())
-                    return
-                try:
-                    cnt = int(p6.get("default_count",  10))
-                    per = int(p6.get("default_period",  7))
-                    new_p, buy_msg = _p6_buy_affordable(
-                        key, cnt, per,
-                        country=p6.get("country", "in"),
-                        proxy_type=p6.get("type", "http"))
-                    if not new_p:
-                        await _ack(qid, "Proxy6 вернул пустой список", alert=True)
-                    else:
-                        try:   active = _p6_getlist(key, state="active")
-                        except Exception: active = new_p
-                        pcfg = _read_proxy_cfg()
-                        pcfg.update({"list": active, "enabled": True})
-                        for k in ("server", "username", "password"):
-                            pcfg.pop(k, None)
-                        _write_proxy_cfg(pcfg)
-                        await _ack(qid, f"✅ {buy_msg} · {len(active)} активных", alert=True)
-                except Exception as exc:
-                    await _ack(qid, f"❌ {exc}", alert=True)
-                await _edit(cid, mid, _proxy_text(), _proxy_kb())
-                return
-
-            if data == "proxy6:sync":
-                await _ack(qid)
-                key = _p6_cfg().get("api_key", "").strip()
-                if not key:
-                    await _ack(qid, "API ключ не настроен", alert=True)
-                else:
-                    try:
-                        active = _p6_getlist(key, state="active")
-                        pcfg   = _read_proxy_cfg()
-                        pcfg.update({"list": active, "enabled": bool(active)})
-                        for k in ("server", "username", "password"):
-                            pcfg.pop(k, None)
-                        _write_proxy_cfg(pcfg)
-                        await _ack(qid, f"🔄 Синхронизировано: {len(active)}", alert=True)
-                    except Exception as exc:
-                        await _ack(qid, f"❌ {exc}", alert=True)
-                await _edit(cid, mid, _proxy_text(), _proxy_kb())
-                return
-
             # Пошаговый мастер запуска (Wizard) ───────────────────────────────
             if data.startswith("wz:br:"):
                 br = data.split(":")[2]
@@ -3578,6 +3499,7 @@ def _menu_tg_bot_thread() -> None:
                     _update_available = bool(lines)
                     _update_commits   = lines
                     _update_checked   = True
+                    _update_checked_at = time.time()
                 except Exception as ue:
                     await _edit(cid, mid, f"❌ Ошибка проверки: `{ue}`",
                                 {"inline_keyboard": [[{"text": "◀️ Назад",
@@ -4381,7 +4303,7 @@ def _menu_tg_bot_thread() -> None:
             tl = text.lower()
             if tl == "/start" or is_new:
                 intro = (
-                    "👋 *Добро пожаловать в Flipkart Automation!*\n"
+                    "👋 *Добро пожаловать в SubHub!*\n"
                     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     "Управляйте автоматизацией через меню:"
                     if is_new else _main_text()
@@ -4405,14 +4327,6 @@ def _menu_tg_bot_thread() -> None:
                     pass
             elif tl in ("/stop", "стоп"):
                 await _do_stop(cid)
-            elif tl in ("/proxy", "/прокси"):
-                try:
-                    await client.post(f"{api}/sendMessage",
-                                      json={"chat_id": cid, "text": _proxy_text(),
-                                            "parse_mode": "Markdown",
-                                            "reply_markup": _proxy_kb()})
-                except Exception:
-                    pass
             elif tl in ("/logs", "/лог", "/логи"):
                 try:
                     await client.post(f"{api}/sendMessage",

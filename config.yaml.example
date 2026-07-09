@@ -60,15 +60,3 @@ otp:
   wait_timeout: 15000
 captcha:
   mode: manual
-proxy:
-  enabled: false
-  list: []
-  server: ''
-  username: ''
-  password: ''
-proxy6:
-  api_key: YOUR_PROXY6_API_KEY
-  default_count: 10
-  default_period: 7
-  country: in
-  type: socks

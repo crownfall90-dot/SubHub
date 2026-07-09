@@ -17,10 +17,14 @@ data/
 ._update_sha
 
 # Debug screenshots and operational screenshots
+debug/
 debug_*.png
 viewcheckout_debug_*.png
 *.screenshot.png
 screenshots/
+
+# Editor / IDE
+*.code-workspace
 
 # Python
 __pycache__/

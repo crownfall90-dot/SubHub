@@ -554,6 +554,14 @@ class GGSellMonitor:
 _monitor_instance: Optional[GGSellMonitor] = None
 
 
+def stop_monitor() -> None:
+    """Останавливает фоновый GGSell-монитор."""
+    global _monitor_instance
+    if _monitor_instance is not None:
+        _monitor_instance.stop()
+        _monitor_instance = None
+
+
 def start_monitor(
     api_key: str,
     seller_id: int,

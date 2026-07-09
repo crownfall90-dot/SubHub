@@ -222,7 +222,8 @@ def kill_all_bot_chrome() -> int:
     """Убивает ВСЕ Chrome-процессы запущенные этим ботом (chrome_profiles*)."""
     import subprocess
     markers = ["chrome_profiles", "chrome_profiles_done",
-               "chrome_profiles_backup", "chrome_profiles_used"]
+               "chrome_profiles_backup", "chrome_profiles_used",
+               "_vpn_ping_profile"]
     killed = 0
     try:
         import psutil
@@ -943,7 +944,8 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
 
             ctx2 = await pw.chromium.launch_persistent_context(
                 str(profile_path.resolve()),
-                **_browser_launch_kw(headless=True, phone=phone_10)
+                **_browser_launch_kw(headless=True, phone=phone_10,
+                                     profile_path=profile_path)
             )
             page2 = ctx2.pages[0] if ctx2.pages else await ctx2.new_page()
             r2 = await _flipkart_phase1(page2, login_url, phone_10)

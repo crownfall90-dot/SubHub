@@ -2160,10 +2160,11 @@ class LoginAutomation:
         import menu as _menu
         _vpn_ext = _menu._vpn_extension_dir()
         if _vpn_ext:
-            args.append(f"--disable-extensions-except={_vpn_ext}")
-            args.append(f"--load-extension={_vpn_ext}")
             chrome_exe = None
             use_headless = False
+            if _menu._needs_load_extension(profile_path):
+                args.append(f"--disable-extensions-except={_vpn_ext}")
+                args.append(f"--load-extension={_vpn_ext}")
 
         context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile_path),
@@ -2188,7 +2189,9 @@ class LoginAutomation:
                 lambda route: route.abort()
             )
         if _vpn_ext:
-            await _menu._ensure_vpn_connected(context)
+            if not await _menu._vpn_connect_on_use(context, profile_path):
+                await context.close()
+                raise RuntimeError("VPN не подключился — Flipkart недоступен без VPN")
         logger.debug(f"Контекст: {profile_path.name} | {vp['width']}×{vp['height']} | {ua[:40]}...")
         return context
 
@@ -2510,6 +2513,13 @@ class ResultTracker:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _check_flipkart_accessible() -> bool:
+    """Проверка Flipkart: с VPN-расширением — через menu (браузер+VPN), иначе TCP."""
+    try:
+        import menu as _menu
+        if _menu._vpn_extension_dir():
+            return await _menu._check_flipkart_accessible()
+    except Exception:
+        pass
     try:
         _rd, _wr = await asyncio.wait_for(
             asyncio.open_connection("www.flipkart.com", 443),
