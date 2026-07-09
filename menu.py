@@ -482,10 +482,11 @@ _GH_REPO  = "flipkart-automation"  # GitHub-репозиторий (OTA-обно
 _UPDATE_FILES = [
     "README.md",
     "menu.py", "bot.py", "main.py", "app.py",
-    "menu.bat", "app.bat", "app_launch.vbs", "create_shortcut.bat",
+    "menu.bat", "app.bat", "app_launch.vbs", "create_shortcut.bat", "create_shortcut.vbs",
     "grizzly_sms.py", "proxy.py", "grizzly.py", "requirements.txt", ".gitignore",
     "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
     "assets/app.ico",
+    "assets/subhub_icon.png",
     "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/monitor.py",
 ]
 
@@ -11281,24 +11282,64 @@ def screen_logs():
 
 def _deps_ok() -> bool:
     """Быстрая проверка без сети: все пакеты импортируются и Chromium установлен."""
-    try:
-        import playwright, loguru, yaml, httpx  # noqa: F401
-    except ImportError:
-        return False
+    return _deps_ok_full()
+
+
+def _chromium_ok() -> bool:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as _pw:
             _exe = _pw.chromium.executable_path
-        import os
-        if not os.path.exists(_exe):
-            return False
+        return bool(_exe and os.path.exists(_exe))
     except Exception:
         return False
-    return True
+
+
+def _deps_ok_full() -> bool:
+    """Все пакеты из requirements.txt + Chromium."""
+    try:
+        import httpx, loguru, yaml  # noqa: F401
+        import customtkinter, pystray  # noqa: F401
+        from PIL import Image  # noqa: F401
+        import openpyxl  # noqa: F401
+        import playwright  # noqa: F401
+    except ImportError:
+        return False
+    return _chromium_ok()
+
+
+def ensure_dependencies(log_fn=None) -> tuple[bool, str]:
+    """Проверить и при необходимости установить зависимости (тихо, без UI)."""
+    if _deps_ok_full():
+        return True, "Зависимости в порядке"
+
+    req = Path(__file__).parent / "requirements.txt"
+    if log_fn:
+        log_fn("Установка пакетов из requirements.txt…")
+    pip_ok = run([sys.executable, "-m", "pip", "install", "-r", str(req)]) == 0
+
+    if not _chromium_ok():
+        if log_fn:
+            log_fn("Установка Chromium (Playwright)…")
+        pw_ok = run([sys.executable, "-m", "playwright", "install", "chromium"]) == 0
+    else:
+        pw_ok = True
+
+    if _deps_ok_full():
+        return True, "Зависимости установлены"
+    if not pip_ok:
+        return False, "pip install не удался — проверьте интернет"
+    if not pw_ok:
+        return False, "Chromium не установился"
+    return False, "Не все зависимости установлены"
 
 
 def screen_install(auto: bool = False):
-    if auto and _deps_ok():
+    if auto:
+        ensure_dependencies()
+        return  # тихая установка при старте
+
+    if _deps_ok_full():
         return  # всё уже установлено — пропускаем без очистки экрана
 
     cls()

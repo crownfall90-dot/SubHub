@@ -88,11 +88,77 @@ _APP_SETTINGS_DEFAULTS: dict[str, Any] = {
 _WIN_STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_STARTUP_NAME = "SubHub"
 APP_NAME = "SubHub"
+_WIN_APP_ID = "Crownfall.SubHub.Desktop.1"
+
+
+def _set_windows_app_id() -> None:
+    """Windows: своя иконка в панели задач вместо pythonw.exe."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_WIN_APP_ID)
+    except Exception:
+        pass
+
+
+def _win_toplevel_hwnd(widget) -> int:
+    import ctypes
+    wid = widget.winfo_id()
+    hwnd = ctypes.windll.user32.GetParent(wid)
+    return hwnd if hwnd else wid
+
+
+def _set_win32_window_icon(hwnd: int, ico_path: str) -> None:
+    import ctypes
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x10
+    LR_DEFAULTSIZE = 0x40
+    WM_SETICON = 0x80
+    ICON_SMALL, ICON_BIG = 0, 1
+    path = str(Path(ico_path).resolve())
+    for cx, cy, kind in ((32, 32, ICON_SMALL), (256, 256, ICON_BIG)):
+        hicon = ctypes.windll.user32.LoadImageW(0, path, IMAGE_ICON, cx, cy, LR_LOADFROMFILE)
+        if hicon:
+            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, kind, hicon)
+    hicon = ctypes.windll.user32.LoadImageW(
+        0, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE,
+    )
+    if hicon:
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+
+
+def _local_repo_sha() -> str:
+    """Текущий SHA репозитория (git HEAD или ._update_sha)."""
+    try:
+        head = _HERE / ".git" / "refs" / "heads" / "master"
+        if head.exists():
+            return head.read_text(encoding="utf-8").strip()
+        packed = _HERE / ".git" / "packed-refs"
+        if packed.exists():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                if "refs/heads/master" in line and not line.startswith("#"):
+                    return line.split()[0]
+        sha_f = _HERE / "._update_sha"
+        if sha_f.exists():
+            return sha_f.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _app_icon_path() -> Path | None:
     """Путь к иконке приложения: assets/app.ico или app.ico в корне проекта."""
     for rel in ("assets/app.ico", "assets/icon.ico", "app.ico"):
+        p = _HERE / rel
+        if p.is_file():
+            return p
+    return None
+
+
+def _app_icon_png_path() -> Path | None:
+    for rel in ("assets/subhub_icon.png", "assets/app.png", "subhub_icon.png"):
         p = _HERE / rel
         if p.is_file():
             return p
@@ -255,16 +321,83 @@ class SubHubApp(ctk.CTk):
         self._tray_ready = False
         self._app_settings = _load_app_settings()
         self._last_update_count = -1
+        self._app_start_sha = _local_repo_sha()
+        self._update_in_progress = False
+        self._startup_done = False
 
+        self.withdraw()
         _cleanup_legacy_branding()
         self._build_layout()
         self._apply_window_icon()
-        self._bootstrap_backend()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.show_page("home")
+        self.status_lbl.configure(text="⏳ Инициализация…")
+        self._log("⏳ Запуск SubHub…")
+        self.after(1500, self._maybe_show_loading)
+        threading.Thread(target=self._startup_preflight, daemon=True, name="preflight").start()
+
+    def _maybe_show_loading(self) -> None:
+        if self._startup_done:
+            return
+        if not self.winfo_viewable():
+            self.deiconify()
+            self._log("⏳ Инициализация, подождите…")
+
+    def _startup_preflight(self) -> None:
+        """Перед открытием: зависимости и обновления (каждый запуск)."""
+        import menu as m
+
+        def log(msg: str) -> None:
+            self.after(0, lambda m=msg: self._log(m))
+
+        try:
+            m._init_secrets()
+            m._migrate_config()
+            m._startup_cleanup()
+        except Exception as e:
+            self.after(0, lambda: self._log(f"⚠ Инициализация: {e}"))
+
+        self.after(0, lambda: self._log("📦 Проверка зависимостей…"))
+        try:
+            ok, dep_msg = m.ensure_dependencies(log_fn=log)
+            self.after(0, lambda: self._log(f"{'✓' if ok else '⚠'} {dep_msg}"))
+        except Exception as e:
+            self.after(0, lambda: self._log(f"⚠ Зависимости: {e}"))
+
+        self.after(0, lambda: self._log("🔄 Проверка обновлений…"))
+        try:
+            m._check_updates_bg()
+            n, commits, _, _ = self._get_update_state()
+            if n:
+                self.after(0, lambda: self._log(f"⚡ Доступно обновлений: {n}"))
+                for c in commits[:3]:
+                    self.after(0, lambda line=c: self._log(f"   • {line}"))
+            else:
+                self.after(0, lambda: self._log("✓ Версия актуальна"))
+        except Exception as e:
+            self.after(0, lambda: self._log(f"⚠ Обновления: {e}"))
+
+        self.after(0, self._finish_startup)
+
+    def _finish_startup(self) -> None:
+        self._startup_done = True
+        self._bootstrap_backend()
+        self._refresh_update_badge()
         self._tick_logs()
         self._tick_status()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(200, self._startup_tray)
+        start_hidden = (
+            self._app_settings.get("start_minimized")
+            and self._app_settings.get("background_mode")
+        )
+        if not start_hidden:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+            self.update_idletasks()
+            self._apply_window_icon()
+            self.after(250, self._apply_window_icon)
+        self._log("✓ SubHub готов")
 
     def _startup_tray(self) -> None:
         """Иконка SubHub в системном трее — сразу при запуске."""
@@ -281,19 +414,35 @@ class SubHubApp(ctk.CTk):
 
     def _apply_window_icon(self) -> None:
         ico = _app_icon_path()
-        if not ico:
+        png = _app_icon_png_path()
+        if not ico and not png:
             return
-        try:
-            self.iconbitmap(str(ico))
-        except Exception:
+        if ico:
             try:
-                from PIL import Image, ImageTk
-                img = Image.open(ico)
-                photo = ImageTk.PhotoImage(img)
-                self.iconphoto(True, photo)
-                self._icon_photo = photo
+                self.iconbitmap(str(ico))
             except Exception:
                 pass
+            if sys.platform == "win32":
+                try:
+                    self.update_idletasks()
+                    _set_win32_window_icon(_win_toplevel_hwnd(self), str(ico))
+                except Exception:
+                    pass
+        try:
+            from PIL import Image, ImageTk
+            src = png or ico
+            if not src:
+                return
+            img = Image.open(src)
+            photos = []
+            for size in (16, 32, 48, 64, 128, 256):
+                photos.append(ImageTk.PhotoImage(
+                    img.resize((size, size), Image.Resampling.LANCZOS),
+                ))
+            self.iconphoto(True, *photos)
+            self._icon_photos = photos
+        except Exception:
+            pass
 
     def _build_layout(self) -> None:
         self.grid_columnconfigure(1, weight=1)
@@ -1077,16 +1226,16 @@ class SubHubApp(ctk.CTk):
         )
         self.settings_upd_list.pack(fill="x", pady=(0, 8))
         self.settings_upd_list.configure(state="disabled")
-        ctk.CTkButton(
+        self.settings_upd_check_btn = ctk.CTkButton(
             inner_upd, text="🔄  Проверить", height=34, corner_radius=8,
             fg_color=BTN_SECONDARY, command=self._tool_check_updates_now,
-        ).pack(fill="x", pady=(0, 6))
+        )
+        self.settings_upd_check_btn.pack(fill="x", pady=(0, 6))
         self.settings_upd_btn = ctk.CTkButton(
             inner_upd, text="⬆  Скачать и перезапустить", height=42, corner_radius=RADIUS_BTN,
             font=ctk.CTkFont(size=14, weight="bold"), fg_color=BTN_SUCCESS,
             command=self._update_and_restart,
         )
-        self.settings_upd_btn.pack(fill="x", pady=4)
         ctk.CTkButton(
             inner_upd, text="♻  Перезапустить", height=36, corner_radius=8,
             fg_color=BTN_SECONDARY, command=self._restart_only,
@@ -1197,10 +1346,6 @@ class SubHubApp(ctk.CTk):
     def _bootstrap_backend(self) -> None:
         import menu as m
         try:
-            m._init_secrets()
-            m._migrate_config()
-            m._startup_cleanup()
-            # Фоновая проверка профилей (расширение + VPN) — сразу после старта
             scan = m.scan_profiles_extension_status()
             if m._vpn_extension_dir() and scan["total"]:
                 m._set_vpn_bg_status(
@@ -1225,7 +1370,6 @@ class SubHubApp(ctk.CTk):
                 self._log("✓ Telegram-бот активен")
             elif r == "no_token":
                 self._log("⚠ Telegram: токен не настроен")
-            threading.Thread(target=m._check_updates_bg, daemon=True, name="upd-gui").start()
             self._log("✓ Фоновые сервисы запущены")
             self._log("⏳ Проверка расширений в профилях — в фоне (без Chrome)…")
             self.after(800, self._ensure_desktop_shortcut)
@@ -1389,56 +1533,77 @@ class SubHubApp(ctk.CTk):
             self._log(f"   … и ещё {len(commits) - 4}")
         self._last_update_count = n
 
-    def _upd_btn_text(self) -> str:
-        n, _, _, _ = self._get_update_state()
-        if n:
-            return f"⬆  Скачать {n} обновлений и перезапустить"
-        return "⬆  Скачать и перезапустить"
+    def _needs_restart_for_update(self) -> bool:
+        """Файлы на диске новее запущенной версии — нужен перезапуск."""
+        if not self._app_start_sha:
+            return False
+        current = _local_repo_sha()
+        if not current:
+            return False
+        return current[:7] != self._app_start_sha[:7]
+
+    def _show_update_action_btn(
+        self, text: str, command: Callable, color: str, state: str = "normal",
+    ) -> None:
+        btn = getattr(self, "settings_upd_btn", None)
+        if btn is None:
+            return
+        btn.configure(text=text, command=command, fg_color=color, state=state)
+        if not btn.winfo_ismapped():
+            btn.pack(fill="x", pady=4, after=self.settings_upd_check_btn)
+
+    def _hide_update_action_btn(self) -> None:
+        btn = getattr(self, "settings_upd_btn", None)
+        if btn is not None and btn.winfo_ismapped():
+            btn.pack_forget()
 
     def _refresh_update_badge(self) -> None:
         try:
+            if self._update_in_progress:
+                return
             n, commits, checked, checked_at = self._get_update_state()
             when = self._format_update_when(checked_at)
             if checked:
                 self._notify_updates_if_changed(n, commits, checked_at)
+            needs_restart = self._needs_restart_for_update()
             if n:
                 title = f"⚡ Доступно обновлений: {n}"
                 sub = f"Обнаружено: {when}"
                 title_color = WARNING
                 list_text = self._update_commits_text(commits)
-                btn_state = "normal"
-                btn_color = BTN_SUCCESS
-                btn_text = f"⬆  Скачать {n} обновлений и перезапустить"
+            elif needs_restart:
+                title = "♻ Требуется перезапуск"
+                sub = "Обновление скачано — перезапустите для применения"
+                title_color = WARNING
+                list_text = ""
             elif checked:
                 title = "✓ Версия актуальна"
                 sub = f"Последняя проверка: {when}"
                 title_color = SUCCESS
                 list_text = ""
-                btn_state = "normal"
-                btn_color = BTN_SECONDARY
-                btn_text = "🔄  Проверить снова"
             else:
                 title = "Проверка обновлений…"
                 sub = "Ожидание GitHub"
                 title_color = TEXT_DIM
                 list_text = ""
-                btn_state = "disabled"
-                btn_color = BTN_SECONDARY
-                btn_text = "⬆  Скачать и перезапустить"
             if hasattr(self, "settings_upd_info"):
                 self.settings_upd_info.configure(text=title, text_color=title_color)
             if hasattr(self, "settings_upd_sub"):
                 self.settings_upd_sub.configure(text=sub)
             if hasattr(self, "settings_upd_list"):
                 self._set_readonly_text(self.settings_upd_list, list_text)
-            if hasattr(self, "settings_upd_btn"):
-                self.settings_upd_btn.configure(
-                    state=btn_state, fg_color=btn_color, text=btn_text,
+            if n:
+                self._show_update_action_btn(
+                    f"⬆  Скачать {n} обновлений и перезапустить",
+                    self._update_and_restart, BTN_SUCCESS,
                 )
-                if not n and checked:
-                    self.settings_upd_btn.configure(command=self._tool_check_updates_now)
-                else:
-                    self.settings_upd_btn.configure(command=self._update_and_restart)
+            elif needs_restart:
+                self._show_update_action_btn(
+                    "♻  Перезапустить для применения",
+                    self._restart_for_update, WARNING,
+                )
+            else:
+                self._hide_update_action_btn()
         except Exception:
             pass
 
@@ -2248,16 +2413,15 @@ class SubHubApp(ctk.CTk):
             n = len(getattr(bot_mod, "_update_commits", []) or [])
         except Exception:
             n = 0
-        if n == 0:
-            if not messagebox.askyesno(
-                "Обновление",
-                "Проверить обновления на GitHub,\nскачать новые файлы и перезапустить?",
-            ):
-                return
+        if n == 0 and not self._needs_restart_for_update():
+            return
 
+        self._update_in_progress = True
         self._log("⬆ Проверка и скачивание обновлений…")
         if hasattr(self, "settings_upd_btn"):
-            self.settings_upd_btn.configure(state="disabled", text="⏳ Обновление…")
+            self._show_update_action_btn(
+                "⏳ Обновление…", self._update_and_restart, BTN_SECONDARY, state="disabled",
+            )
 
         def _w():
             import menu as m
@@ -2282,7 +2446,18 @@ class SubHubApp(ctk.CTk):
         threading.Thread(target=_w, daemon=True).start()
 
     def _enable_upd_btn(self) -> None:
+        self._update_in_progress = False
         self._refresh_update_badge()
+
+    def _restart_for_update(self) -> None:
+        if self._proc and self._proc.poll() is None:
+            messagebox.showwarning("Занято", "Сначала остановите автоматизацию.")
+            return
+        if messagebox.askyesno(
+            "Применение обновления",
+            "Файлы уже обновлены на диске.\nПерезапустить SubHub для применения?",
+        ):
+            self._restart_app()
 
     def _restart_only(self) -> None:
         if self._proc and self._proc.poll() is None:
@@ -2357,14 +2532,10 @@ class SubHubApp(ctk.CTk):
 
         def _w():
             import menu as m
-            for cmd in [
-                [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-            ]:
-                self._log(f"$ {' '.join(cmd)}")
-                self._log(f"  код {m.run(cmd)}")
-            self._log("✓ Готово")
-            m.start_background_bootstrap(force=True)
+            ok, msg = m.ensure_dependencies(log_fn=self._log)
+            self._log(f"{'✓' if ok else '⚠'} {msg}")
+            if ok:
+                m.start_background_bootstrap(force=True)
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -2473,13 +2644,13 @@ class SubHubApp(ctk.CTk):
 
     def _tray_image(self):
         from PIL import Image, ImageDraw
-        ico = _app_icon_path()
-        if ico:
-            try:
-                img = Image.open(ico)
-                return img.resize((64, 64), Image.Resampling.LANCZOS)
-            except Exception:
-                pass
+        for src in (_app_icon_png_path(), _app_icon_path()):
+            if src:
+                try:
+                    img = Image.open(src)
+                    return img.resize((64, 64), Image.Resampling.LANCZOS)
+                except Exception:
+                    pass
         img = Image.new("RGB", (64, 64), color=(13, 17, 23))
         draw = ImageDraw.Draw(img)
         draw.rounded_rectangle([8, 8, 56, 56], radius=12, fill=(40, 116, 240))
@@ -2548,6 +2719,7 @@ class SubHubApp(ctk.CTk):
 
 def main() -> None:
     _hide_console_window()
+    _set_windows_app_id()
     while True:
         app = SubHubApp()
         if not (_HERE / "secrets.yaml").exists():
