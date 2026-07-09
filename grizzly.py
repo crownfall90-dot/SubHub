@@ -351,6 +351,107 @@ def start_global_monitor():
     _wd = threading.Thread(target=_monitor_watchdog, daemon=True, name="grizzly-watchdog")
     _wd.start()
 
+
+async def cancel_all_active_rentals(reason: str = "") -> dict:
+    """Отменяет все активные номера через GrizzlySMS API (без ожидания 2.5 мин)."""
+    result: dict = {
+        "total": 0, "cancelled": 0, "failed": 0, "phones": [], "balance": None,
+    }
+    api_key = _get_grizzly_api_key()
+    if not api_key:
+        result["error"] = "no_api_key"
+        return result
+    if GrizzlySMSClient is None:
+        result["error"] = "no_client"
+        return result
+
+    client = GrizzlySMSClient(api_key, http_timeout=15)
+    try:
+        try:
+            active = await client.get_active_activations() or []
+        except Exception as exc:
+            result["error"] = str(exc)
+            return result
+
+        result["total"] = len(active)
+        if not active:
+            return result
+
+        tag = f" ({reason})" if reason else ""
+        print(f"\n  {_Y}[Grizzly] Отмена {len(active)} активных номеров{tag}...{_RST}", flush=True)
+
+        for item in active:
+            aid = str(item.get("activationId") or item.get("id") or "")
+            ph_raw = str(item.get("phoneNumber") or item.get("phone") or "")
+            if not aid:
+                continue
+            ph10 = ph_raw[-10:] if len(ph_raw) >= 10 else ph_raw
+            try:
+                await client.cancel(aid)
+                result["cancelled"] += 1
+                result["phones"].append(ph10)
+                _RENTALS.pop(aid, None)
+                _COMPLETED_IDS.add(aid)
+                print(f"  {_G}  ✓ +91 {ph10} (id={aid}){_RST}", flush=True)
+            except Exception as exc:
+                err = str(exc)
+                result["failed"] += 1
+                if "BAD_ACTION" in err:
+                    _RENTALS.pop(aid, None)
+                    _COMPLETED_IDS.add(aid)
+                    print(f"  {_DIM}  · +91 {ph10} — уже не активен{_RST}", flush=True)
+                else:
+                    print(f"  {_Y}  ✗ +91 {ph10} — {err[:80]}{_RST}", flush=True)
+
+        try:
+            result["balance"] = await client.get_balance()
+        except Exception:
+            pass
+
+        bal = result.get("balance")
+        bal_s = f" · 💰 ${bal:.4f}" if bal is not None else ""
+        if result["cancelled"]:
+            print(
+                f"  {_G}[Grizzly] Отменено {result['cancelled']}/{result['total']}{bal_s}{_RST}",
+                flush=True,
+            )
+        elif result["total"]:
+            print(
+                f"  {_Y}[Grizzly] Не удалось отменить {result['failed']}/{result['total']}"
+                f" (возможен лимит <2 мин){bal_s}{_RST}",
+                flush=True,
+            )
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+    return result
+
+
+def cancel_all_active_rentals_blocking(reason: str = "", timeout: float = 45.0) -> dict:
+    """Синхронная отмена всех активных номеров (старт/перезапуск/кнопка в UI)."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            asyncio.wait_for(cancel_all_active_rentals(reason), timeout=timeout)
+        )
+    except asyncio.TimeoutError:
+        return {"error": "timeout", "total": 0, "cancelled": 0, "failed": 0, "phones": []}
+    except Exception as exc:
+        return {"error": str(exc), "total": 0, "cancelled": 0, "failed": 0, "phones": []}
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+
+def startup_cleanup_active_rentals(reason: str = "старт") -> dict:
+    """Отмена «хвостов» перед запуском фонового монитора."""
+    return cancel_all_active_rentals_blocking(reason)
+
+
 async def _rental_monitor_loop():
     _otp_last_check: dict[str, float] = {}
     _api_scan_at: float = 0.0
@@ -394,7 +495,10 @@ async def _rental_monitor_loop():
                         if not _aid or _aid in _RENTALS or _aid in _COMPLETED_IDS:
                             continue
                         _ph10 = _ph_raw[-10:] if len(_ph_raw) >= 10 else _ph_raw
-                        print(f"\n  {_Y}[Фон] Обнаружен активный номер +91 {_ph10} (id={_aid}) в GrizzlySMS{_RST}")
+                        print(
+                            f"\n  {_Y}[Фон] Найден незавершённый номер +91 {_ph10} (id={_aid}) — "
+                            f"с прошлого запуска, новая покупка не выполнялась{_RST}"
+                        )
                         _RENTALS[_aid] = {
                             "phone_10":      _ph10,
                             "rented_at":     time.monotonic(),  # даём 150 сек; если OTP нет — отменяем
@@ -739,10 +843,14 @@ def _submit_bg_login(api_key: str, activation_id: str, otp_code: str,
 
 
 def cleanup_all_rentals_on_exit():
-    """Быстрая очистка готовых номеров при выходе из скрипта.
-    Номера у которых ещё не прошло 2 мин — остаются в фоновом мониторе (_BG_LOOP),
-    который продолжает работать пока открыта консоль."""
+    """Очистка при выходе/перезапуске: сразу отменяем все номера в GrizzlySMS API."""
     import concurrent.futures
+
+    # Сразу отменяем всё через API — не ждём 2.5 мин и не оставляем «хвосты»
+    try:
+        cancel_all_active_rentals_blocking("выход")
+    except Exception:
+        pass
 
     # Убиваем все Chrome-процессы бота
     kill_all_bot_chrome()

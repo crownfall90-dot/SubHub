@@ -24,29 +24,59 @@ os.chdir(_HERE)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+ctk.set_widget_scaling(1.18)
+ctk.set_window_scaling(1.0)
 
-# ── Design system ─────────────────────────────────────────────────────────────
-BG_MAIN = "#0d1117"
-BG_SIDEBAR = "#161b22"
-BG_CARD = "#1c2333"
-BG_CARD_HOVER = "#242d3f"
-BG_ELEVATED = "#21283b"
-TEXT_DIM = "#8b949e"
-TEXT_MUTED = "#6e7681"
-ACCENT = "#2874F0"
-SUCCESS = "#3fb950"
-WARNING = "#d29922"
-ERROR = "#f85149"
-BTN_SECONDARY = "#2d333b"
-BTN_SUCCESS = "#238636"
-RADIUS_CARD = 16
-RADIUS_BTN = 10
-_SIDEBAR_LOG_LINES = 36
+# ── Design system (Pinterest-inspired dark) ───────────────────────────────────
+FONT_UI = "Segoe UI"
+FONT_MONO = 13
+BG_MAIN = "#191919"
+BG_SIDEBAR = "#191919"
+BG_CARD = "#2a2a2a"
+BG_CARD_HOVER = "#353535"
+BG_ELEVATED = "#333333"
+BG_SURFACE = "#242424"
+BG_NAV_ACTIVE = "#3a3a3a"
+TEXT_DIM = "#b3b3b3"
+TEXT_MUTED = "#767676"
+TEXT_PRIMARY = "#ffffff"
+ACCENT = "#E60023"
+ACCENT_HOVER = "#ad081b"
+SUCCESS = "#0d7a3f"
+SUCCESS_FG = "#1dad65"
+WARNING = "#c48800"
+ERROR = "#e60023"
+BTN_SECONDARY = "#3a3a3a"
+BTN_SECONDARY_HOVER = "#4a4a4a"
+BTN_SUCCESS = "#0d7a3f"
+BORDER_SUBTLE = "#3d3d3d"
+RADIUS_CARD = 22
+RADIUS_PIN = 22
+RADIUS_BTN = 26
+RADIUS_SM = 14
+RADIUS_CHIP = 18
+_PAD_PAGE = 24
+_PAD_CARD = 18
+_GAP_CARD = 14
+BTN_H = 44
+BTN_H_MD = 48
+BTN_ICON = 48
+SIDEBAR_W = 268
+FONT_TITLE = 28
+FONT_SECTION = 18
+FONT_BODY = 15
+FONT_CAPTION = 13
+FONT_SMALL = 12
+_SIDEBAR_LOG_LINES = 56
 
 SVC_YOUTUBE = "#ff0033"
-SVC_GGSELL = "#ff8c00"
-SVC_DEEPSEEK = "#5b7fff"
+SVC_GGSELL = "#ff6a00"
+SVC_DEEPSEEK = "#6b8cff"
 SVC_KLING = "#00c9a7"
+
+
+def _ui_font(size: int, weight: str = "normal") -> ctk.CTkFont:
+    return ctk.CTkFont(family=FONT_UI, size=size, weight=weight)
 
 SERVICE_META: dict[str, dict[str, Any]] = {
     "youtube": {
@@ -65,26 +95,41 @@ SERVICE_META: dict[str, dict[str, Any]] = {
     },
     "deepseek": {
         "title": "DeepSeek",
-        "subtitle": "Оплата подписки — скоро",
+        "subtitle": "Пополнение API-баланса",
         "accent": SVC_DEEPSEEK,
         "icon": "🧠",
-        "ready": False,
+        "ready": True,
     },
     "kling": {
         "title": "Kling AI",
-        "subtitle": "Оплата подписки — скоро",
+        "subtitle": "Скоро",
         "accent": SVC_KLING,
         "icon": "🎬",
         "ready": False,
     },
 }
 
+_GGS_TEMPLATE_META: dict[str, tuple[str, str]] = {
+    "msg_greeting": ("Приветствие", "При новом заказе"),
+    "msg_wait": ("Ожидание", "Пока готовится ссылка"),
+    "msg_template": ("Ссылка готова", "С {link}"),
+    "msg_review_promo": ("Промокод", "С {promo_code}"),
+    "ds_ask_creds": ("DS: запрос данных", "DeepSeek — почта и пароль"),
+    "ds_ask_password": ("DS: запрос пароля", "DeepSeek — пароль отдельно"),
+    "ds_processing": ("DS: выполняю", "С {amount}"),
+    "ds_done": ("DS: готово", "С {amount} и {balance}"),
+    "ds_fail_creds": ("DS: неверные данные", "Вход не удался"),
+    "ds_delay": ("DS: задержка", "Ручное выполнение"),
+}
+
 _APP_SETTINGS_PATH = _HERE / "data" / "app_settings.json"
 _APP_SETTINGS_DEFAULTS: dict[str, Any] = {
     "background_mode": True,
-    "minimize_to_tray": True,
+    "minimize_to_tray": False,
     "run_at_startup": False,
     "start_minimized": False,
+    "notify_ggs_orders": True,
+    "notify_ggs_messages": True,
 }
 _WIN_STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_STARTUP_NAME = "SubHub"
@@ -164,6 +209,37 @@ def _app_icon_png_path() -> Path | None:
         if p.is_file():
             return p
     return None
+
+
+def _regenerate_app_ico() -> Path | None:
+    """Пересобрать app.ico из PNG — все размеры для чёткого ярлыка на рабочем столе."""
+    png = _app_icon_png_path()
+    if not png:
+        return _app_icon_path()
+    ico = _HERE / "assets" / "app.ico"
+    try:
+        from PIL import Image, ImageFilter
+        src = Image.open(png).convert("RGBA")
+        sizes = [16, 24, 32, 48, 64, 128, 256]
+        frames: list[Image.Image] = []
+        for s in sizes:
+            im = src.resize((s, s), Image.Resampling.LANCZOS)
+            if s <= 48:
+                im = im.filter(ImageFilter.UnsharpMask(radius=0.6, percent=130, threshold=1))
+            frames.append(im)
+        ico.parent.mkdir(parents=True, exist_ok=True)
+        frames[-1].save(
+            ico, format="ICO",
+            sizes=[(s, s) for s in sizes],
+            append_images=frames[:-1],
+        )
+        root_ico = _HERE / "app.ico"
+        if root_ico != ico:
+            import shutil
+            shutil.copy2(ico, root_ico)
+        return ico
+    except Exception:
+        return _app_icon_path()
 
 
 def _hide_console_window() -> None:
@@ -298,8 +374,8 @@ class SubHubApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("1280x820")
-        self.minsize(1024, 680)
+        self.geometry("1380x860")
+        self.minsize(1120, 720)
         self.configure(fg_color=BG_MAIN)
 
         self._log_sink = LogSink()
@@ -331,26 +407,52 @@ class SubHubApp(ctk.CTk):
         self._ggs_filter = "new"
         self._ggs_selected_id: int | None = None
         self._ggs_loading = False
+        self._ggs_chat_loading = False
+        self._ggs_templates_win = None
         self._profile_filter = "all"
         self._prof_busy: set[str] = set()
+        self._notif_cards: list[ctk.CTkFrame] = []
+        self._notif_unread = 0
 
-        self.withdraw()
         _cleanup_legacy_branding()
         self._build_layout()
+        self._build_notification_layer()
         self._apply_window_icon()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.show_page("home")
         self.status_lbl.configure(text="⏳ Инициализация…")
         self._log("⏳ Запуск SubHub…")
+        if (
+            self._app_settings.get("start_minimized")
+            and self._app_settings.get("background_mode")
+        ):
+            self.withdraw()
+        else:
+            self._ensure_window_visible()
         self.after(1500, self._maybe_show_loading)
         threading.Thread(target=self._startup_preflight, daemon=True, name="preflight").start()
 
     def _maybe_show_loading(self) -> None:
         if self._startup_done:
             return
+        if self._hidden_to_tray:
+            return
         if not self.winfo_viewable():
-            self.deiconify()
+            self._ensure_window_visible()
             self._log("⏳ Инициализация, подождите…")
+
+    def _ensure_window_visible(self) -> None:
+        """Показать главное окно (не трогать режим «в трее»)."""
+        if self._hidden_to_tray:
+            return
+        if self._app_settings.get("start_minimized") and not self._startup_done:
+            return
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
 
     def _startup_preflight(self) -> None:
         """Перед открытием: зависимости и обновления (каждый запуск)."""
@@ -390,6 +492,11 @@ class SubHubApp(ctk.CTk):
 
     def _finish_startup(self) -> None:
         self._startup_done = True
+        try:
+            import menu as m
+            m.register_host_restart(lambda: self.after(0, self._restart_app))
+        except Exception:
+            pass
         self._bootstrap_backend()
         self._refresh_update_badge()
         self._tick_logs()
@@ -400,13 +507,26 @@ class SubHubApp(ctk.CTk):
             and self._app_settings.get("background_mode")
         )
         if not start_hidden:
-            self.deiconify()
-            self.lift()
-            self.focus_force()
+            self._ensure_window_visible()
             self.update_idletasks()
             self._apply_window_icon()
             self.after(250, self._apply_window_icon)
         self._log("✓ SubHub готов")
+        self.after(600, self._poll_ggs_notify)
+        self.after(2000, self._guard_window_visible)
+
+    def _guard_window_visible(self) -> None:
+        """Если окно пропало без явного «в трей» — вернуть на экран."""
+        if self._quitting or self._hidden_to_tray:
+            pass
+        elif not self._app_settings.get("start_minimized") or self._startup_done:
+            try:
+                if not self.winfo_viewable():
+                    self.deiconify()
+                    self.lift()
+            except Exception:
+                pass
+        self.after(3000, self._guard_window_visible)
 
     def _startup_tray(self) -> None:
         """Иконка SubHub в системном трее — сразу при запуске."""
@@ -457,68 +577,83 @@ class SubHubApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.sidebar = ctk.CTkFrame(self, width=240, corner_radius=0, fg_color=BG_SIDEBAR)
+        self.sidebar = ctk.CTkFrame(self, width=SIDEBAR_W, corner_radius=0, fg_color=BG_SIDEBAR)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
-
-        brand = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=16, pady=(20, 4))
-        ctk.CTkLabel(
-            brand, text="SubHub", font=ctk.CTkFont(size=26, weight="bold"),
-            text_color="#f0f6fc",
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            brand, text="Подписки · маркетплейс", font=ctk.CTkFont(size=11),
-            text_color=TEXT_DIM,
-        ).pack(anchor="w", pady=(2, 0))
-
-        self._vpn_status_lbl = ctk.CTkLabel(
-            self.sidebar, text="🔒 VPN…", font=ctk.CTkFont(size=11),
-            text_color=TEXT_DIM, wraplength=200,
-            fg_color=BG_CARD, corner_radius=8, padx=10, pady=6,
-        )
-        self._vpn_status_lbl.pack(fill="x", padx=14, pady=(12, 8))
-
-        self.nav_container = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.nav_container.pack(fill="both", expand=True, padx=6, pady=4)
 
         bottom = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         bottom.pack(side="bottom", fill="x", pady=(0, 12), padx=12)
 
         foot_nav = ctk.CTkFrame(bottom, fg_color="transparent")
-        foot_nav.pack(fill="x", pady=(0, 8))
+        foot_nav.pack(fill="x", pady=(0, 6))
         foot_nav.grid_columnconfigure((0, 1), weight=1)
         ctk.CTkButton(
-            foot_nav, text="📋 Логи", height=32, corner_radius=8,
-            font=ctk.CTkFont(size=12), fg_color=BTN_SECONDARY,
+            foot_nav, text="Логи", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"), fg_color=BG_SURFACE,
+            hover_color=BG_NAV_ACTIVE,
             command=lambda: self.show_page("logs"),
         ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ctk.CTkButton(
-            foot_nav, text="⚙️ Настройки", height=32, corner_radius=8,
-            font=ctk.CTkFont(size=12), fg_color=BTN_SECONDARY,
+            foot_nav, text="Настройки", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"), fg_color=BG_SURFACE,
+            hover_color=BG_NAV_ACTIVE,
             command=lambda: self.show_page("settings"),
         ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        self.sidebar_log = ctk.CTkTextbox(
-            bottom, height=118,
-            font=ctk.CTkFont(family="Consolas", size=9),
-            fg_color=BG_CARD, corner_radius=10,
-            border_width=1, border_color="#30363d",
-            text_color=TEXT_DIM, wrap="word",
-            activate_scrollbars=True,
-        )
-        self.sidebar_log.pack(fill="x", pady=(0, 8))
-        self.sidebar_log.configure(state="disabled")
-        self.sidebar_log.bind("<Button-1>", lambda _e: self.show_page("logs"))
-
         self.status_lbl = ctk.CTkLabel(
-            bottom, text="", font=ctk.CTkFont(size=10), text_color=TEXT_MUTED, wraplength=200,
+            bottom, text="", font=_ui_font(FONT_BODY), text_color=TEXT_MUTED, wraplength=220,
         )
         self.status_lbl.pack(anchor="w")
         self._bg_status_lbl = None
 
+        brand = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        brand.pack(fill="x", padx=14, pady=(16, 10))
+        brand_row = ctk.CTkFrame(brand, fg_color="transparent")
+        brand_row.pack(fill="x")
+        logo = ctk.CTkFrame(brand_row, width=44, height=44, corner_radius=22, fg_color=ACCENT)
+        logo.pack(side="left")
+        logo.pack_propagate(False)
+        ctk.CTkLabel(logo, text="S", font=_ui_font(22, "bold"), text_color=TEXT_PRIMARY).place(
+            relx=0.5, rely=0.5, anchor="center",
+        )
+        brand_txt = ctk.CTkFrame(brand_row, fg_color="transparent")
+        brand_txt.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(
+            brand_txt, text="SubHub", font=_ui_font(22, "bold"),
+            text_color=TEXT_PRIMARY,
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            brand_txt, text="Подписки · маркетплейс", font=_ui_font(FONT_CAPTION),
+            text_color=TEXT_MUTED,
+        ).pack(anchor="w")
+
+        self._vpn_status_lbl = ctk.CTkLabel(
+            self.sidebar, text="🔒 VPN…", font=_ui_font(FONT_CAPTION),
+            text_color=TEXT_DIM, wraplength=220,
+            fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP, padx=12, pady=6,
+        )
+        self._vpn_status_lbl.pack(fill="x", padx=12, pady=(0, 8))
+
+        self.nav_container = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.nav_container.pack(fill="x", padx=8, pady=4)
+
+        self.sidebar_log_wrap = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.sidebar_log_wrap.pack(fill="both", expand=True, padx=12, pady=(4, 6))
+
+        self.sidebar_log = ctk.CTkTextbox(
+            self.sidebar_log_wrap,
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+            fg_color=BG_SURFACE, corner_radius=RADIUS_SM,
+            border_width=0,
+            text_color=TEXT_MUTED, wrap="word",
+            activate_scrollbars=True,
+        )
+        self.sidebar_log.pack(fill="both", expand=True)
+        self.sidebar_log.configure(state="disabled")
+        self.sidebar_log.bind("<Button-1>", lambda _e: self.show_page("logs"))
+
         self.content = ctk.CTkFrame(self, fg_color="transparent")
-        self.content.grid(row=0, column=1, sticky="nsew", padx=20, pady=18)
+        self.content.grid(row=0, column=1, sticky="nsew", padx=_PAD_PAGE, pady=_PAD_PAGE)
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
@@ -544,7 +679,10 @@ class SubHubApp(ctk.CTk):
         accent = SERVICE_META.get(service or "", {}).get("accent", ACCENT)
 
         if service is None:
-            items = [("home", "🏠  Главная")]
+            items = [
+                ("home", "🏠  Главная"),
+                ("cards", "💳  Карты"),
+            ]
         elif service == "youtube":
             items = [
                 ("__home__", "←  Главная"),
@@ -552,7 +690,6 @@ class SubHubApp(ctk.CTk):
                 ("run", "🚀  Запуск"),
                 ("profiles", "👤  Профили"),
                 ("archive", "📦  Архив"),
-                ("cards", "💳  Карты"),
                 ("vpn", "🔒  VPN"),
             ]
         elif service == "ggsell":
@@ -570,26 +707,35 @@ class SubHubApp(ctk.CTk):
         for key, label in items:
             is_active = key == self._current_page or (
                 key == "youtube_hub"
-                and self._current_page in ("run", "profiles", "archive", "cards", "vpn", "tools")
+                and self._current_page in ("run", "profiles", "archive", "vpn", "tools")
             )
             btn = ctk.CTkButton(
-                self.nav_container, text=label, anchor="w", height=36,
-                corner_radius=8,
-                fg_color=accent if is_active else "transparent",
+                self.nav_container, text=label, anchor="w", height=48,
+                corner_radius=RADIUS_CHIP,
+                fg_color=BG_NAV_ACTIVE if is_active else "transparent",
                 hover_color=BG_CARD_HOVER,
-                font=ctk.CTkFont(size=13),
+                text_color=TEXT_PRIMARY if is_active else TEXT_DIM,
+                font=_ui_font(FONT_BODY, "bold" if is_active else "normal"),
                 command=lambda k=key: self._nav_click(k),
             )
-            btn.pack(fill="x", padx=6, pady=2)
+            btn.pack(fill="x", padx=4, pady=2)
             self._nav_btns[key] = btn
 
     def _nav_click(self, key: str) -> None:
         if key == "__home__":
             self._go_home()
             return
-        if key in ("run", "profiles", "archive", "cards", "vpn", "tools"):
+        if key in ("run", "profiles", "archive", "vpn", "tools"):
             self._current_service = "youtube"
+        elif key == "cards":
+            self._current_service = None
+            self._render_sidebar(None)
         self.show_page(key)
+
+    def _open_cards_page(self) -> None:
+        self._current_service = None
+        self._render_sidebar(None)
+        self.show_page("cards")
 
     def _enter_service(self, service: str) -> None:
         meta = SERVICE_META.get(service, {})
@@ -610,57 +756,65 @@ class SubHubApp(ctk.CTk):
 
     def _page_header(self, parent, title: str, subtitle: str = "", accent: str = ACCENT) -> None:
         hdr = ctk.CTkFrame(parent, fg_color="transparent")
-        hdr.pack(fill="x", pady=(0, 16))
-        stripe = ctk.CTkFrame(hdr, width=4, height=48, fg_color=accent, corner_radius=2)
-        stripe.pack(side="left", padx=(0, 14))
-        txt = ctk.CTkFrame(hdr, fg_color="transparent")
-        txt.pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(txt, text=title, font=ctk.CTkFont(size=28, weight="bold"),
-                     text_color="#f0f6fc").pack(anchor="w")
+        hdr.pack(fill="x", pady=(0, _GAP_CARD))
+        ctk.CTkLabel(
+            hdr, text=title, font=_ui_font(FONT_TITLE, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(anchor="w")
         if subtitle:
-            ctk.CTkLabel(txt, text=subtitle, font=ctk.CTkFont(size=13),
-                         text_color=TEXT_DIM).pack(anchor="w", pady=(2, 0))
+            ctk.CTkLabel(
+                hdr, text=subtitle, font=_ui_font(FONT_BODY), text_color=TEXT_MUTED,
+            ).pack(anchor="w", pady=(2, 0))
+
+    def _section_title(self, parent, text: str) -> None:
+        ctk.CTkLabel(
+            parent, text=text, font=_ui_font(FONT_SECTION, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(anchor="w", pady=(4, 8))
 
     def _service_tile(self, parent, col: int, service: str) -> ctk.CTkFrame:
         meta = SERVICE_META[service]
         accent = meta["accent"]
         ready = meta.get("ready", True)
         card = ctk.CTkFrame(
-            parent, fg_color=BG_CARD, corner_radius=20,
-            border_width=2, border_color=accent if ready else "#30363d",
+            parent, fg_color=BG_CARD, corner_radius=RADIUS_PIN,
+            border_width=0,
         )
-        card.grid(row=0, column=col, sticky="nsew", padx=8, pady=8)
+        card.grid(row=0, column=col, sticky="nsew", padx=6, pady=6)
 
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=22, pady=22)
+        cover = ctk.CTkFrame(card, fg_color=accent, height=108, corner_radius=RADIUS_SM)
+        cover.pack(fill="x", padx=8, pady=(8, 0))
+        cover.pack_propagate(False)
+        ctk.CTkLabel(
+            cover, text=meta["icon"], font=_ui_font(44),
+        ).pack(expand=True)
 
-        top = ctk.CTkFrame(inner, fg_color="transparent")
-        top.pack(fill="x")
-        icon = ctk.CTkFrame(top, width=56, height=56, corner_radius=28, fg_color=accent)
-        icon.pack(side="left")
-        icon.pack_propagate(False)
-        ctk.CTkLabel(icon, text=meta["icon"], font=ctk.CTkFont(size=26)).place(relx=0.5, rely=0.5, anchor="center")
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=14)
+
+        title_row = ctk.CTkFrame(body, fg_color="transparent")
+        title_row.pack(fill="x")
+        ctk.CTkLabel(
+            title_row, text=meta["title"], font=_ui_font(17, "bold"),
+            text_color=TEXT_PRIMARY, anchor="w",
+        ).pack(side="left")
         if not ready:
             ctk.CTkLabel(
-                top, text="СКОРО", font=ctk.CTkFont(size=10, weight="bold"),
-                fg_color="#30363d", corner_radius=6, text_color=TEXT_DIM, padx=8, pady=2,
+                title_row, text="Скоро", font=_ui_font(10, "bold"),
+                fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP, text_color=TEXT_MUTED,
+                padx=10, pady=3,
             ).pack(side="right")
 
         ctk.CTkLabel(
-            inner, text=meta["title"], font=ctk.CTkFont(size=22, weight="bold"),
-            text_color="#f0f6fc", anchor="w",
-        ).pack(fill="x", pady=(16, 4))
-        ctk.CTkLabel(
-            inner, text=meta["subtitle"], font=ctk.CTkFont(size=12),
-            text_color=TEXT_DIM, anchor="w", justify="left", wraplength=220,
-        ).pack(fill="x", pady=(0, 16))
+            body, text=meta["subtitle"], font=_ui_font(FONT_CAPTION),
+            text_color=TEXT_MUTED, anchor="w", justify="left", wraplength=240,
+        ).pack(fill="x", pady=(4, 12))
 
-        btn_txt = "Открыть →" if ready else "Скоро"
+        btn_txt = "Открыть" if ready else "Скоро"
         btn = ctk.CTkButton(
-            inner, text=btn_txt, height=40, corner_radius=10,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=accent if ready else "#30363d",
-            hover_color=accent if ready else "#30363d",
+            body, text=btn_txt, height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=accent if ready else BG_SURFACE,
+            hover_color=self._btn_hover(accent) if ready else BG_SURFACE,
+            text_color=TEXT_PRIMARY,
             state="normal" if ready else "disabled",
             command=lambda s=service: self._enter_service(s),
         )
@@ -668,10 +822,10 @@ class SubHubApp(ctk.CTk):
 
         if ready:
             def _hover_in(_e=None):
-                card.configure(fg_color=BG_CARD_HOVER, border_color=accent)
+                card.configure(fg_color=BG_CARD_HOVER)
             def _hover_out(_e=None):
-                card.configure(fg_color=BG_CARD, border_color=accent)
-            for w in (card, inner, icon):
+                card.configure(fg_color=BG_CARD)
+            for w in (card, cover, body, title_row):
                 w.bind("<Enter>", _hover_in)
                 w.bind("<Leave>", _hover_out)
                 w.bind("<Button-1>", lambda e, s=service: self._enter_service(s))
@@ -680,58 +834,47 @@ class SubHubApp(ctk.CTk):
     def _ggsell_home_banner(self, parent) -> ctk.CTkFrame:
         meta = SERVICE_META["ggsell"]
         accent = meta["accent"]
-        card = ctk.CTkFrame(
-            parent, fg_color=BG_CARD, corner_radius=20,
-            border_width=2, border_color=accent,
-        )
-        card.pack(fill="x", pady=(0, 20))
+        card = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=RADIUS_PIN, border_width=0)
+        card.pack(fill="x", pady=(0, _GAP_CARD))
 
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=24, pady=20)
-        inner.grid_columnconfigure(1, weight=1)
-
-        left = ctk.CTkFrame(inner, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="nw", padx=(0, 20))
-        icon = ctk.CTkFrame(left, width=64, height=64, corner_radius=32, fg_color=accent)
-        icon.pack(anchor="w")
-        icon.pack_propagate(False)
-        ctk.CTkLabel(icon, text=meta["icon"], font=ctk.CTkFont(size=30)).place(
-            relx=0.5, rely=0.5, anchor="center")
+        hero = ctk.CTkFrame(card, fg_color=accent, height=128, corner_radius=RADIUS_SM)
+        hero.pack(fill="x", padx=8, pady=(8, 0))
+        hero.pack_propagate(False)
+        hero_inner = ctk.CTkFrame(hero, fg_color="transparent")
+        hero_inner.pack(fill="both", expand=True, padx=16, pady=12)
+        hero_inner.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(hero_inner, text=meta["icon"], font=_ui_font(48)).grid(row=0, column=0, sticky="w")
+        hero_txt = ctk.CTkFrame(hero_inner, fg_color="transparent")
+        hero_txt.grid(row=0, column=1, sticky="w", padx=(12, 0))
         ctk.CTkLabel(
-            left, text="Маркетплейс", font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=accent,
-        ).pack(anchor="w", pady=(10, 0))
-        ctk.CTkLabel(
-            left, text=meta["title"], font=ctk.CTkFont(size=26, weight="bold"),
-            text_color="#f0f6fc",
+            hero_txt, text="Маркетплейс", font=_ui_font(10, "bold"), text_color="#ffe8d6",
         ).pack(anchor="w")
         ctk.CTkLabel(
-            left, text=meta["subtitle"], font=ctk.CTkFont(size=12),
-            text_color=TEXT_DIM, wraplength=280, justify="left",
-        ).pack(anchor="w", pady=(4, 0))
-
-        mid = ctk.CTkFrame(inner, fg_color="transparent")
-        mid.grid(row=0, column=1, sticky="ew")
-        for i in range(3):
-            mid.grid_columnconfigure(i, weight=1)
-        self.home_ggs_orders = self._stat_box(mid, 0, "Заказов", "—", accent)
-        self.home_ggs_monitor = self._stat_box(mid, 1, "Монитор", "—", accent)
-        self.home_ggs_balance = self._stat_box(mid, 2, "Баланс", "—", accent)
-
-        right = ctk.CTkFrame(inner, fg_color="transparent")
-        right.grid(row=0, column=2, sticky="ne", padx=(20, 0))
+            hero_txt, text=meta["title"], font=_ui_font(26, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            hero_txt, text=meta["subtitle"], font=_ui_font(FONT_CAPTION), text_color="#ffe8d6",
+        ).pack(anchor="w")
         ctk.CTkButton(
-            right, text="Открыть GGSELL →", width=180, height=48, corner_radius=12,
-            font=ctk.CTkFont(size=15, weight="bold"),
-            fg_color=accent, hover_color="#e67e00",
+            hero_inner, text="Открыть", width=130, height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=TEXT_PRIMARY, hover_color="#f0f0f0", text_color=accent,
             command=lambda: self._enter_service("ggsell"),
-        ).pack(pady=(12, 0))
+        ).grid(row=0, column=2, sticky="e")
+
+        stats_row = ctk.CTkFrame(card, fg_color="transparent")
+        stats_row.pack(fill="x", padx=8, pady=10)
+        for i in range(3):
+            stats_row.grid_columnconfigure(i, weight=1)
+        self.home_ggs_orders = self._stat_box(stats_row, 0, "Заказов", "—", accent)
+        self.home_ggs_monitor = self._stat_box(stats_row, 1, "Монитор", "—", accent)
+        self.home_ggs_balance = self._stat_box(stats_row, 2, "Баланс", "—", accent)
 
         def _hover_in(_e=None):
             card.configure(fg_color=BG_CARD_HOVER)
         def _hover_out(_e=None):
             card.configure(fg_color=BG_CARD)
-        for w in (card, inner, left, mid):
+        for w in (card, hero, stats_row):
             w.bind("<Enter>", _hover_in)
             w.bind("<Leave>", _hover_out)
             w.bind("<Button-1>", lambda e: self._enter_service("ggsell"))
@@ -743,8 +886,13 @@ class SubHubApp(ctk.CTk):
         return frame
 
     def show_page(self, name: str) -> None:
-        youtube_pages = {"run", "profiles", "archive", "cards", "vpn", "tools", "youtube_hub"}
-        if name in youtube_pages and self._current_service != "youtube":
+        youtube_pages = {"run", "profiles", "archive", "vpn", "tools", "youtube_hub"}
+        home_pages = {"home", "cards"}
+        if name in home_pages:
+            if self._current_service is not None:
+                self._current_service = None
+                self._render_sidebar(None)
+        elif name in youtube_pages and self._current_service != "youtube":
             self._current_service = "youtube"
             self._render_sidebar("youtube")
         elif name == "ggsell" and self._current_service != "ggsell":
@@ -766,9 +914,13 @@ class SubHubApp(ctk.CTk):
         for k, btn in self._nav_btns.items():
             active = k == name or (
                 k == "youtube_hub"
-                and name in ("run", "profiles", "archive", "cards", "vpn", "tools", "youtube_hub")
+                and name in ("run", "profiles", "archive", "vpn", "tools", "youtube_hub")
             )
-            btn.configure(fg_color=accent if active else "transparent")
+            btn.configure(
+                fg_color=BG_NAV_ACTIVE if active else "transparent",
+                text_color=TEXT_PRIMARY if active else TEXT_DIM,
+                font=_ui_font(FONT_BODY, "bold" if active else "normal"),
+            )
 
         refresh = {
             "home": lambda: (self._refresh_home_ggsell(), self._refresh_update_badge()),
@@ -778,6 +930,7 @@ class SubHubApp(ctk.CTk):
             "cards": self._refresh_cards,
             "archive": self._refresh_archive,
             "vpn": self._refresh_vpn_page,
+            "deepseek": self._refresh_deepseek,
             "settings": lambda: (
                 self._refresh_settings_keys(), self._refresh_update_badge(), self._sync_settings_switches(),
             ),
@@ -785,31 +938,240 @@ class SubHubApp(ctk.CTk):
         fn = refresh.get(name)
         if fn:
             fn()
+        if name == "ggsell":
+            self._notif_unread = 0
+            self._update_notif_badge()
+        self.after(50, self._ensure_window_visible)
+
+    def _build_notification_layer(self) -> None:
+        # Пустой CTkFrame имеет размер 200×200 по умолчанию — размещаем слой
+        # только когда есть карточки уведомлений, иначе он висит тёмным
+        # квадратом поверх контента.
+        self._notif_layer = ctk.CTkFrame(self.content, fg_color="transparent")
+        self._notif_badge = ctk.CTkLabel(
+            self.sidebar, text="", font=_ui_font(FONT_SMALL, "bold"),
+            fg_color=ACCENT, corner_radius=RADIUS_CHIP, text_color=TEXT_PRIMARY,
+            padx=8, pady=2,
+        )
+
+    def _update_notif_badge(self) -> None:
+        if not hasattr(self, "_notif_badge"):
+            return
+        if self._notif_unread > 0:
+            self._notif_badge.configure(text=f"🔔 {self._notif_unread}")
+            self._notif_badge.pack(after=self._vpn_status_lbl, fill="x", padx=12, pady=(0, 6))
+        else:
+            self._notif_badge.pack_forget()
+
+    def _poll_ggs_notify(self) -> None:
+        try:
+            from ggsell.monitor import gui_notify_queue
+            while True:
+                try:
+                    item = gui_notify_queue.get_nowait()
+                except Exception:
+                    break
+                self._handle_ggs_notify(item)
+        except Exception:
+            pass
+        self.after(700, self._poll_ggs_notify)
+
+    def _handle_ggs_notify(self, item: dict) -> None:
+        kind = item.get("type") or ""
+        if kind == "new_order":
+            if not self._app_settings.get("notify_ggs_orders", True):
+                return
+            inv = int(item.get("invoice_id") or 0)
+            order = item.get("order") or {}
+            try:
+                from ggsell.gui_orders import parse_order
+                p = parse_order(order)
+            except Exception:
+                p = {"name_short": "Заказ", "email": "", "sum_buy": ""}
+            email = item.get("buyer_email") or p.get("email") or ""
+            title = f"Новый заказ #{inv}"
+            parts = [str(p.get("name_short") or "YouTube Premium")]
+            if email:
+                parts.append(email)
+            if p.get("sum_buy"):
+                parts.append(f"{p['sum_buy']}₽")
+            body = " · ".join(parts)
+            self._push_notification(
+                title, body, SVC_GGSELL,
+                lambda i=inv: self._open_ggs_order(i),
+            )
+            if self._current_page != "ggsell":
+                self.after(400, self._refresh_ggsell)
+        elif kind == "new_message":
+            if not self._app_settings.get("notify_ggs_messages", True):
+                return
+            inv = int(item.get("invoice_id") or 0)
+            msg = item.get("message") or {}
+            is_seller = bool(item.get("is_seller"))
+            text = str(msg.get("text") or msg.get("message") or msg.get("body") or "").strip()
+            if len(text) > 140:
+                text = text[:140] + "…"
+            if is_seller:
+                title = f"Сообщение отправлено · #{inv}"
+                accent = TEXT_MUTED
+            else:
+                title = f"Сообщение покупателя · #{inv}"
+                accent = SVC_GGSELL
+            body = text or "(без текста)"
+            self._push_notification(
+                title, body, accent,
+                lambda i=inv: self._open_ggs_order(i),
+            )
+            if self._current_page == "ggsell" and self._ggs_selected_id == inv:
+                self.after(300, lambda i=inv: self._ggsell_load_chat(i))
+        elif kind == "ds_status":
+            inv = int(item.get("invoice_id") or 0)
+            text = str(item.get("text") or "").replace("`", "")
+            self._push_notification(
+                f"DeepSeek · заказ #{inv}" if inv else "DeepSeek",
+                text, SVC_DEEPSEEK,
+                (lambda i=inv: self._open_ggs_order(i)) if inv else None,
+            )
+
+    def _push_notification(
+        self, title: str, body: str, accent: str,
+        on_click: Callable | None = None,
+    ) -> None:
+        self._notif_unread += 1
+        self._update_notif_badge()
+        self._log(f"🔔 {title}: {body[:80]}")
+
+        if not self._notif_cards:
+            self._notif_layer.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+
+        card = ctk.CTkFrame(
+            self._notif_layer, fg_color=BG_CARD, corner_radius=RADIUS_CHIP,
+            border_width=2, border_color=accent, width=340,
+        )
+        card.pack(fill="x", pady=4)
+        card.pack_propagate(False)
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=12, pady=10)
+        top = ctk.CTkFrame(inner, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkLabel(
+            top, text=title, font=_ui_font(FONT_BODY, "bold"),
+            text_color=TEXT_PRIMARY, anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(
+            top, text="✕", width=28, height=28, corner_radius=14,
+            fg_color="transparent", hover_color=BG_NAV_ACTIVE,
+            command=lambda c=card: self._dismiss_notification(c),
+        ).pack(side="right")
+
+        lbl = ctk.CTkLabel(
+            inner, text=body, font=_ui_font(FONT_SMALL),
+            text_color=TEXT_DIM, anchor="w", justify="left", wraplength=300,
+        )
+        lbl.pack(fill="x", pady=(4, 0))
+
+        def _click(_e=None) -> None:
+            if on_click:
+                on_click()
+            self._dismiss_notification(card)
+
+        for w in (card, inner, lbl):
+            w.bind("<Button-1>", _click)
+            w.configure(cursor="hand2")
+
+        self._notif_cards.append(card)
+        while len(self._notif_cards) > 5:
+            old = self._notif_cards.pop(0)
+            self._dismiss_notification(old, count_unread=False)
+        self.after(14000, lambda c=card: self._dismiss_notification(c))
+
+        if sys.platform == "win32":
+            self._try_windows_toast(title, body)
+
+    def _dismiss_notification(self, card: ctk.CTkFrame, count_unread: bool = True) -> None:
+        try:
+            if card in self._notif_cards:
+                self._notif_cards.remove(card)
+            card.destroy()
+            if not self._notif_cards:
+                self._notif_layer.place_forget()
+            if count_unread and self._notif_unread > 0:
+                self._notif_unread -= 1
+                self._update_notif_badge()
+        except Exception:
+            pass
+
+    def _try_windows_toast(self, title: str, body: str) -> None:
+        try:
+            import ctypes
+            flags = 0x00000010  # NIIF_INFO
+            ni = ctypes.c_wchar * 256
+            nid = type("NOTIFY", (), {})()
+            # Fallback: flash taskbar
+            hwnd = self.winfo_id()
+            ctypes.windll.user32.FlashWindow(hwnd, True)
+        except Exception:
+            pass
+
+    def _open_ggs_order(self, inv_id: int) -> None:
+        self._ggs_selected_id = inv_id
+        self._ggs_filter = "all"
+        for key, btn in getattr(self, "_ggs_filter_btns", {}).items():
+            active = key == "all"
+            btn.configure(
+                fg_color=SVC_GGSELL if active else BG_SURFACE,
+                hover_color=self._btn_hover(SVC_GGSELL) if active else BG_NAV_ACTIVE,
+            )
+        self._enter_service("ggsell")
+        self.show_page("ggsell")
+        self._notif_unread = 0
+        self._update_notif_badge()
 
     def _card(self, parent, title: str, accent: str | None = None) -> ctk.CTkFrame:
-        f = ctk.CTkFrame(parent, fg_color=BG_CARD, corner_radius=RADIUS_CARD)
-        f.pack(fill="x", pady=(0, 14))
+        f = ctk.CTkFrame(
+            parent, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+            border_width=0,
+        )
+        f.pack(fill="x", pady=(0, _GAP_CARD))
         hdr = ctk.CTkFrame(f, fg_color="transparent")
-        hdr.pack(fill="x", padx=16, pady=(14, 8))
+        hdr.pack(fill="x", padx=_PAD_CARD, pady=(12, 4))
         if accent:
-            ctk.CTkFrame(hdr, width=3, height=18, fg_color=accent, corner_radius=2).pack(
-                side="left", padx=(0, 10))
+            dot = ctk.CTkFrame(hdr, width=8, height=8, corner_radius=4, fg_color=accent)
+            dot.pack(side="left", padx=(0, 8))
         ctk.CTkLabel(
-            hdr, text=title, font=ctk.CTkFont(size=15, weight="bold"), text_color="#f0f6fc",
+            hdr, text=title, font=_ui_font(FONT_SECTION, "bold"), text_color=TEXT_PRIMARY,
         ).pack(side="left")
         inner = ctk.CTkFrame(f, fg_color="transparent")
-        inner.pack(fill="x", padx=16, pady=(0, 14))
+        inner.pack(fill="x", padx=_PAD_CARD, pady=(0, 12))
         return inner
 
-    def _hint(self, parent, text: str) -> None:
-        ctk.CTkLabel(
-            parent, text=text, justify="left", anchor="w",
-            text_color=TEXT_DIM, font=ctk.CTkFont(size=12), wraplength=720,
-        ).pack(fill="x")
+    def _chip_btn(self, parent, text: str, active: bool, accent: str, command) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            parent, text=text, height=BTN_H, corner_radius=RADIUS_CHIP,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=accent if active else BG_SURFACE,
+            hover_color=self._btn_hover(accent) if active else BG_NAV_ACTIVE,
+            text_color=TEXT_PRIMARY,
+            command=command,
+        )
+
+    def _btn_hover(self, color: str) -> str:
+        return {
+            ACCENT: ACCENT_HOVER,
+            SVC_YOUTUBE: "#cc0029",
+            SVC_GGSELL: "#e65c00",
+            SVC_DEEPSEEK: "#5578e8",
+            SVC_KLING: "#00a88a",
+            SUCCESS: SUCCESS_FG,
+            BTN_SUCCESS: SUCCESS_FG,
+            ERROR: ACCENT_HOVER,
+            BTN_SECONDARY: BTN_SECONDARY_HOVER,
+        }.get(color, BTN_SECONDARY_HOVER)
 
     def _toolbar(self, parent) -> ctk.CTkFrame:
         bar = ctk.CTkFrame(parent, fg_color="transparent")
-        bar.pack(fill="x", pady=(0, 12))
+        bar.pack(fill="x", pady=(0, _GAP_CARD))
         return bar
 
     def _action_grid(self, parent, actions: list[tuple], cols: int = 2) -> ctk.CTkFrame:
@@ -821,14 +1183,17 @@ class SubHubApp(ctk.CTk):
             txt, cmd, color = item[0], item[1], item[2]
             r, c = divmod(i, cols)
             ctk.CTkButton(
-                grid, text=txt, height=46, corner_radius=RADIUS_BTN,
-                font=ctk.CTkFont(size=13, weight="bold"),
-                fg_color=color, hover_color=color, command=cmd,
-            ).grid(row=r, column=c, sticky="ew", padx=4, pady=4)
+                grid, text=txt, height=BTN_H, corner_radius=RADIUS_BTN,
+                font=_ui_font(FONT_BODY, "bold"),
+                fg_color=color, hover_color=self._btn_hover(color), command=cmd,
+            ).grid(row=r, column=c, sticky="ew", padx=2, pady=2)
         return grid
 
     def _list_panel(self, parent, height: int | None = 420) -> ctk.CTkScrollableFrame:
-        kw: dict[str, Any] = {"fg_color": BG_ELEVATED, "corner_radius": 12}
+        kw: dict[str, Any] = {
+            "fg_color": BG_SURFACE, "corner_radius": RADIUS_CARD,
+            "border_width": 0,
+        }
         if height is not None:
             kw["height"] = height
         return ctk.CTkScrollableFrame(parent, **kw)
@@ -837,15 +1202,15 @@ class SubHubApp(ctk.CTk):
         """Страница с растягиванием списка до низа окна."""
         frame = ctk.CTkFrame(self.content, fg_color="transparent")
         frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(3, weight=1)
+        frame.grid_rowconfigure(2, weight=1)
         self._pages[name] = frame
         return frame
 
     def _action_btn(self, parent, text: str, cmd: Callable, color: str = ACCENT, **kw) -> ctk.CTkButton:
         return ctk.CTkButton(
-            parent, text=text, height=44, corner_radius=10,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color=color, hover_color=color, command=cmd, **kw,
+            parent, text=text, height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=color, hover_color=self._btn_hover(color), command=cmd, **kw,
         )
 
     # ── Pages ─────────────────────────────────────────────────────────────────
@@ -854,13 +1219,7 @@ class SubHubApp(ctk.CTk):
         p = self._page("home")
         self._page_header(p, "Главная", "Маркетплейс и автоматизация подписок", ACCENT)
         self._ggsell_home_banner(p)
-
-        sec = ctk.CTkFrame(p, fg_color="transparent")
-        sec.pack(fill="x", pady=(4, 10))
-        ctk.CTkLabel(
-            sec, text="Подписки", font=ctk.CTkFont(size=17, weight="bold"), text_color="#f0f6fc",
-        ).pack(anchor="w")
-        self._hint(sec, "YouTube Premium, DeepSeek и Kling AI — в одном месте")
+        self._section_title(p, "Подписки")
 
         tiles = ctk.CTkFrame(p, fg_color="transparent")
         tiles.pack(fill="x")
@@ -878,7 +1237,7 @@ class SubHubApp(ctk.CTk):
         )
 
         stats = ctk.CTkFrame(p, fg_color="transparent")
-        stats.pack(fill="x", pady=(0, 14))
+        stats.pack(fill="x", pady=(0, _GAP_CARD))
         stats.grid_columnconfigure((0, 1, 2, 3), weight=1)
         self.dash_profiles = self._stat_box(stats, 0, "Профили", "—", SVC_YOUTUBE)
         self.dash_cards = self._stat_box(stats, 1, "Карты", "—", SVC_YOUTUBE)
@@ -886,14 +1245,15 @@ class SubHubApp(ctk.CTk):
         self.dash_tg = self._stat_box(stats, 3, "Telegram", "—", SVC_YOUTUBE)
 
         row = ctk.CTkFrame(p, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 14))
+        row.pack(fill="x", pady=(0, _GAP_CARD))
         self.dash_vpn_chip = ctk.CTkLabel(
-            row, text="VPN…", font=ctk.CTkFont(size=12),
-            fg_color=BG_CARD, corner_radius=8, padx=12, pady=8, text_color=TEXT_DIM,
+            row, text="VPN…", font=_ui_font(FONT_CAPTION, "bold"),
+            fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP, padx=12, pady=6,
+            text_color=TEXT_DIM,
         )
         self.dash_vpn_chip.pack(side="left")
         self.dash_balance = ctk.CTkLabel(
-            row, text="", font=ctk.CTkFont(size=12), text_color=TEXT_DIM,
+            row, text="", font=_ui_font(FONT_BODY), text_color=TEXT_DIM,
         )
         self.dash_balance.pack(side="left", padx=(12, 0))
 
@@ -901,7 +1261,7 @@ class SubHubApp(ctk.CTk):
         self._action_grid(quick, [
             ("🚀  Запуск", lambda: self.show_page("run"), SVC_YOUTUBE),
             ("👤  Профили", lambda: self.show_page("profiles"), BTN_SECONDARY),
-            ("💳  Карты", lambda: self.show_page("cards"), BTN_SECONDARY),
+            ("💳  Карты", self._open_cards_page, BTN_SECONDARY),
             ("🔒  VPN", lambda: self.show_page("vpn"), BTN_SECONDARY),
         ])
 
@@ -920,7 +1280,7 @@ class SubHubApp(ctk.CTk):
         )
 
         stats = ctk.CTkFrame(p, fg_color="transparent")
-        stats.pack(fill="x", pady=(0, 14))
+        stats.pack(fill="x", pady=(0, _GAP_CARD))
         stats.grid_columnconfigure((0, 1, 2, 3), weight=1)
         self.ggs_stat_orders = self._stat_box(stats, 0, "Заказов", "—", SVC_GGSELL)
         self.ggs_stat_balance = self._stat_box(stats, 1, "Баланс", "—", SVC_GGSELL)
@@ -937,19 +1297,17 @@ class SubHubApp(ctk.CTk):
 
         orders_card = self._card(p, "Заказы YouTube Premium", accent=SVC_GGSELL)
         filt_row = ctk.CTkFrame(orders_card, fg_color="transparent")
-        filt_row.pack(fill="x", pady=(0, 8))
+        filt_row.pack(fill="x", pady=(0, 4))
         self._ggs_filter_btns: dict[str, ctk.CTkButton] = {}
         for key, label in (
-            ("new", "🟢 Новые"),
-            ("issued", "🔵 Выданные"),
-            ("used", "🟡 Архив"),
+            ("new", "Новые"),
+            ("issued", "Выданные"),
+            ("used", "Архив"),
             ("all", "Все"),
         ):
-            btn = ctk.CTkButton(
-                filt_row, text=label, height=32, corner_radius=RADIUS_BTN,
-                font=ctk.CTkFont(size=12),
-                fg_color=SVC_GGSELL if key == "new" else BTN_SECONDARY,
-                command=lambda k=key: self._set_ggsell_filter(k),
+            btn = self._chip_btn(
+                filt_row, label, key == "new", SVC_GGSELL,
+                lambda k=key: self._set_ggsell_filter(k),
             )
             btn.pack(side="left", padx=(0, 6))
             self._ggs_filter_btns[key] = btn
@@ -965,46 +1323,225 @@ class SubHubApp(ctk.CTk):
         body.grid_columnconfigure(1, weight=4)
         body.grid_rowconfigure(0, weight=1)
 
-        self.ggs_orders_list = self._list_panel(body, height=360)
+        self.ggs_orders_list = self._list_panel(body, height=400)
         self.ggs_orders_list.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         self.ggs_order_detail = ctk.CTkFrame(
-            body, fg_color=BG_ELEVATED, corner_radius=RADIUS_CARD,
+            body, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+            border_width=0,
         )
         self.ggs_order_detail.grid(row=0, column=1, sticky="nsew")
-        self.ggs_detail_title = ctk.CTkLabel(
-            self.ggs_order_detail, text="Выберите заказ",
-            font=ctk.CTkFont(size=15, weight="bold"), text_color="#f0f6fc", anchor="w",
-        )
-        self.ggs_detail_title.pack(fill="x", padx=14, pady=(14, 4))
-        self.ggs_detail_body = ctk.CTkLabel(
-            self.ggs_order_detail, text="Список загружается с GGSell API.",
-            justify="left", anchor="nw", text_color=TEXT_DIM, wraplength=360,
-        )
-        self.ggs_detail_body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
-        det_btns = ctk.CTkFrame(self.ggs_order_detail, fg_color="transparent")
-        det_btns.pack(fill="x", padx=12, pady=(0, 12))
-        self.ggs_btn_messages = ctk.CTkButton(
-            det_btns, text="💬 Сообщения", height=34, corner_radius=RADIUS_BTN,
-            fg_color=BTN_SECONDARY, state="disabled", command=self._ggsell_open_messages,
-        )
-        self.ggs_btn_messages.pack(side="left", padx=(0, 6))
-        self.ggs_btn_seller = ctk.CTkButton(
-            det_btns, text="🌐 На GGSell", height=34, corner_radius=RADIUS_BTN,
-            fg_color=BTN_SECONDARY, state="disabled", command=self._ggsell_open_seller,
-        )
-        self.ggs_btn_seller.pack(side="left")
+        self.ggs_order_detail.grid_columnconfigure(0, weight=1)
+        self.ggs_order_detail.grid_rowconfigure(2, weight=1)
 
-        info = self._card(p, "Справка")
-        self._hint(
-            info,
-            "Монитор проверяет новые заказы каждые ~15 сек.\n"
-            "Выполнение и авто-выдача — через Telegram-бота или кнопки в карточке заказа.",
+        hdr = ctk.CTkFrame(self.ggs_order_detail, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
+        hdr.grid_columnconfigure(0, weight=1)
+        self.ggs_detail_title = ctk.CTkLabel(
+            hdr, text="Выберите заказ",
+            font=_ui_font(FONT_SECTION, "bold"), text_color=TEXT_PRIMARY, anchor="w",
         )
+        self.ggs_detail_title.grid(row=0, column=0, sticky="w")
+        self.ggs_btn_chat_refresh = ctk.CTkButton(
+            hdr, text="🔄", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            state="disabled", command=self._ggsell_refresh_chat,
+        )
+        self.ggs_btn_chat_refresh.grid(row=0, column=1, padx=(8, 0))
+        self.ggs_btn_seller = ctk.CTkButton(
+            hdr, text="🌐", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            state="disabled", command=self._ggsell_open_seller,
+        )
+        self.ggs_btn_seller.grid(row=0, column=2, padx=(6, 0))
+
+        self.ggs_detail_meta = ctk.CTkLabel(
+            self.ggs_order_detail, text="—",
+            justify="left", anchor="nw", text_color=TEXT_DIM,
+            font=_ui_font(FONT_BODY), wraplength=440,
+        )
+        self.ggs_detail_meta.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+        self.ggs_chat_scroll = ctk.CTkScrollableFrame(
+            self.ggs_order_detail, fg_color=BG_SURFACE, corner_radius=RADIUS_SM,
+            border_width=0,
+        )
+        self.ggs_chat_scroll.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        self.ggs_chat_placeholder = ctk.CTkLabel(
+            self.ggs_chat_scroll, text="Выберите заказ слева",
+            text_color=TEXT_MUTED, font=_ui_font(FONT_BODY),
+        )
+        self.ggs_chat_placeholder.pack(pady=10)
+
+        self.ggs_chat_status = ctk.CTkLabel(
+            self.ggs_order_detail, text="", text_color=TEXT_MUTED,
+            font=_ui_font(FONT_SMALL), anchor="w",
+        )
+        self.ggs_chat_status.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 2))
+
+        chat_input = ctk.CTkFrame(self.ggs_order_detail, fg_color="transparent")
+        chat_input.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
+        chat_input.grid_columnconfigure(1, weight=1)
+        self.ggs_btn_templates = ctk.CTkButton(
+            chat_input, text="📝", width=BTN_ICON, height=BTN_H_MD, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            state="disabled", command=self._ggsell_open_templates_modal,
+        )
+        self.ggs_btn_templates.grid(row=0, column=0, padx=(0, 6))
+        self.ggs_chat_input = ctk.CTkTextbox(
+            chat_input, height=BTN_H_MD, corner_radius=RADIUS_BTN,
+            fg_color=BG_CARD, border_width=1, border_color=BORDER_SUBTLE,
+            font=_ui_font(FONT_BODY), wrap="word",
+        )
+        self.ggs_chat_input.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        self.ggs_chat_input.configure(state="disabled")
+        self.ggs_chat_input.bind("<Return>", self._ggsell_chat_return)
+        self.ggs_chat_input.bind("<Shift-Return>", lambda _e: None)
+        self.ggs_btn_chat_send = ctk.CTkButton(
+            chat_input, text="➤", width=BTN_ICON, height=BTN_H_MD, corner_radius=RADIUS_BTN,
+            fg_color=SVC_GGSELL, hover_color="#e67e00",
+            state="disabled", command=self._ggsell_send_chat,
+        )
+        self.ggs_btn_chat_send.grid(row=0, column=2)
+        self._ggs_templates_win = None
 
     def _build_deepseek(self) -> None:
         p = self._page("deepseek")
-        self._build_coming_soon(p, "deepseek")
+        self._page_header(
+            p, "DeepSeek", "Пополнение API-баланса банковской картой", SVC_DEEPSEEK,
+        )
+
+        form = self._card(p, "Пополнение", accent=SVC_DEEPSEEK)
+        inner = ctk.CTkFrame(form, fg_color="transparent")
+        inner.pack(fill="x")
+        inner.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(inner, text="Вход", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=0, column=0, sticky="w", pady=6)
+        self.ds_login_method = ctk.CTkSegmentedButton(
+            inner, values=["Почта и пароль", "Google"], height=BTN_H,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=BG_SURFACE,
+            selected_color=SVC_DEEPSEEK, selected_hover_color="#5578e8",
+            unselected_color=BG_SURFACE, unselected_hover_color=BG_NAV_ACTIVE,
+            command=self._ds_method_changed,
+        )
+        self.ds_login_method.set("Почта и пароль")
+        self.ds_login_method.grid(row=0, column=1, sticky="w", pady=6, padx=(12, 0))
+
+        ctk.CTkLabel(inner, text="Email", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=1, column=0, sticky="w", pady=6)
+        self.ds_email = ctk.CTkEntry(inner, height=BTN_H, font=_ui_font(FONT_BODY), placeholder_text="Почта аккаунта DeepSeek")
+        self.ds_email.grid(row=1, column=1, sticky="ew", pady=6, padx=(12, 0))
+
+        ctk.CTkLabel(inner, text="Пароль", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=2, column=0, sticky="w", pady=6)
+        self.ds_password = ctk.CTkEntry(inner, height=BTN_H, font=_ui_font(FONT_BODY), placeholder_text="Пароль", show="•")
+        self.ds_password.grid(row=2, column=1, sticky="ew", pady=6, padx=(12, 0))
+
+        ctk.CTkLabel(inner, text="Сумма, $", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=3, column=0, sticky="w", pady=6)
+        self.ds_amount = ctk.CTkEntry(inner, width=140, height=BTN_H, font=_ui_font(FONT_BODY), placeholder_text="напр. 2")
+        self.ds_amount.grid(row=3, column=1, sticky="w", pady=6, padx=(12, 0))
+
+        ctk.CTkLabel(inner, text="Карта", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=4, column=0, sticky="w", pady=6)
+        self.ds_card_box = ctk.CTkComboBox(
+            inner, height=BTN_H, font=_ui_font(FONT_BODY), values=["—"], state="readonly",
+        )
+        self.ds_card_box.grid(row=4, column=1, sticky="ew", pady=6, padx=(12, 0))
+
+        self.ds_btn = self._action_btn(form, "🧠  Пополнить", self._ds_topup_clicked, SVC_DEEPSEEK)
+        self.ds_btn.pack(fill="x", pady=(10, 0))
+
+        log_card = self._card(p, "Ход выполнения", accent=SVC_DEEPSEEK)
+        self.ds_log = ctk.CTkTextbox(
+            log_card, height=240,
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+            fg_color=BG_ELEVATED, corner_radius=RADIUS_SM, wrap="word",
+        )
+        self.ds_log.pack(fill="x")
+        self.ds_log.configure(state="disabled")
+
+        self._ds_cards: list[dict] = []
+        self._ds_card_labels: list[str] = []
+        self._ds_running = False
+
+    def _refresh_deepseek(self) -> None:
+        import menu as m
+        cards = m._load_cards()
+        order = m._load_card_order()
+        if order:
+            idx = [i for i in order if 0 <= i < len(cards)]
+            idx += [i for i in range(len(cards)) if i not in idx]
+            cards = [cards[i] for i in idx]
+        self._ds_cards = cards
+        self._ds_card_labels = [
+            f"{c.get('nickname') or c.get('name') or f'Карта {i + 1}'} · {m._mask_card(c.get('number', ''))}"
+            for i, c in enumerate(cards)
+        ]
+        values = self._ds_card_labels or ["Нет карт"]
+        cur = self.ds_card_box.get()
+        self.ds_card_box.configure(values=values)
+        if cur not in values:
+            self.ds_card_box.set(values[0])
+
+    def _ds_log_line(self, text: str) -> None:
+        self._append_log_widget(self.ds_log, text.rstrip() + "\n")
+
+    def _ds_topup_clicked(self) -> None:
+        if self._ds_running:
+            return
+        email = self.ds_email.get().strip()
+        password = self.ds_password.get()
+        if not email or not password:
+            messagebox.showwarning("DeepSeek", "Укажите email и пароль аккаунта DeepSeek")
+            return
+        raw = self.ds_amount.get().strip().replace(",", ".").lstrip("$")
+        try:
+            amount = float(raw)
+        except ValueError:
+            amount = 0.0
+        if amount <= 0:
+            messagebox.showwarning("DeepSeek", "Укажите сумму пополнения в долларах (например 2)")
+            return
+        if not self._ds_cards:
+            self._refresh_deepseek()
+        if not self._ds_cards:
+            messagebox.showwarning("DeepSeek", "Нет сохранённых карт — добавьте карту в разделе «Карты»")
+            return
+        try:
+            card = self._ds_cards[self._ds_card_labels.index(self.ds_card_box.get())]
+        except ValueError:
+            card = self._ds_cards[0]
+
+        self._ds_running = True
+        self.ds_btn.configure(state="disabled", text="Выполняется…")
+        try:
+            self.ds_log.configure(state="normal")
+            self.ds_log.delete("1.0", "end")
+            self.ds_log.configure(state="disabled")
+        except Exception:
+            pass
+        self._ds_log_line(f"Пополнение ${amount:g} → {email}")
+
+        def _w():
+            try:
+                import deepseek as ds
+                ok, msg = asyncio.run(ds.topup(
+                    email, password, amount, card,
+                    log=lambda s: self.after(0, self._ds_log_line, str(s)),
+                ))
+            except Exception as e:
+                ok, msg = False, f"Ошибка: {e}"
+            self.after(0, self._ds_topup_done, ok, msg)
+
+        threading.Thread(target=_w, daemon=True, name="ds-topup").start()
+
+    def _ds_topup_done(self, ok: bool, msg: str) -> None:
+        self._ds_running = False
+        self.ds_btn.configure(state="normal", text="🧠  Пополнить")
+        self._ds_log_line(msg)
+        self._log(f"DeepSeek: {msg}")
+        if ok:
+            messagebox.showinfo("DeepSeek", msg)
+        else:
+            messagebox.showerror("DeepSeek", msg)
 
     def _build_kling(self) -> None:
         p = self._page("kling")
@@ -1014,29 +1551,40 @@ class SubHubApp(ctk.CTk):
         meta = SERVICE_META[service]
         self._page_header(p, meta["title"], meta["subtitle"], meta["accent"])
         box = ctk.CTkFrame(
-            p, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
-            border_width=2, border_color=meta["accent"],
+            p, fg_color=BG_CARD, corner_radius=RADIUS_PIN,
+            border_width=0,
         )
-        box.pack(fill="x", pady=16, ipady=32)
-        ctk.CTkLabel(box, text=meta["icon"], font=ctk.CTkFont(size=56)).pack(pady=(24, 8))
+        box.pack(fill="x", pady=8)
+        cover = ctk.CTkFrame(box, fg_color=meta["accent"], height=148, corner_radius=RADIUS_SM)
+        cover.pack(fill="x", padx=8, pady=(8, 0))
+        cover.pack_propagate(False)
+        ctk.CTkLabel(cover, text=meta["icon"], font=_ui_font(56)).pack(expand=True)
+        inner = ctk.CTkFrame(box, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=14)
         ctk.CTkLabel(
-            box, text="Скоро", font=ctk.CTkFont(size=28, weight="bold"), text_color=meta["accent"],
-        ).pack()
-        self._hint(box, "Раздел в разработке — автоматизация оплаты подписки.")
+            inner, text="Скоро", font=_ui_font(26, "bold"), text_color=meta["accent"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            inner, text=f"{meta['title']} появится в следующих обновлениях",
+            font=_ui_font(FONT_BODY), text_color=TEXT_MUTED,
+        ).pack(anchor="w", pady=(4, 0))
         ctk.CTkButton(
-            p, text="←  Главная", height=40, fg_color=BTN_SECONDARY, command=self._go_home,
+            p, text="На главную", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=BG_SURFACE, hover_color=BG_NAV_ACTIVE, command=self._go_home,
         ).pack(pady=8)
 
     def _stat_box(self, parent, col: int, title: str, value: str, accent: str = ACCENT) -> ctk.CTkLabel:
         box = ctk.CTkFrame(
-            parent, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
-            border_width=1, border_color="#30363d",
+            parent, fg_color=BG_SURFACE, corner_radius=RADIUS_SM,
+            border_width=0,
         )
         box.grid(row=0, column=col, sticky="nsew", padx=4)
-        ctk.CTkFrame(box, height=3, fg_color=accent, corner_radius=2).pack(fill="x", padx=12, pady=(12, 0))
-        ctk.CTkLabel(box, text=title, text_color=TEXT_DIM, font=ctk.CTkFont(size=11)).pack(pady=(10, 0))
-        lbl = ctk.CTkLabel(box, text=value, font=ctk.CTkFont(size=22, weight="bold"), text_color="#f0f6fc")
-        lbl.pack(pady=(4, 14))
+        ctk.CTkLabel(box, text=title, text_color=TEXT_MUTED, font=_ui_font(FONT_SMALL)).pack(pady=(12, 0))
+        lbl = ctk.CTkLabel(
+            box, text=value, font=_ui_font(22, "bold"), text_color=TEXT_PRIMARY,
+        )
+        lbl.pack(pady=(2, 12))
         return lbl
 
     def _build_run(self) -> None:
@@ -1044,8 +1592,8 @@ class SubHubApp(ctk.CTk):
         self._page_header(p, "Запуск", "Автоматизация YouTube Premium", SVC_YOUTUBE)
 
         inner = self._card(p, "Параметры", accent=SVC_YOUTUBE)
-        ctk.CTkLabel(inner, text="Режим", text_color=TEXT_DIM).grid(row=0, column=0, sticky="w", pady=6)
-        self.run_mode = ctk.CTkComboBox(inner, width=420, values=[
+        ctk.CTkLabel(inner, text="Режим", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=0, column=0, sticky="w", pady=6)
+        self.run_mode = ctk.CTkComboBox(inner, width=480, height=BTN_H, font=_ui_font(FONT_BODY), values=[
             "Полный цикл (вход + покупка)",
             "Только вход на ПК",
             "Вход + Telegram (перехват)",
@@ -1054,16 +1602,16 @@ class SubHubApp(ctk.CTk):
         self.run_mode.grid(row=0, column=1, sticky="ew", pady=6, padx=(12, 0))
         self.run_mode.set("Полный цикл (вход + покупка)")
 
-        ctk.CTkLabel(inner, text="Аккаунтов", text_color=TEXT_DIM).grid(row=1, column=0, sticky="w", pady=6)
-        self.run_accounts = ctk.CTkEntry(inner, width=120, placeholder_text="из config")
+        ctk.CTkLabel(inner, text="Аккаунтов", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=1, column=0, sticky="w", pady=6)
+        self.run_accounts = ctk.CTkEntry(inner, width=140, height=BTN_H, font=_ui_font(FONT_BODY), placeholder_text="из config")
         self.run_accounts.grid(row=1, column=1, sticky="w", pady=6, padx=(12, 0))
 
-        ctk.CTkLabel(inner, text="Тариф", text_color=TEXT_DIM).grid(row=2, column=0, sticky="w", pady=6)
-        self.run_tariff = ctk.CTkComboBox(inner, width=220, values=["3 месяца (₹343)", "12 месяцев (₹1,499)"])
+        ctk.CTkLabel(inner, text="Тариф", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=2, column=0, sticky="w", pady=6)
+        self.run_tariff = ctk.CTkComboBox(inner, width=260, height=BTN_H, font=_ui_font(FONT_BODY), values=["3 месяца (₹343)", "12 месяцев (₹1,499)"])
         self.run_tariff.grid(row=2, column=1, sticky="w", pady=6, padx=(12, 0))
         self.run_tariff.set("3 месяца (₹343)")
 
-        self.run_headless = ctk.CTkCheckBox(inner, text="Фоновый браузер")
+        self.run_headless = ctk.CTkCheckBox(inner, text="Фоновый браузер", font=_ui_font(FONT_BODY))
         self.run_headless.grid(row=3, column=1, sticky="w", pady=8, padx=(12, 0))
         inner.grid_columnconfigure(1, weight=1)
 
@@ -1073,12 +1621,12 @@ class SubHubApp(ctk.CTk):
         )
         self.run_start_btn.pack(side="left", padx=(0, 8))
         self.run_stop_btn = ctk.CTkButton(
-            btns, text="■  Стоп", width=100, height=44, corner_radius=RADIUS_BTN,
-            fg_color=ERROR, state="disabled", command=self._stop_run,
+            btns, text="■  Стоп", width=120, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=ERROR, hover_color="#da3633", state="disabled", command=self._stop_run,
         )
         self.run_stop_btn.pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            btns, text="🔒 VPN", width=90, height=44, corner_radius=RADIUS_BTN,
+            btns, text="🔒 VPN", width=110, height=BTN_H, corner_radius=RADIUS_BTN,
             fg_color=BTN_SECONDARY, command=self._check_vpn,
         ).pack(side="left")
 
@@ -1093,181 +1641,191 @@ class SubHubApp(ctk.CTk):
         self._page_header(hdr, "Профили", "Активные Chrome-сессии Flipkart", SVC_YOUTUBE)
 
         toolbar = ctk.CTkFrame(p, fg_color="transparent")
-        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         ctk.CTkButton(
-            toolbar, text="🔄", width=44, height=36, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._refresh_profiles,
-        ).pack(side="left", padx=(0, 6))
+            toolbar, text="↻", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BG_SURFACE, hover_color=BG_NAV_ACTIVE,
+            command=self._refresh_profiles,
+        ).pack(side="left", padx=(0, 8))
         self._profile_filter_btns: dict[str, ctk.CTkButton] = {}
         for key, label in (
             ("all", "Все"),
-            ("noaddr", "🟢 Доступные"),
-            ("hasaddr", "🟠 С данными"),
-            ("paid", "🟣 Оплаченные"),
-            ("active", "🔵 Выданные"),
+            ("noaddr", "Доступные"),
+            ("hasaddr", "С данными"),
+            ("paid", "Оплаченные"),
+            ("active", "Выданные"),
         ):
-            btn = ctk.CTkButton(
-                toolbar, text=label, height=32, corner_radius=8,
-                font=ctk.CTkFont(size=11),
-                fg_color=SVC_YOUTUBE if key == "all" else BTN_SECONDARY,
-                command=lambda k=key: self._set_profile_filter(k),
+            btn = self._chip_btn(
+                toolbar, label, key == "all", SVC_YOUTUBE,
+                lambda k=key: self._set_profile_filter(k),
             )
-            btn.pack(side="left", padx=3)
+            btn.pack(side="left", padx=(0, 6))
             self._profile_filter_btns[key] = btn
 
-        ctk.CTkLabel(
-            p, text="Двойной клик по профилю — меню действий",
-            font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, anchor="w",
-        ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
-
         self.profile_list = self._list_panel(p, height=None)
-        self.profile_list.grid(row=3, column=0, sticky="nsew")
+        self.profile_list.grid(row=2, column=0, sticky="nsew")
 
     def _build_archive(self) -> None:
         p = self._page("archive")
         self._page_header(p, "Архив", "Использованные профили", SVC_YOUTUBE)
         toolbar = self._toolbar(p)
         ctk.CTkButton(
-            toolbar, text="🔄 Обновить", width=110, height=36, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._refresh_archive,
+            toolbar, text="🔄 Обновить", width=130, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._refresh_archive,
         ).pack(side="left")
-        self.archive_list = self._list_panel(p, height=500)
+        self.archive_list = self._list_panel(p, height=480)
         self.archive_list.pack(fill="both", expand=True)
 
     def _build_cards(self) -> None:
-        p = self._page("cards")
-        self._page_header(p, "Карты", "Банковские и подарочные карты", SVC_YOUTUBE)
-
-        bc_tool = self._toolbar(p)
-        ctk.CTkButton(
-            bc_tool, text="➕ Карта", height=36, corner_radius=8, fg_color=SUCCESS,
-            command=self._show_add_card_dialog,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(
-            bc_tool, text="🗑", width=44, height=36, corner_radius=8, fg_color=ERROR,
-            command=self._delete_card,
-        ).pack(side="left", padx=3)
-        ctk.CTkButton(
-            bc_tool, text="🔄", width=44, height=36, corner_radius=8, fg_color=BTN_SECONDARY,
-            command=self._refresh_cards,
-        ).pack(side="left", padx=3)
-
-        inner = self._card(p, "Банковские карты", accent=SVC_YOUTUBE)
-        self.cards_info = ctk.CTkTextbox(
-            inner, height=120, font=ctk.CTkFont(family="Consolas", size=12), fg_color=BG_ELEVATED,
-        )
-        self.cards_info.pack(fill="x")
-        self.cards_info.configure(state="disabled")
-
-        gc_tool = self._toolbar(p)
-        ctk.CTkButton(
-            gc_tool, text="➕ Гифт-карты", height=36, corner_radius=8, fg_color=SUCCESS,
-            command=self._toggle_gift_add_panel,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(
-            gc_tool, text="📁 Файл", height=36, corner_radius=8, fg_color=BTN_SECONDARY,
-            command=self._upload_gift_file,
-        ).pack(side="left", padx=3)
-        ctk.CTkButton(
-            gc_tool, text="🗑", width=44, height=36, corner_radius=8, fg_color=ERROR,
-            command=self._delete_gift_card,
-        ).pack(side="left", padx=3)
-        ctk.CTkButton(
-            gc_tool, text="💳/🎁", height=36, corner_radius=8, fg_color=BTN_SECONDARY,
-            command=self._toggle_pay_method,
-        ).pack(side="left", padx=3)
-
-        self.gift_summary = ctk.CTkLabel(
-            p, text="", justify="left", anchor="w", font=ctk.CTkFont(size=13),
-        )
-        self.gift_summary.pack(fill="x", pady=(0, 6))
-
-        self.gift_add_panel = ctk.CTkFrame(p, fg_color=BG_CARD, corner_radius=RADIUS_CARD)
+        p = self._page_fill("cards")
+        self._cards_tab = "bank"
+        self._sel_bank_idx: int | None = None
+        self._sel_gift_idx: int | None = None
         self._gift_add_visible = False
 
+        hdr = ctk.CTkFrame(p, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew")
+        self._page_header(
+            hdr, "Карты и оплата",
+            "Банковские и подарочные карты · порядок · история",
+            ACCENT,
+        )
+
+        stats = ctk.CTkFrame(p, fg_color="transparent")
+        stats.grid(row=1, column=0, sticky="ew", pady=(0, _GAP_CARD))
+        stats.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self.cards_stat_bank = self._stat_box(stats, 0, "Банковские", "—", ACCENT)
+        self.cards_stat_gift = self._stat_box(stats, 1, "Гифт-карты", "—", SUCCESS)
+        self.cards_stat_balance = self._stat_box(stats, 2, "Баланс гифт", "—", WARNING)
+        self.cards_stat_pay = self._stat_box(stats, 3, "Оплата", "—", BTN_SECONDARY)
+
+        bar = ctk.CTkFrame(p, fg_color="transparent")
+        bar.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        tabs = ctk.CTkFrame(bar, fg_color="transparent")
+        tabs.pack(side="left", fill="x", expand=True)
+        self._cards_tab_btns: dict[str, ctk.CTkButton] = {}
+        for key, label in (
+            ("bank", "💳  Банковские"),
+            ("gift", "🎁  Гифт-карты"),
+            ("history", "📜  История"),
+        ):
+            btn = self._chip_btn(
+                tabs, label, key == "bank", ACCENT,
+                lambda k=key: self._set_cards_tab(k),
+            )
+            btn.pack(side="left", padx=(0, 6))
+            self._cards_tab_btns[key] = btn
+
+        self.cards_toolbar = ctk.CTkFrame(bar, fg_color="transparent")
+        self.cards_toolbar.pack(side="right")
+
+        body = ctk.CTkFrame(p, fg_color="transparent")
+        body.grid(row=3, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+
+        self.cards_list_wrap = ctk.CTkFrame(body, fg_color="transparent")
+        self.cards_list_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.cards_list_wrap.grid_rowconfigure(1, weight=1)
+        self.cards_list_wrap.grid_columnconfigure(0, weight=1)
+
+        self.gift_add_panel = ctk.CTkFrame(
+            self.cards_list_wrap, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+        )
         add_hdr = ctk.CTkFrame(self.gift_add_panel, fg_color="transparent")
-        add_hdr.pack(fill="x", padx=14, pady=(12, 4))
+        add_hdr.pack(fill="x", padx=12, pady=(10, 4))
         ctk.CTkLabel(
-            add_hdr, text="Добавление гифт-карт", font=ctk.CTkFont(size=14, weight="bold"),
+            add_hdr, text="Добавить гифт-карты", font=_ui_font(FONT_SECTION, "bold"),
         ).pack(side="left")
         ctk.CTkButton(
-            add_hdr, text="✕", width=30, fg_color="transparent", command=self._toggle_gift_add_panel,
+            add_hdr, text="✕", width=36, height=28, fg_color="transparent",
+            hover_color=BG_NAV_ACTIVE, command=self._toggle_gift_add_panel,
         ).pack(side="right")
-
         add_inner = ctk.CTkFrame(self.gift_add_panel, fg_color="transparent")
-        add_inner.pack(fill="x", padx=14, pady=(0, 12))
+        add_inner.pack(fill="x", padx=12, pady=(0, 10))
         ctk.CTkLabel(add_inner, text="Номинал (₹)", text_color=TEXT_DIM).grid(row=0, column=0, sticky="w")
         import menu as _m
-        self.gift_denom = ctk.CTkComboBox(add_inner, width=120, values=[str(d) for d in _m.GIFT_DENOMS])
+        self.gift_denom = ctk.CTkComboBox(
+            add_inner, width=120, height=BTN_H, values=[str(d) for d in _m.GIFT_DENOMS],
+        )
         self.gift_denom.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=4)
         self.gift_denom.set("500")
-        ctk.CTkLabel(
-            add_inner,
-            text="Формат: серия(14–19 цифр)  PIN(4–8)  — одна карта на строку",
-            text_color=TEXT_DIM, font=ctk.CTkFont(size=11), anchor="w", justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 2))
         self.gift_input = ctk.CTkTextbox(
-            add_inner, height=100, font=ctk.CTkFont(family="Consolas", size=12), fg_color=BG_ELEVATED,
+            add_inner, height=100,
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+            fg_color=BG_ELEVATED, corner_radius=RADIUS_SM,
         )
-        self.gift_input.grid(row=2, column=0, columnspan=2, sticky="ew", pady=4)
+        self.gift_input.grid(row=1, column=0, columnspan=2, sticky="ew", pady=6)
         add_inner.grid_columnconfigure(1, weight=1)
         add_btns = ctk.CTkFrame(add_inner, fg_color="transparent")
-        add_btns.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        add_btns.grid(row=2, column=0, columnspan=2, sticky="ew")
         ctk.CTkButton(
-            add_btns, text="✓ Добавить", fg_color=SUCCESS, command=self._add_gift_cards_manual,
+            add_btns, text="✓ Добавить", height=BTN_H, fg_color=SUCCESS,
+            command=self._add_gift_cards_manual,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            add_btns, text="📁 Файл", fg_color=BTN_SECONDARY, command=self._upload_gift_file,
+            add_btns, text="📁 Из файла", height=BTN_H, fg_color=BTN_SECONDARY,
+            command=self._upload_gift_file,
         ).pack(side="left")
         self.gift_add_result = ctk.CTkLabel(add_inner, text="", text_color=TEXT_DIM, anchor="w")
-        self.gift_add_result.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.gift_add_result.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-        inner2 = self._card(p, "Список гифт-карт", accent=SVC_YOUTUBE)
-        self.gift_list = self._list_panel(inner2, height=240)
-        self.gift_list.pack(fill="both", expand=True)
-        self._selected_gift: dict | None = None
-
-        used_card = self._card(p, "История")
-        self.gift_used_info = ctk.CTkTextbox(
-            used_card, height=90, font=ctk.CTkFont(family="Consolas", size=11), fg_color=BG_ELEVATED,
+        self.cards_list = ctk.CTkScrollableFrame(
+            self.cards_list_wrap, fg_color=BG_SURFACE, corner_radius=RADIUS_CARD,
         )
-        self.gift_used_info.pack(fill="x")
-        self.gift_used_info.configure(state="disabled")
+        self.cards_list.grid(row=1, column=0, sticky="nsew")
+
+        self.cards_detail = ctk.CTkFrame(
+            body, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+        )
+        self.cards_detail.grid(row=0, column=1, sticky="nsew")
+        self.cards_detail.grid_rowconfigure(1, weight=1)
+        self.cards_detail.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            self.cards_detail, text="Детали", font=_ui_font(FONT_SECTION, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 4))
+        self.cards_detail_body = ctk.CTkTextbox(
+            self.cards_detail,
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+            fg_color=BG_ELEVATED, corner_radius=RADIUS_SM, wrap="word",
+        )
+        self.cards_detail_body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.cards_detail_body.configure(state="disabled")
+
+        self._selected_gift: dict | None = None
 
     def _build_vpn(self) -> None:
         p = self._page("vpn")
-        self._page_header(p, "VPN", "Расширение VPNLY для Flipkart", SVC_YOUTUBE)
+        self._page_header(p, "VPN", "Расширение VeepN для Flipkart", SVC_YOUTUBE)
 
         inner = self._card(p, "Статус", accent=SVC_YOUTUBE)
         self.vpn_page_status = ctk.CTkLabel(
-            inner, text="Загрузка…", justify="left", anchor="w", font=ctk.CTkFont(size=14),
+            inner, text="Загрузка…", justify="left", anchor="w", font=_ui_font(FONT_SECTION),
         )
         self.vpn_page_status.pack(fill="x")
         self.vpn_page_ext = ctk.CTkLabel(
-            inner, text="", justify="left", anchor="w", text_color=TEXT_DIM, font=ctk.CTkFont(size=12),
+            inner, text="", justify="left", anchor="w", text_color=TEXT_DIM, font=_ui_font(FONT_BODY),
         )
-        self.vpn_page_ext.pack(fill="x", pady=(8, 0))
+        self.vpn_page_ext.pack(fill="x", pady=(4, 0))
 
         btns = self._toolbar(p)
         ctk.CTkButton(
-            btns, text="🔒 Проверить VPN", height=42, corner_radius=RADIUS_BTN,
-            fg_color=SVC_YOUTUBE, command=self._check_vpn,
+            btns, text="🔒 Проверить VPN", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=SVC_YOUTUBE, hover_color="#cc0029", command=self._check_vpn,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            btns, text="📦 Установить расширения", height=42, corner_radius=RADIUS_BTN,
-            fg_color=BTN_SECONDARY, command=self._install_extensions_bg,
+            btns, text="📦 Установить расширения", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._install_extensions_bg,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            btns, text="📁 vpn_extension/", height=42, corner_radius=RADIUS_BTN,
-            fg_color=BTN_SECONDARY, command=self._open_vpn_folder,
+            btns, text="📁 veepn_extension/", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._open_vpn_folder,
         ).pack(side="left")
-
-        info = self._card(p, "Справка")
-        self._hint(
-            info,
-            "Расширение ставится в профили автоматически.\n"
-            "VPN включается в фоне перед каждым открытием Flipkart.",
-        )
 
     def _build_tools(self) -> None:
         p = self._page("tools")
@@ -1282,119 +1840,186 @@ class SubHubApp(ctk.CTk):
         ], cols=2)
 
     def _build_logs(self) -> None:
-        p = self._page("logs")
-        self._page_header(p, "Логи", "Журнал событий", ACCENT)
-        toolbar = self._toolbar(p)
+        p = self._page_fill("logs")
+        p.grid_rowconfigure(1, weight=1)
+
+        bar = ctk.CTkFrame(p, fg_color="transparent")
+        bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        title_box = ctk.CTkFrame(bar, fg_color="transparent")
+        title_box.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            title_box, text="Логи", font=_ui_font(FONT_TITLE, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_box, text="Журнал событий", font=_ui_font(FONT_BODY), text_color=TEXT_MUTED,
+        ).pack(anchor="w", pady=(2, 0))
+
+        toolbar = ctk.CTkFrame(bar, fg_color="transparent")
+        toolbar.pack(side="right")
         ctk.CTkButton(
-            toolbar, text="Очистить", width=90, height=36, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._clear_logs,
+            toolbar, text="Очистить", width=90, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER, command=self._clear_logs,
         ).pack(side="left")
         ctk.CTkButton(
-            toolbar, text="Открыть файл", width=110, height=36, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._open_log_file,
-        ).pack(side="left", padx=8)
+            toolbar, text="Открыть файл", width=110, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER, command=self._open_log_file,
+        ).pack(side="left", padx=6)
+
         self.log_text = ctk.CTkTextbox(
-            p, font=ctk.CTkFont(family="Consolas", size=12), fg_color=BG_ELEVATED, corner_radius=12,
+            p, font=ctk.CTkFont(family="Consolas", size=FONT_MONO), fg_color=BG_ELEVATED,
+            corner_radius=RADIUS_CARD, border_width=1, border_color=BORDER_SUBTLE,
+            wrap="none", activate_scrollbars=True,
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text.grid(row=1, column=0, sticky="nsew")
         self._log_file_pos = 0
 
     def _build_settings(self) -> None:
         p = self._page("settings")
         self._page_header(p, "Настройки", "Параметры SubHub", ACCENT)
 
-        inner = self._card(p, "Система")
-        for txt, cmd in [
-            ("📦 Зависимости + Chromium", self._install_deps),
-            ("📁 Папка проекта", lambda: os.startfile(str(_HERE))),
+        cols = ctk.CTkFrame(p, fg_color="transparent")
+        cols.pack(fill="both", expand=True)
+        cols.grid_columnconfigure((0, 1), weight=1)
+        left = ctk.CTkFrame(cols, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        right = ctk.CTkFrame(cols, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        inner = self._card(left, "Система")
+        sys_grid = ctk.CTkFrame(inner, fg_color="transparent")
+        sys_grid.pack(fill="x")
+        sys_grid.grid_columnconfigure((0, 1), weight=1)
+        for i, (txt, cmd) in enumerate([
+            ("📦 Зависимости", self._install_deps),
+            ("📁 Проект", lambda: os.startfile(str(_HERE))),
             ("🔑 secrets.yaml", self._open_secrets),
             ("⚙️ config.yaml", self._open_config),
-        ]:
+        ]):
             ctk.CTkButton(
-                inner, text=txt, height=38, corner_radius=8, fg_color=BTN_SECONDARY, command=cmd,
-            ).pack(fill="x", pady=3)
+                sys_grid, text=txt, height=BTN_H, corner_radius=RADIUS_BTN,
+                font=_ui_font(FONT_BODY),
+                fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER, command=cmd,
+            ).grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
 
-        inner_upd = self._card(p, "Обновления", accent=BTN_SUCCESS)
+        inner_upd = self._card(left, "Обновления", accent=BTN_SUCCESS)
         self.settings_upd_info = ctk.CTkLabel(
             inner_upd, text="Проверка…", justify="left", anchor="w", text_color=TEXT_DIM,
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=_ui_font(FONT_BODY, "bold"),
         )
-        self.settings_upd_info.pack(fill="x", pady=(0, 4))
+        self.settings_upd_info.pack(fill="x", pady=(0, 2))
         self.settings_upd_sub = ctk.CTkLabel(
-            inner_upd, text="", justify="left", anchor="w", text_color=TEXT_DIM,
+            inner_upd, text="", justify="left", anchor="w", text_color=TEXT_MUTED,
+            font=_ui_font(FONT_SMALL),
         )
-        self.settings_upd_sub.pack(fill="x", pady=(0, 6))
-        self.settings_upd_list = ctk.CTkTextbox(
-            inner_upd, height=100, font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color=BG_ELEVATED, corner_radius=8,
+        self.settings_upd_sub.pack(fill="x", pady=(0, 4))
+        self.settings_upd_list = ctk.CTkLabel(
+            inner_upd, text="", justify="left", anchor="nw",
+            text_color=TEXT_MUTED,
+            font=ctk.CTkFont(family="Consolas", size=FONT_SMALL),
+            wraplength=340,
         )
-        self.settings_upd_list.pack(fill="x", pady=(0, 8))
-        self.settings_upd_list.configure(state="disabled")
         self.settings_upd_check_btn = ctk.CTkButton(
-            inner_upd, text="🔄  Проверить", height=34, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._tool_check_updates_now,
+            inner_upd, text="🔄 Проверить", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._tool_check_updates_now,
         )
-        self.settings_upd_check_btn.pack(fill="x", pady=(0, 6))
+        self.settings_upd_check_btn.pack(fill="x", pady=(2, 2))
         self.settings_upd_btn = ctk.CTkButton(
-            inner_upd, text="⬆  Скачать и перезапустить", height=42, corner_radius=RADIUS_BTN,
-            font=ctk.CTkFont(size=14, weight="bold"), fg_color=BTN_SUCCESS,
+            inner_upd, text="⬆ Скачать и перезапустить", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY, "bold"), fg_color=BTN_SUCCESS,
+            hover_color="#2ea043",
             command=self._update_and_restart,
         )
+        upd_row = ctk.CTkFrame(inner_upd, fg_color="transparent")
+        upd_row.pack(fill="x", pady=(2, 0))
+        upd_row.grid_columnconfigure((0, 1), weight=1)
         ctk.CTkButton(
-            inner_upd, text="♻  Перезапустить", height=36, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._restart_only,
-        ).pack(fill="x", pady=4)
+            upd_row, text="♻ Перезапуск", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._restart_only,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 2))
         ctk.CTkButton(
-            inner_upd, text="🖥  Ярлык на рабочем столе", height=36, corner_radius=8,
-            fg_color=BTN_SECONDARY, command=self._create_desktop_shortcut_ui,
-        ).pack(fill="x", pady=4)
+            upd_row, text="🖥 Ярлык", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._create_desktop_shortcut_ui,
+        ).grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
-        inner2 = self._card(p, "API-ключи")
-        self.settings_keys = ctk.CTkLabel(inner2, text="", justify="left", anchor="w")
-        self.settings_keys.pack(fill="x")
-
-        inner_bg = self._card(p, "Фоновый режим")
-        self._hint(
-            inner_bg,
-            "Окно можно закрыть — бот и мониторинг продолжат работать в трее.",
+        inner_gs = self._card(left, "GrizzlySMS", accent=WARNING)
+        ctk.CTkLabel(
+            inner_gs,
+            text="При старте и перезапуске SubHub все активные номера\n"
+                 "отменяются автоматически (возврат на баланс).",
+            justify="left", anchor="w", text_color=TEXT_MUTED,
+            font=_ui_font(FONT_SMALL),
+        ).pack(fill="x", pady=(0, 6))
+        self.grizzly_cancel_status = ctk.CTkLabel(
+            inner_gs, text="", justify="left", anchor="w", text_color=TEXT_DIM,
+            font=_ui_font(FONT_SMALL),
         )
-
-        self.sw_background = ctk.CTkSwitch(
-            inner_bg, text="Постоянная работа в фоне",
-            command=self._on_setting_background,
-        )
-        self.sw_background.pack(anchor="w", pady=4)
-        if self._app_settings.get("background_mode", True):
-            self.sw_background.select()
-
-        self.sw_tray = ctk.CTkSwitch(
-            inner_bg, text="Сворачивать в трей при закрытии окна",
-            command=self._on_setting_tray,
-        )
-        self.sw_tray.pack(anchor="w", pady=4)
-        if self._app_settings.get("minimize_to_tray", True):
-            self.sw_tray.select()
-
-        self.sw_startup = ctk.CTkSwitch(
-            inner_bg, text="Запускать при входе в Windows",
-            command=self._on_setting_startup,
-        )
-        self.sw_startup.pack(anchor="w", pady=4)
-        if self._app_settings.get("run_at_startup"):
-            self.sw_startup.select()
-
-        self.sw_start_min = ctk.CTkSwitch(
-            inner_bg, text="Запускать свёрнутым в трей",
-            command=self._on_setting_start_min,
-        )
-        self.sw_start_min.pack(anchor="w", pady=4)
-        if self._app_settings.get("start_minimized"):
-            self.sw_start_min.select()
-
+        self.grizzly_cancel_status.pack(fill="x", pady=(0, 4))
         ctk.CTkButton(
-            inner_bg, text="📌 Свернуть в трей сейчас", height=36,
-            fg_color="#37474f", command=self._minimize_to_tray,
-        ).pack(fill="x", pady=(10, 0))
+            inner_gs, text="🛑 Отменить все активные номера", height=BTN_H,
+            corner_radius=RADIUS_BTN, fg_color=ERROR, hover_color="#da3633",
+            command=self._cancel_grizzly_numbers,
+        ).pack(fill="x")
+
+        inner2 = self._card(right, "API-ключи")
+        self._settings_key_labels: dict[str, ctk.CTkLabel] = {}
+        for name, section, key in [
+            ("GrizzlySMS", "grizzlysms", "api_key"),
+            ("Telegram", "telegram", "token"),
+            ("GGSell", "ggsel", "api_key"),
+        ]:
+            row = ctk.CTkFrame(inner2, fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP)
+            row.pack(fill="x", pady=3)
+            icon = ctk.CTkLabel(row, text="…", width=36, font=_ui_font(FONT_SECTION))
+            icon.pack(side="left", padx=(8, 4), pady=5)
+            ctk.CTkLabel(
+                row, text=name, font=_ui_font(FONT_BODY),
+                text_color=TEXT_PRIMARY, anchor="w",
+            ).pack(side="left", pady=5)
+            self._settings_key_labels[f"{section}.{key}"] = icon
+        self.settings_keys = None  # legacy ref guard
+
+        inner_bg = self._card(right, "Фоновый режим")
+        for sw_attr, text, key, handler in (
+            ("sw_background", "Постоянная работа в фоне", "background_mode", "_on_setting_background"),
+            ("sw_tray", "При закрытии — в трей (с вопросом)", "minimize_to_tray", "_on_setting_tray"),
+            ("sw_startup", "Автозапуск Windows", "run_at_startup", "_on_setting_startup"),
+            ("sw_start_min", "Старт свёрнутым", "start_minimized", "_on_setting_start_min"),
+        ):
+            row = ctk.CTkFrame(inner_bg, fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP)
+            row.pack(fill="x", pady=3)
+            sw = ctk.CTkSwitch(
+                row, text=text, font=_ui_font(FONT_BODY),
+                command=getattr(self, handler),
+            )
+            sw.pack(anchor="w", padx=8, pady=4)
+            setattr(self, sw_attr, sw)
+            if self._app_settings.get(key):
+                sw.select()
+        ctk.CTkButton(
+            inner_bg, text="📌 В трей", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._minimize_to_tray,
+        ).pack(fill="x", pady=(4, 0))
+
+        inner_notif = self._card(right, "Уведомления", accent=SVC_GGSELL)
+        for sw_attr, text, key, handler in (
+            ("sw_notify_orders", "Новые заказы GGSELL", "notify_ggs_orders", "_on_setting_notify_orders"),
+            ("sw_notify_messages", "Новые сообщения в чате", "notify_ggs_messages", "_on_setting_notify_messages"),
+        ):
+            row = ctk.CTkFrame(inner_notif, fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP)
+            row.pack(fill="x", pady=3)
+            sw = ctk.CTkSwitch(
+                row, text=text, font=_ui_font(FONT_BODY),
+                command=getattr(self, handler),
+            )
+            sw.pack(anchor="w", padx=8, pady=4)
+            setattr(self, sw_attr, sw)
+            if self._app_settings.get(key, True):
+                sw.select()
 
     def _sync_settings_switches(self) -> None:
         s = self._app_settings
@@ -1403,6 +2028,8 @@ class SubHubApp(ctk.CTk):
             (getattr(self, "sw_tray", None), "minimize_to_tray"),
             (getattr(self, "sw_startup", None), "run_at_startup"),
             (getattr(self, "sw_start_min", None), "start_minimized"),
+            (getattr(self, "sw_notify_orders", None), "notify_ggs_orders"),
+            (getattr(self, "sw_notify_messages", None), "notify_ggs_messages"),
         ):
             if sw is None:
                 continue
@@ -1445,11 +2072,64 @@ class SubHubApp(ctk.CTk):
         self._app_settings["start_minimized"] = bool(self.sw_start_min.get())
         self._persist_app_settings()
 
+    def _on_setting_notify_orders(self) -> None:
+        self._app_settings["notify_ggs_orders"] = bool(self.sw_notify_orders.get())
+        self._persist_app_settings()
+
+    def _on_setting_notify_messages(self) -> None:
+        self._app_settings["notify_ggs_messages"] = bool(self.sw_notify_messages.get())
+        self._persist_app_settings()
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
+
+    def _grizzly_cancel_summary(self, r: dict) -> str:
+        if r.get("error") == "no_api_key":
+            return "API-ключ GrizzlySMS не настроен"
+        if r.get("error"):
+            return f"Ошибка: {r['error']}"
+        total = int(r.get("total") or 0)
+        cancelled = int(r.get("cancelled") or 0)
+        failed = int(r.get("failed") or 0)
+        bal = r.get("balance")
+        bal_s = f" · баланс ${bal:.4f}" if bal is not None else ""
+        if total == 0:
+            return f"Активных номеров нет{bal_s}"
+        if cancelled == total:
+            return f"Отменено {cancelled} номер(ов){bal_s}"
+        if cancelled:
+            return f"Отменено {cancelled}/{total}, не удалось: {failed}{bal_s}"
+        return f"Не удалось отменить {failed}/{total} (лимит Grizzly <2 мин?){bal_s}"
+
+    def _cancel_grizzly_numbers(self) -> None:
+        self._run_bg(self._cancel_grizzly_numbers_worker, "Отмена активных номеров GrizzlySMS…")
+
+    def _cancel_grizzly_numbers_worker(self) -> None:
+        import grizzly as gz
+        r = gz.cancel_all_active_rentals_blocking("вручную")
+        msg = self._grizzly_cancel_summary(r)
+        self.after(0, lambda: self._log(f"Grizzly: {msg}"))
+        self.after(0, lambda: self.grizzly_cancel_status.configure(text=msg))
 
     def _bootstrap_backend(self) -> None:
         import menu as m
+        import grizzly as gz
+        import threading as _thr
         try:
+            cleanup_box: dict = {}
+
+            def _startup_cancel() -> None:
+                cleanup_box["r"] = gz.startup_cleanup_active_rentals("старт приложения")
+
+            t = _thr.Thread(target=_startup_cancel, daemon=True, name="grizzly-startup-cancel")
+            t.start()
+            t.join(timeout=35)
+            r = cleanup_box.get("r") or {}
+            summary = self._grizzly_cancel_summary(r)
+            if int(r.get("total") or 0) > 0 or r.get("error"):
+                self._log(f"Grizzly: {summary}")
+            if hasattr(self, "grizzly_cancel_status"):
+                self.grizzly_cancel_status.configure(text=summary)
+
             scan = m.scan_profiles_extension_status()
             if m._vpn_extension_dir() and scan["total"]:
                 m._set_vpn_bg_status(
@@ -1457,7 +2137,6 @@ class SubHubApp(ctk.CTk):
                     f"Фон: расширение {scan['with_ext']}/{scan['total']} проф.…",
                 )
             m.start_background_bootstrap()
-            import grizzly as gz
             gz.start_global_monitor()
             try:
                 from ggsell.monitor import start_monitor
@@ -1492,6 +2171,8 @@ class SubHubApp(ctk.CTk):
                 fn()
             except Exception as e:
                 self._log(f"Ошибка: {e}")
+            finally:
+                self.after(0, self._ensure_window_visible)
 
         threading.Thread(target=_wrap, daemon=True).start()
 
@@ -1673,7 +2354,7 @@ class SubHubApp(ctk.CTk):
             return
         btn.configure(text=text, command=command, fg_color=color, state=state)
         if not btn.winfo_ismapped():
-            btn.pack(fill="x", pady=4, after=self.settings_upd_check_btn)
+            btn.pack(fill="x", pady=2, after=self.settings_upd_check_btn)
 
     def _hide_update_action_btn(self) -> None:
         btn = getattr(self, "settings_upd_btn", None)
@@ -1714,7 +2395,14 @@ class SubHubApp(ctk.CTk):
             if hasattr(self, "settings_upd_sub"):
                 self.settings_upd_sub.configure(text=sub)
             if hasattr(self, "settings_upd_list"):
-                self._set_readonly_text(self.settings_upd_list, list_text)
+                lst = self.settings_upd_list
+                if list_text.strip():
+                    lst.configure(text=list_text.strip())
+                    if not lst.winfo_ismapped():
+                        lst.pack(fill="x", pady=(0, 4), before=self.settings_upd_check_btn)
+                elif lst.winfo_ismapped():
+                    lst.pack_forget()
+                    lst.configure(text="")
             if n:
                 self._show_update_action_btn(
                     f"⬆  Скачать {n} обновлений и перезапустить",
@@ -1769,7 +2457,11 @@ class SubHubApp(ctk.CTk):
     def _set_ggsell_filter(self, flt: str) -> None:
         self._ggs_filter = flt
         for key, btn in getattr(self, "_ggs_filter_btns", {}).items():
-            btn.configure(fg_color=SVC_GGSELL if key == flt else BTN_SECONDARY)
+            active = key == flt
+            btn.configure(
+                fg_color=SVC_GGSELL if active else BG_SURFACE,
+                hover_color=self._btn_hover(SVC_GGSELL) if active else BG_NAV_ACTIVE,
+            )
         self._render_ggsell_orders()
 
     def _refresh_ggsell(self) -> None:
@@ -1868,7 +2560,7 @@ class SubHubApp(ctk.CTk):
             ctk.CTkLabel(
                 self.ggs_orders_list, text="Нет заказов или API не настроен",
                 text_color=TEXT_DIM,
-            ).pack(pady=24)
+            ).pack(pady=10)
             self._show_ggsell_order_detail(None)
             return
 
@@ -1876,7 +2568,7 @@ class SubHubApp(ctk.CTk):
             ctk.CTkLabel(
                 self.ggs_orders_list, text="В этой категории заказов нет",
                 text_color=TEXT_DIM,
-            ).pack(pady=24)
+            ).pack(pady=10)
             self._show_ggsell_order_detail(None)
             return
 
@@ -1892,22 +2584,21 @@ class SubHubApp(ctk.CTk):
             row = ctk.CTkFrame(
                 self.ggs_orders_list,
                 fg_color=SVC_GGSELL if active else BG_CARD,
-                corner_radius=10,
-                border_width=1 if active else 0,
-                border_color=SVC_GGSELL,
+                corner_radius=RADIUS_CHIP,
+                border_width=0,
             )
             row.pack(fill="x", pady=3, padx=2)
             lbl = row_label(o, self._ggs_state, self._ggs_chat_map)
             ctk.CTkLabel(
-                row, text=lbl, anchor="w", font=ctk.CTkFont(size=12),
-                text_color="#f0f6fc" if active else TEXT_DIM,
-            ).pack(fill="x", padx=10, pady=10)
+                row, text=lbl, anchor="w", font=_ui_font(FONT_BODY),
+                text_color=TEXT_PRIMARY if active else TEXT_DIM,
+            ).pack(fill="x", padx=12, pady=10)
             tip = STATUS_LABEL.get(sk, "")
             if tip:
                 ctk.CTkLabel(
-                    row, text=tip, anchor="e", font=ctk.CTkFont(size=10),
+                    row, text=tip, anchor="e", font=_ui_font(FONT_SMALL),
                     text_color=TEXT_MUTED,
-                ).pack(anchor="e", padx=10, pady=(0, 6))
+                ).pack(anchor="e", padx=8, pady=(0, 4))
             for w in (row,):
                 w.bind("<Button-1>", lambda e, i=inv: self._select_ggsell_order(i))
             for child in row.winfo_children():
@@ -1916,6 +2607,7 @@ class SubHubApp(ctk.CTk):
         self._show_ggsell_order_detail(sel)
 
     def _select_ggsell_order(self, inv_id: int) -> None:
+        self._ggsell_close_templates_modal()
         self._ggs_selected_id = inv_id
         self._render_ggsell_orders()
 
@@ -1926,6 +2618,112 @@ class SubHubApp(ctk.CTk):
                 return o
         return None
 
+    def _ggsell_chat_return(self, event=None):
+        if event and (event.state & 0x1):
+            return
+        self._ggsell_send_chat()
+        return "break"
+
+    def _ggsell_get_chat_text(self) -> str:
+        w = getattr(self, "ggs_chat_input", None)
+        if w is None:
+            return ""
+        return w.get("1.0", "end-1c").strip()
+
+    def _ggsell_set_chat_text(self, text: str) -> None:
+        w = getattr(self, "ggs_chat_input", None)
+        if w is None:
+            return
+        w.configure(state="normal")
+        w.delete("1.0", "end")
+        if text:
+            w.insert("1.0", text)
+        if self._ggs_selected_id:
+            w.configure(state="normal")
+        else:
+            w.configure(state="disabled")
+
+    def _ggsell_set_chat_enabled(self, enabled: bool) -> None:
+        st = "normal" if enabled else "disabled"
+        for w in (
+            getattr(self, "ggs_btn_chat_refresh", None),
+            getattr(self, "ggs_btn_seller", None),
+            getattr(self, "ggs_btn_templates", None),
+            getattr(self, "ggs_btn_chat_send", None),
+        ):
+            if w is not None:
+                w.configure(state=st)
+        inp = getattr(self, "ggs_chat_input", None)
+        if inp is not None:
+            inp.configure(state=st)
+
+    def _ggsell_clear_chat_ui(self) -> None:
+        if not hasattr(self, "ggs_chat_scroll"):
+            return
+        for w in self.ggs_chat_scroll.winfo_children():
+            w.destroy()
+
+    def _ggsell_render_chat(self, messages: list[dict]) -> None:
+        self._ggsell_clear_chat_ui()
+        if not messages:
+            lbl = ctk.CTkLabel(
+                self.ggs_chat_scroll, text="Сообщений пока нет",
+                text_color=TEXT_MUTED, font=_ui_font(FONT_BODY),
+            )
+            lbl.pack(pady=10)
+            return
+        for msg in messages:
+            seller = msg.get("seller", False)
+            accent = SVC_GGSELL if seller else "#3d5a80"
+            row = ctk.CTkFrame(self.ggs_chat_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+            bubble = ctk.CTkFrame(
+                row, fg_color=accent if seller else BG_SURFACE,
+                corner_radius=RADIUS_CHIP,
+                border_width=0,
+            )
+            pad = (36, 4) if seller else (4, 36)
+            bubble.pack(
+                side="right" if seller else "left",
+                padx=pad, anchor="e" if seller else "w",
+            )
+            who = "Вы" if seller else "Покупатель"
+            head = f"{who}" + (f"  ·  {msg['time']}" if msg.get("time") else "")
+            ctk.CTkLabel(
+                bubble, text=head,
+                font=_ui_font(FONT_SMALL, "bold"),
+                text_color="#ffe8cc" if seller else TEXT_DIM,
+                anchor="w", justify="left",
+            ).pack(anchor="w", padx=10, pady=(6, 0))
+            body = (msg.get("text") or "(пусто)").strip()
+            ctk.CTkLabel(
+                bubble, text=body, anchor="w", justify="left",
+                font=_ui_font(FONT_BODY),
+                text_color="#f0f6fc" if seller else "#e6edf3",
+                wraplength=320,
+            ).pack(anchor="w", padx=10, pady=(2, 8))
+        try:
+            self.ggs_chat_scroll._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
+
+    def _parse_ggsell_messages(self, messages: list) -> list[dict]:
+        out: list[dict] = []
+        for msg in (messages or [])[-30:]:
+            is_seller = bool(
+                msg.get("is_seller") or msg.get("is_seller_msg")
+                or msg.get("sender") == "seller" or msg.get("type") == "seller"
+                or int(msg.get("type_message") or msg.get("type_msg") or -1) == 1
+            )
+            raw_date = (
+                msg.get("date") or msg.get("created_at")
+                or msg.get("timestamp") or msg.get("date_add") or ""
+            )
+            t = str(raw_date)[:16].replace("T", " ") if raw_date else ""
+            text_m = (msg.get("text") or msg.get("message") or msg.get("body") or "")
+            out.append({"seller": is_seller, "time": t, "text": text_m})
+        return out
+
     def _show_ggsell_order_detail(self, inv_id: int | None) -> None:
         from ggsell.gui_orders import (
             STATUS_ICON, STATUS_LABEL, order_email, parse_order, status_key,
@@ -1935,15 +2733,22 @@ class SubHubApp(ctk.CTk):
             return
         if not inv_id:
             self.ggs_detail_title.configure(text="Выберите заказ")
-            self.ggs_detail_body.configure(text="Список слева — кликните на заказ.")
-            self.ggs_btn_messages.configure(state="disabled")
-            self.ggs_btn_seller.configure(state="disabled")
+            self.ggs_detail_meta.configure(text="—")
+            self.ggs_chat_status.configure(text="")
+            self._ggsell_set_chat_enabled(False)
+            self._ggsell_clear_chat_ui()
+            ph = ctk.CTkLabel(
+                self.ggs_chat_scroll, text="Выберите заказ слева",
+                text_color=TEXT_MUTED, font=_ui_font(FONT_BODY),
+            )
+            ph.pack(pady=10)
             return
 
         order = self._ggsell_order_by_id(inv_id)
         if not order:
             self.ggs_detail_title.configure(text=f"Заказ #{inv_id}")
-            self.ggs_detail_body.configure(text="Данные заказа не найдены.")
+            self.ggs_detail_meta.configure(text="Данные не найдены")
+            self._ggsell_set_chat_enabled(False)
             return
 
         p = parse_order(order)
@@ -1951,35 +2756,24 @@ class SubHubApp(ctk.CTk):
         email = order_email(order, self._ggs_state, self._ggs_chat_map)
         link = self._ggs_state.get("links", {}).get(inv_id, "")
         issued = self._ggs_state.get("done", {}).get(inv_id, "")
-        profile = self._ggs_state.get("profile_paths", {}).get(inv_id, "")
 
-        lines = [
+        meta_parts = [
             f"{STATUS_ICON.get(sk, '•')} {STATUS_LABEL.get(sk, sk)}",
-            "",
-            f"🏷 {p['name_short']}",
+            p["name_short"],
         ]
-        for opt in p["options"]:
-            lines.append(f"   {opt['name']}: {opt['value']}")
-        lines.append("")
         if email:
-            lines.append(f"👤 {email}")
+            meta_parts.append(email)
         if p["sum_buy"]:
-            lines.append(f"💰 Покупка: {p['sum_buy']}₽")
-        if p["sum_sell"]:
-            lines.append(f"💼 Выплата: {p['sum_sell']}₽")
-        if p["date"]:
-            lines.append(f"🕒 {p['date']}")
+            meta_parts.append(f"{p['sum_buy']}₽")
         if issued:
-            lines.append(f"📅 Выдан: {issued}")
+            meta_parts.append(f"выдан {issued[:10]}")
         if link:
-            lines.append(f"🔗 {link}")
-        if profile:
-            lines.append(f"📁 {Path(profile).name}")
+            meta_parts.append("ссылка ✓")
 
-        self.ggs_detail_title.configure(text=f"Заказ #{inv_id}")
-        self.ggs_detail_body.configure(text="\n".join(lines))
-        self.ggs_btn_messages.configure(state="normal")
-        self.ggs_btn_seller.configure(state="normal")
+        self.ggs_detail_title.configure(text=f"#{inv_id}")
+        self.ggs_detail_meta.configure(text="  ·  ".join(meta_parts))
+        self._ggsell_set_chat_enabled(True)
+        self._ggsell_load_chat(inv_id)
 
     def _ggsell_open_seller(self) -> None:
         inv = self._ggs_selected_id
@@ -1988,21 +2782,51 @@ class SubHubApp(ctk.CTk):
         import webbrowser
         webbrowser.open(f"https://seller.ggsel.com/order/{inv}")
 
-    def _ggsell_open_messages(self) -> None:
+    def _ggsell_refresh_chat(self) -> None:
         inv = self._ggs_selected_id
-        if not inv:
+        if inv:
+            self._ggsell_load_chat(inv)
+
+    def _ggsell_load_chat(self, inv_id: int) -> None:
+        if self._ggs_chat_loading:
             return
+        self._ggs_chat_loading = True
+        self.ggs_chat_status.configure(text="Загрузка чата…")
+        self._ggsell_set_chat_enabled(False)
 
         def _w():
             try:
-                lines = asyncio.run(self._fetch_ggsell_messages(inv))
-                self.after(0, lambda: self._ggsell_messages_dialog(inv, lines))
+                parsed = asyncio.run(self._fetch_ggsell_messages_parsed(inv_id))
+                self.after(0, lambda: self._ggsell_chat_loaded(inv_id, parsed, None))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Сообщения", str(e)))
+                self.after(0, lambda: self._ggsell_chat_loaded(inv_id, None, str(e)))
 
         threading.Thread(target=_w, daemon=True, name="ggs-chat").start()
 
-    async def _fetch_ggsell_messages(self, inv_id: int) -> list[str]:
+    def _ggsell_chat_loaded(
+        self, inv_id: int, messages: list[dict] | None, err: str | None,
+    ) -> None:
+        self._ggs_chat_loading = False
+        if self._ggs_selected_id != inv_id:
+            return
+        if err:
+            self.ggs_chat_status.configure(text=f"Ошибка: {err[:80]}")
+            self._ggsell_clear_chat_ui()
+            ctk.CTkLabel(
+                self.ggs_chat_scroll, text="Не удалось загрузить чат",
+                text_color=ERROR, font=_ui_font(FONT_BODY),
+            ).pack(pady=10)
+        else:
+            self.ggs_chat_status.configure(text=f"{len(messages or [])} сообщ.")
+            self._ggsell_render_chat(messages or [])
+        self._ggsell_set_chat_enabled(True)
+        if not err:
+            try:
+                self.ggs_chat_input.focus()
+            except Exception:
+                pass
+
+    async def _fetch_ggsell_messages_parsed(self, inv_id: int) -> list[dict]:
         import menu as m
         from ggsell.client import GGSellClient
 
@@ -2012,39 +2836,211 @@ class SubHubApp(ctk.CTk):
             messages = await client.get_messages(inv_id)
         finally:
             await client.close()
+        return self._parse_ggsell_messages(messages)
 
-        lines: list[str] = []
-        if not messages:
-            return ["Сообщений пока нет."]
-        for msg in messages[-25:]:
-            is_seller = bool(
-                msg.get("is_seller") or msg.get("is_seller_msg")
-                or msg.get("sender") == "seller" or msg.get("type") == "seller"
-            )
-            raw_date = (
-                msg.get("date") or msg.get("created_at")
-                or msg.get("timestamp") or msg.get("date_add") or ""
-            )
-            t = str(raw_date)[:16].replace("T", " ") if raw_date else ""
-            text_m = (msg.get("text") or msg.get("message") or msg.get("body") or "")
-            who = "Вы" if is_seller else "Покупатель"
-            lines.append(f"[{t}] {who}:")
-            lines.append(text_m or "(пусто)")
-            lines.append("")
-        return lines
+    def _ggsell_send_chat(self, text: str | None = None) -> None:
+        inv = self._ggs_selected_id
+        if not inv or not hasattr(self, "ggs_chat_input"):
+            return
+        body = (text or self._ggsell_get_chat_text()).strip()
+        if not body:
+            return
+        if text is None:
+            self._ggsell_set_chat_text("")
+        self.ggs_chat_status.configure(text="Отправка…")
+        self._ggsell_set_chat_enabled(False)
 
-    def _ggsell_messages_dialog(self, inv_id: int, lines: list[str]) -> None:
+        def _w():
+            err = None
+            try:
+                asyncio.run(self._send_ggsell_message(inv, body))
+            except Exception as e:
+                err = str(e)
+            self.after(0, lambda: self._ggsell_after_send(inv, err))
+
+        threading.Thread(target=_w, daemon=True, name="ggs-send").start()
+
+    async def _send_ggsell_message(self, inv_id: int, text: str) -> None:
+        import menu as m
+        from ggsell.client import GGSellClient
+
+        gs = m._read_secrets().get("ggsel") or {}
+        client = GGSellClient(gs["api_key"], int(gs["seller_id"]), http_timeout=20)
+        try:
+            ok = await client.send_message(inv_id, text)
+            if not ok:
+                raise RuntimeError("GGSell не принял сообщение")
+        finally:
+            await client.close()
+
+    def _ggsell_after_send(self, inv_id: int, err: str | None) -> None:
+        if self._ggs_selected_id != inv_id:
+            return
+        if err:
+            self.ggs_chat_status.configure(text=f"Ошибка: {err[:80]}")
+            self._ggsell_set_chat_enabled(True)
+            messagebox.showerror("Чат", err)
+            return
+        self._ggsell_load_chat(inv_id)
+
+    def _ggsell_resolve_template(self, name: str, inv_id: int) -> str:
+        from ggsell.monitor import get_template
+        import menu as m
+
+        text = (get_template(name) or "").strip()
+        if not text:
+            raise ValueError("Шаблон пуст")
+        link = (self._ggs_state.get("links", {}) or {}).get(inv_id, "")
+        promo = str((m._read_secrets().get("ggsel") or {}).get("promo_code") or "")
+        if "{link}" in text:
+            if not link:
+                raise ValueError("Нет ссылки для этого заказа — шаблон требует {link}")
+            text = text.format(link=link)
+        if "{promo_code}" in text:
+            if not promo:
+                raise ValueError("Нет promo_code в secrets.yaml — шаблон требует {promo_code}")
+            text = text.format(promo_code=promo)
+        return text
+
+    def _ggsell_close_templates_modal(self) -> None:
+        win = getattr(self, "_ggs_templates_win", None)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        self._ggs_templates_win = None
+
+    def _ggsell_open_templates_modal(self) -> None:
+        inv = self._ggs_selected_id
+        if not inv:
+            return
+        self._ggsell_close_templates_modal()
+
         win = ctk.CTkToplevel(self)
-        win.title(f"Чат · заказ #{inv_id}")
-        win.geometry("520x420")
+        win.title("Шаблоны")
+        win.geometry("340x420")
         win.transient(self)
-        txt = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=12))
-        txt.pack(fill="both", expand=True, padx=12, pady=12)
-        txt.insert("1.0", "\n".join(lines))
-        txt.configure(state="disabled")
+        win.resizable(False, False)
+        win.configure(fg_color=BG_MAIN)
+        self._ggs_templates_win = win
+        try:
+            x = self.winfo_rootx() + self.winfo_width() - 380
+            y = self.ggs_order_detail.winfo_rooty()
+            win.geometry(f"340x420+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        hdr = ctk.CTkFrame(win, fg_color="transparent")
+        hdr.pack(fill="x", padx=10, pady=(10, 6))
+        ctk.CTkLabel(
+            hdr, text="📝 Шаблоны", font=_ui_font(FONT_SECTION, "bold"),
+            text_color="#f0f6fc",
+        ).pack(side="left")
         ctk.CTkButton(
-            win, text="Закрыть", command=win.destroy,
-        ).pack(pady=(0, 12))
+            hdr, text="✕", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color="transparent", hover_color=BTN_SECONDARY,
+            command=self._ggsell_close_templates_modal,
+        ).pack(side="right")
+
+        list_frame = ctk.CTkScrollableFrame(
+            win, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+            border_width=1, border_color=BORDER_SUBTLE, height=120,
+        )
+        list_frame.pack(fill="x", padx=10, pady=(0, 6))
+
+        preview = ctk.CTkTextbox(
+            win, height=130, corner_radius=RADIUS_CARD,
+            fg_color=BG_ELEVATED, border_width=1, border_color=BORDER_SUBTLE,
+            font=_ui_font(FONT_BODY), wrap="word",
+        )
+        preview.pack(fill="x", padx=10, pady=(0, 6))
+        preview.configure(state="disabled")
+
+        state: dict = {"name": ""}
+
+        def _pick(name: str) -> None:
+            state["name"] = name
+            try:
+                resolved = self._ggsell_resolve_template(name, inv)
+            except Exception as e:
+                resolved = f"⚠ {e}"
+            preview.configure(state="normal")
+            preview.delete("1.0", "end")
+            preview.insert("1.0", resolved)
+            preview.configure(state="disabled")
+
+        for key, (label, hint) in _GGS_TEMPLATE_META.items():
+            row = ctk.CTkFrame(list_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkButton(
+                row, text=f"{label}", anchor="w", height=BTN_H,
+                corner_radius=RADIUS_BTN, fg_color=BTN_SECONDARY,
+                hover_color=BTN_SECONDARY_HOVER,
+                command=lambda k=key: _pick(k),
+            ).pack(fill="x")
+            ctk.CTkLabel(
+                row, text=hint, font=_ui_font(FONT_SMALL),
+                text_color=TEXT_MUTED, anchor="w",
+            ).pack(fill="x", padx=4, pady=(0, 4))
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(fill="x", padx=10, pady=(0, 8))
+        btns.grid_columnconfigure((0, 1), weight=1)
+
+        def _insert() -> None:
+            name = state.get("name")
+            if not name:
+                messagebox.showinfo("Шаблоны", "Выберите шаблон из списка")
+                return
+            try:
+                text = self._ggsell_resolve_template(name, inv)
+            except Exception as e:
+                messagebox.showerror("Шаблоны", str(e))
+                return
+            self._ggsell_set_chat_text(text)
+            self._ggsell_close_templates_modal()
+            try:
+                self.ggs_chat_input.focus()
+            except Exception:
+                pass
+
+        def _send_tpl() -> None:
+            name = state.get("name")
+            if not name:
+                messagebox.showinfo("Шаблоны", "Выберите шаблон из списка")
+                return
+            try:
+                text = self._ggsell_resolve_template(name, inv)
+            except Exception as e:
+                messagebox.showerror("Шаблоны", str(e))
+                return
+            self._ggsell_close_templates_modal()
+            self._ggsell_send_chat(text)
+
+        ctk.CTkButton(
+            btns, text="Вставить", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=_insert,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ctk.CTkButton(
+            btns, text="Отправить", height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color=SVC_GGSELL, hover_color="#e67e00",
+            command=_send_tpl,
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        ctk.CTkButton(
+            win, text="⚙️ Редактировать шаблоны (файл)",
+            height=BTN_H, corner_radius=RADIUS_BTN,
+            fg_color="transparent", hover_color=BTN_SECONDARY,
+            command=self._open_ggsell_templates,
+        ).pack(fill="x", padx=10, pady=(0, 8))
+
+        first = next(iter(_GGS_TEMPLATE_META), None)
+        if first:
+            _pick(first)
+
+        win.protocol("WM_DELETE_WINDOW", self._ggsell_close_templates_modal)
 
     def _fetch_ggsell_balance(self) -> None:
         async def _run():
@@ -2093,7 +3089,9 @@ class SubHubApp(ctk.CTk):
     def _refresh_settings_keys(self) -> None:
         import menu as m
         sec = m._read_secrets()
-        lines = []
+        rows = getattr(self, "_settings_key_labels", None)
+        if not rows:
+            return
         for name, section, key in [
             ("GrizzlySMS", "grizzlysms", "api_key"),
             ("Telegram", "telegram", "token"),
@@ -2101,13 +3099,18 @@ class SubHubApp(ctk.CTk):
         ]:
             val = (sec.get(section) or {}).get(key, "")
             ok = "✅" if val and "YOUR_" not in str(val) else "❌"
-            lines.append(f"{ok}  {name}")
-        self.settings_keys.configure(text="\n".join(lines))
+            lbl = rows.get(f"{section}.{key}")
+            if lbl is not None:
+                lbl.configure(text=ok, text_color=SUCCESS if ok == "✅" else ERROR)
 
     def _set_profile_filter(self, flt: str) -> None:
         self._profile_filter = flt
         for key, btn in getattr(self, "_profile_filter_btns", {}).items():
-            btn.configure(fg_color=SVC_YOUTUBE if key == flt else BTN_SECONDARY)
+            active = key == flt
+            btn.configure(
+                fg_color=SVC_YOUTUBE if active else BG_SURFACE,
+                hover_color=self._btn_hover(SVC_YOUTUBE) if active else BG_NAV_ACTIVE,
+            )
         self._refresh_profiles()
 
     def _profile_category(self, meta: dict) -> str:
@@ -2171,7 +3174,7 @@ class SubHubApp(ctk.CTk):
         self._profile_rows = m._load_done_profiles()
         self._selected_profile = None
         if not self._profile_rows:
-            ctk.CTkLabel(self.profile_list, text="Нет профилей", text_color=TEXT_DIM).pack(pady=24)
+            ctk.CTkLabel(self.profile_list, text="Нет профилей", text_color=TEXT_DIM).pack(pady=10)
             return
         flt = self._profile_filter
         shown = [
@@ -2181,30 +3184,31 @@ class SubHubApp(ctk.CTk):
         if not shown:
             ctk.CTkLabel(
                 self.profile_list, text="В этой категории профилей нет", text_color=TEXT_DIM,
-            ).pack(pady=24)
+            ).pack(pady=10)
             return
         for prof in shown:
             icon, phone, sub = self._profile_row_meta(prof)
-            row = ctk.CTkFrame(self.profile_list, fg_color=BG_CARD, corner_radius=10)
-            row.pack(fill="x", pady=3, padx=4)
+            row = ctk.CTkFrame(self.profile_list, fg_color=BG_CARD, corner_radius=RADIUS_CHIP,
+                               border_width=0)
+            row.pack(fill="x", pady=3, padx=2)
             inner = ctk.CTkFrame(row, fg_color="transparent")
-            inner.pack(fill="x", padx=10, pady=8)
+            inner.pack(fill="x", padx=12, pady=8)
             ctk.CTkLabel(
-                inner, text=f"{icon}  {phone}", font=ctk.CTkFont(size=14, weight="bold"),
-                anchor="w", text_color="#f0f6fc",
+                inner, text=f"{icon}  {phone}", font=_ui_font(FONT_BODY, "bold"),
+                anchor="w", text_color=TEXT_PRIMARY,
             ).pack(fill="x")
             if sub:
                 ctk.CTkLabel(
-                    inner, text=sub, font=ctk.CTkFont(size=10),
-                    anchor="w", text_color=TEXT_DIM, wraplength=520, justify="left",
+                    inner, text=sub, font=_ui_font(FONT_SMALL),
+                    anchor="w", text_color=TEXT_DIM, wraplength=600, justify="left",
                 ).pack(fill="x", pady=(2, 0))
 
             def _sel(e=None, p=prof, r=row):
                 self._selected_profile = p
                 for c in self.profile_list.winfo_children():
                     if isinstance(c, ctk.CTkFrame):
-                        c.configure(fg_color=BG_CARD, border_width=0)
-                r.configure(fg_color=BG_CARD_HOVER, border_width=1, border_color=SVC_YOUTUBE)
+                        c.configure(fg_color=BG_CARD)
+                r.configure(fg_color=BG_CARD_HOVER)
 
             def _open(e=None, p=prof):
                 self._open_profile_menu(p)
@@ -2222,107 +3226,292 @@ class SubHubApp(ctk.CTk):
             w.destroy()
         records = m._load_archive_records()
         if not records:
-            ctk.CTkLabel(self.archive_list, text="Архив пуст", text_color=TEXT_DIM).pack(pady=24)
+            ctk.CTkLabel(self.archive_list, text="Архив пуст", text_color=TEXT_DIM).pack(pady=10)
             return
         for r in records[:80]:
             phone = r.get("username", "?")
             used = r.get("used_str", "—")
             months = r.get("subscription_months")
             sub = f" · {months} мес." if months else ""
-            row = ctk.CTkFrame(self.archive_list, fg_color=BG_CARD, corner_radius=10)
-            row.pack(fill="x", pady=3, padx=4)
-            ctk.CTkLabel(row, text=f"  +91 {phone}{sub}", font=ctk.CTkFont(size=13, weight="bold"),
-                         anchor="w").pack(side="left", padx=8, pady=8)
-            ctk.CTkLabel(row, text=used, text_color=TEXT_DIM, font=ctk.CTkFont(size=11)
+            row = ctk.CTkFrame(self.archive_list, fg_color=BG_CARD, corner_radius=RADIUS_CHIP,
+                               border_width=0)
+            row.pack(fill="x", pady=3, padx=2)
+            ctk.CTkLabel(
+                row, text=f"  +91 {phone}{sub}", font=_ui_font(FONT_BODY, "bold"),
+                anchor="w",
+            ).pack(side="left", padx=12, pady=8)
+            ctk.CTkLabel(row, text=used, text_color=TEXT_DIM, font=_ui_font(FONT_BODY)
                          ).pack(side="right", padx=10)
+
+    def _ordered_bank_indices(self, n: int, order: list) -> list[int]:
+        if order:
+            idx = [i for i in order if 0 <= i < n]
+            idx += [i for i in range(n) if i not in idx]
+            return idx
+        return list(range(n))
+
+    def _set_cards_tab(self, tab: str) -> None:
+        self._cards_tab = tab
+        for key, btn in self._cards_tab_btns.items():
+            active = key == tab
+            btn.configure(
+                fg_color=ACCENT if active else BG_SURFACE,
+                hover_color=self._btn_hover(ACCENT) if active else BG_NAV_ACTIVE,
+            )
+        if tab != "gift" and self._gift_add_visible:
+            self.gift_add_panel.grid_forget()
+            self._gift_add_visible = False
+        if tab == "history":
+            self.cards_detail.grid_remove()
+            self.cards_list_wrap.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0)
+        else:
+            self.cards_detail.grid()
+            self.cards_list_wrap.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 6))
+        self._refresh_cards()
+
+    def _rebuild_cards_toolbar(self) -> None:
+        for w in self.cards_toolbar.winfo_children():
+            w.destroy()
+        tab = self._cards_tab
+        if tab == "bank":
+            specs = [
+                ("➕ Добавить", self._show_add_card_dialog, SUCCESS),
+                ("✎ Изменить", self._edit_selected_bank_card, BTN_SECONDARY),
+                ("🗑 Удалить", self._delete_card, ERROR),
+                ("↑", lambda: self._move_bank_card(-1), BTN_SECONDARY),
+                ("↓", lambda: self._move_bank_card(1), BTN_SECONDARY),
+                ("↺ Порядок", self._reset_bank_order, BTN_SECONDARY),
+            ]
+        elif tab == "gift":
+            specs = [
+                ("➕ Добавить", self._toggle_gift_add_panel, SUCCESS),
+                ("📁 Файл", self._upload_gift_file, BTN_SECONDARY),
+                ("✎ Изменить", self._edit_selected_gift_card, BTN_SECONDARY),
+                ("🗑 Удалить", self._delete_gift_card, ERROR),
+                ("↑", lambda: self._move_gift_card(-1), BTN_SECONDARY),
+                ("↓", lambda: self._move_gift_card(1), BTN_SECONDARY),
+                ("💳/🎁", self._toggle_pay_method, WARNING),
+            ]
+        else:
+            specs = [("🔄 Обновить", self._refresh_cards, BTN_SECONDARY)]
+        for i, (txt, cmd, color) in enumerate(specs):
+            w = 44 if txt in ("↑", "↓") else None
+            ctk.CTkButton(
+                self.cards_toolbar, text=txt, width=w, height=BTN_H,
+                corner_radius=RADIUS_BTN, font=_ui_font(FONT_BODY, "bold"),
+                fg_color=color, hover_color=self._btn_hover(color), command=cmd,
+            ).pack(side="left", padx=(0, 4))
+
+    def _cards_row(
+        self, parent, pos: int, title: str, subtitle: str, badge: str,
+        selected: bool, on_select: Callable,
+    ) -> ctk.CTkFrame:
+        bg = ACCENT if selected else BG_CARD
+        row = ctk.CTkFrame(parent, fg_color=bg, corner_radius=RADIUS_CHIP)
+        row.pack(fill="x", pady=3, padx=4)
+
+        def _bind(widget) -> None:
+            widget.bind("<Button-1>", lambda _e: on_select())
+
+        left = ctk.CTkFrame(row, fg_color="transparent")
+        left.pack(side="left", fill="x", expand=True, padx=10, pady=8)
+        ctk.CTkLabel(
+            left, text=f"  {pos}. {title}", font=_ui_font(FONT_BODY, "bold"),
+            anchor="w", text_color=TEXT_PRIMARY,
+        ).pack(anchor="w")
+        if subtitle:
+            ctk.CTkLabel(
+                left, text=subtitle, font=_ui_font(FONT_SMALL),
+                anchor="w", text_color=TEXT_DIM,
+            ).pack(anchor="w", pady=(2, 0))
+        if badge:
+            ctk.CTkLabel(
+                row, text=badge, font=_ui_font(FONT_CAPTION, "bold"),
+                fg_color=BG_ELEVATED, corner_radius=RADIUS_CHIP,
+                text_color=TEXT_PRIMARY, padx=8, pady=4,
+            ).pack(side="right", padx=10, pady=8)
+        for w in (row, left):
+            _bind(w)
+            for ch in w.winfo_children():
+                _bind(ch)
+        return row
+
+    def _set_cards_detail(self, text: str) -> None:
+        self.cards_detail_body.configure(state="normal")
+        self.cards_detail_body.delete("1.0", "end")
+        self.cards_detail_body.insert("1.0", text.strip() or "Выберите элемент в списке слева")
+        self.cards_detail_body.configure(state="disabled")
 
     def _refresh_cards(self) -> None:
         import menu as m
-        cards = m._load_cards()
-        bank_lines = []
-        for i, c in enumerate(cards, 1):
-            nick = c.get("nickname") or c.get("name") or f"Карта {i}"
-            num = c.get("number", "")
-            exp = c.get("expiry", "—")
-            name = c.get("name", "—")
-            addr = c.get("address", "")
-            city = c.get("city", "")
-            state = c.get("state", "")
-            zipc = c.get("zipcode", "")
-            country = c.get("country", "")
-            bank_lines.append(
-                f"[{i}] {nick}\n"
-                f"    Номер: {num}\n"
-                f"    Срок: {exp}   Имя: {name}\n"
-                f"    Адрес: {addr}, {city}, {state} {zipc}, {country}\n"
-            )
-        self.cards_info.configure(state="normal")
-        self.cards_info.delete("1.0", "end")
-        self.cards_info.insert("1.0", "".join(bank_lines) if bank_lines else "  Банковских карт нет")
-        self.cards_info.configure(state="disabled")
+        self._rebuild_cards_toolbar()
 
+        cards = m._load_cards()
+        order = m._load_card_order()
+        ordered = self._ordered_bank_indices(len(cards), order)
         gc = m._load_gift_cards()
         bal = m._gift_balance(gc)
         pm = m._load_pay_method()
-        pm_txt = "🎁 гифт-карты" if pm == "gift" else "💳 банковская карта"
-        by_denom: dict[int, int] = {}
-        for c in gc:
-            if c.get("number") and c.get("pin"):
-                d = int(c.get("denom") or 0)
-                by_denom[d] = by_denom.get(d, 0) + 1
-        breakdown = "  ·  ".join(f"₹{d}×{by_denom[d]}" for d in sorted(by_denom, reverse=True)) or "—"
-        self.gift_summary.configure(
-            text=f"Баланс: ₹{bal}  ({len(gc)} шт.)  ·  Оплата: {pm_txt}\n{breakdown}")
+        pm_txt = "🎁 гифт-карты" if pm == "gift" else "💳 банковская"
 
-        for w in self.gift_list.winfo_children():
-            w.destroy()
-        self._selected_gift = None
-        if not gc:
-            ctk.CTkLabel(self.gift_list, text="Нет гифт-карт — добавьте выше",
-                         text_color=TEXT_DIM).pack(pady=20)
+        self.cards_stat_bank.configure(text=str(len(cards)))
+        self.cards_stat_gift.configure(text=str(len(gc)))
+        self.cards_stat_balance.configure(text=f"₹{bal}")
+        self.cards_stat_pay.configure(text=pm_txt)
+
+        if self._gift_add_visible and self._cards_tab == "gift":
+            self.gift_add_panel.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+            self.cards_list.grid(row=1, column=0, sticky="nsew")
         else:
-            for i, c in enumerate(sorted(gc, key=lambda x: -int(x.get("denom") or 0)), 1):
-                denom = int(c.get("denom") or 0)
-                series = c.get("number", "")
-                pin = c.get("pin", "")
-                added = m._fmt_msk(c["added_ts"]) if c.get("added_ts") else "—"
-                row = ctk.CTkFrame(self.gift_list, fg_color="#253350", corner_radius=8)
-                row.pack(fill="x", pady=3, padx=4)
+            self.gift_add_panel.grid_forget()
+            self.cards_list.grid(row=1, column=0, sticky="nsew")
 
-                def _sel(card=c, r=row):
-                    self._selected_gift = card
-                    for ch in self.gift_list.winfo_children():
-                        if isinstance(ch, ctk.CTkFrame):
-                            ch.configure(fg_color="#253350")
-                    r.configure(fg_color=ACCENT)
+        for w in self.cards_list.winfo_children():
+            w.destroy()
 
-                row.bind("<Button-1>", lambda e, fn=_sel: fn())
-                txt = (
-                    f"  [{i}]  ₹{denom}\n"
-                    f"      Серия:  {series}\n"
-                    f"      PIN:    {pin}\n"
-                    f"      Добавлена: {added}"
+        tab = self._cards_tab
+        if tab == "bank":
+            if self._sel_bank_idx is not None and not (0 <= self._sel_bank_idx < len(cards)):
+                self._sel_bank_idx = None
+            if not cards:
+                ctk.CTkLabel(
+                    self.cards_list, text="Банковских карт нет\nНажмите «Добавить»",
+                    text_color=TEXT_DIM, justify="center",
+                ).pack(pady=40)
+                self._set_cards_detail("")
+            else:
+                for pos, idx in enumerate(ordered, 1):
+                    c = cards[idx]
+                    nick = c.get("nickname") or c.get("name") or f"Карта {idx + 1}"
+                    num = m._mask_card(c.get("number", ""))
+                    exp = c.get("expiry", "—")
+                    sel = idx == self._sel_bank_idx
+
+                    def _pick(i=idx):
+                        self._sel_bank_idx = i
+                        self._refresh_cards()
+
+                    self._cards_row(
+                        self.cards_list, pos, nick,
+                        f"{num}  ·  {exp}",
+                        "★" if pos == 1 else "",
+                        sel, _pick,
+                    )
+                if self._sel_bank_idx is not None:
+                    c = cards[self._sel_bank_idx]
+                    detail = (
+                        f"Название: {c.get('nickname') or '—'}\n"
+                        f"Номер: {c.get('number', '—')}\n"
+                        f"Срок: {c.get('expiry', '—')}\n"
+                        f"CVV: {c.get('cvv', '—')}\n"
+                        f"Имя: {c.get('name', '—')}\n\n"
+                        f"Страна: {c.get('country', '—')}\n"
+                        f"Индекс: {c.get('zipcode', '—')}\n"
+                        f"Штат: {c.get('state', '—')}\n"
+                        f"Город: {c.get('city', '—')}\n"
+                        f"Адрес: {c.get('address', '—')}\n\n"
+                        f"Порядок оплаты: "
+                        f"{ordered.index(self._sel_bank_idx) + 1} из {len(cards)}"
+                    )
+                    self._set_cards_detail(detail)
+                else:
+                    seq = " → ".join(str(i + 1) for i in ordered)
+                    self._set_cards_detail(
+                        f"Всего карт: {len(cards)}\n"
+                        f"Порядок попытки оплаты: {seq}\n\n"
+                        "Выберите карту слева для просмотра и редактирования.\n"
+                        "Кнопки ↑ ↓ меняют порядок для всех покупок."
+                    )
+
+        elif tab == "gift":
+            self._selected_gift = None
+            if self._sel_gift_idx is not None and not (0 <= self._sel_gift_idx < len(gc)):
+                self._sel_gift_idx = None
+            if not gc:
+                ctk.CTkLabel(
+                    self.cards_list, text="Гифт-карт нет\nДобавьте вручную или из файла",
+                    text_color=TEXT_DIM, justify="center",
+                ).pack(pady=40)
+                self._set_cards_detail("")
+            else:
+                by_denom: dict[int, int] = {}
+                for c in gc:
+                    d = int(c.get("denom") or 0)
+                    by_denom[d] = by_denom.get(d, 0) + 1
+                breakdown = "  ·  ".join(
+                    f"₹{d}×{by_denom[d]}" for d in sorted(by_denom, reverse=True)
                 )
-                lbl = ctk.CTkLabel(row, text=txt, justify="left", anchor="w",
-                                   font=ctk.CTkFont(family="Consolas", size=12))
-                lbl.pack(anchor="w", padx=10, pady=8)
-                lbl.bind("<Button-1>", lambda e, fn=_sel: fn())
+                for pos, c in enumerate(gc, 1):
+                    denom = int(c.get("denom") or 0)
+                    series = c.get("number", "")
+                    pin = c.get("pin", "")
+                    added = m._fmt_msk(c["added_ts"]) if c.get("added_ts") else "—"
+                    sel = (pos - 1) == self._sel_gift_idx
 
-        used = m._load_gift_used()
-        used_lines = []
-        for u in list(reversed(used))[:30]:
-            st = "↩ другой акк." if u.get("status") == "used_elsewhere" else "✔ применена"
-            when = u.get("used_str") or "—"
-            prof = u.get("profile") or "—"
-            used_lines.append(
-                f"{st}  ₹{int(u.get('denom') or 0)}  серия {u.get('number','')}  "
-                f"PIN {u.get('pin','')}  ·  {when}  ·  {prof}\n"
+                    def _pick(p=pos - 1, card=c):
+                        self._sel_gift_idx = p
+                        self._selected_gift = card
+                        self._refresh_cards()
+
+                    self._cards_row(
+                        self.cards_list, pos, f"₹{denom}",
+                        f"серия …{series[-6:]}  ·  PIN …{pin[-4:]}",
+                        added[:10] if added != "—" else "",
+                        sel, _pick,
+                    )
+                if self._sel_gift_idx is not None:
+                    c = gc[self._sel_gift_idx]
+                    self._set_cards_detail(
+                        f"Номинал: ₹{int(c.get('denom') or 0)}\n"
+                        f"Серия: {c.get('number', '—')}\n"
+                        f"PIN: {c.get('pin', '—')}\n"
+                        f"Добавлена: {m._fmt_msk(c['added_ts']) if c.get('added_ts') else '—'}\n\n"
+                        f"Позиция в очереди: {self._sel_gift_idx + 1} из {len(gc)}\n"
+                        f"Сводка: {breakdown}\n"
+                        f"Способ оплаты: {pm_txt}"
+                    )
+                else:
+                    self._set_cards_detail(
+                        f"Всего: {len(gc)} шт.  ·  Баланс ₹{bal}\n{breakdown}\n\n"
+                        f"Способ оплаты: {pm_txt}\n"
+                        "Выберите карту слева. ↑ ↓ меняют порядок применения."
+                    )
+
+        else:
+            used = m._load_gift_used()
+            if not used:
+                ctk.CTkLabel(
+                    self.cards_list, text="История пуста",
+                    text_color=TEXT_DIM,
+                ).pack(pady=40)
+            else:
+                for i, u in enumerate(reversed(used), 1):
+                    st = "↩ другой акк." if u.get("status") == "used_elsewhere" else "✔ применена"
+                    when = u.get("used_str") or "—"
+                    prof = u.get("profile") or "—"
+                    denom = int(u.get("denom") or 0)
+                    series = u.get("number", "")
+                    pin = u.get("pin", "")
+                    row = ctk.CTkFrame(self.cards_list, fg_color=BG_CARD, corner_radius=RADIUS_CHIP)
+                    row.pack(fill="x", pady=3, padx=4)
+                    txt = (
+                        f"  {i}. {st}  ₹{denom}\n"
+                        f"      серия …{str(series)[-6:]}  PIN …{str(pin)[-4:]}\n"
+                        f"      {when}  ·  {prof}"
+                    )
+                    ctk.CTkLabel(
+                        row, text=txt, justify="left", anchor="w",
+                        font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+                        text_color=TEXT_PRIMARY,
+                    ).pack(anchor="w", padx=10, pady=8)
+            self._set_cards_detail(
+                f"Записей в истории: {len(used)}\n"
+                "Показаны использованные гифт-карты (новые сверху)."
             )
-        self.gift_used_info.configure(state="normal")
-        self.gift_used_info.delete("1.0", "end")
-        self.gift_used_info.insert("1.0", "".join(used_lines) if used_lines else "  История пуста")
-        self.gift_used_info.configure(state="disabled")
+
         self._refresh_youtube_hub()
+        if hasattr(self, "ds_card_box"):
+            self._refresh_deepseek()
 
     def _refresh_vpn_page(self) -> None:
         import menu as m
@@ -2339,7 +3528,7 @@ class SubHubApp(ctk.CTk):
         self.vpn_page_status.configure(
             text=f"{icons.get(state, '•')}  {state.upper()}\n{msg}\n{prof_line}")
         self.vpn_page_ext.configure(
-            text=f"Расширение: {ext or 'не найдено (положите в vpn_extension/)'}")
+            text=f"Расширение: {ext or 'не найдено (положите в veepn_extension/)'}")
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
@@ -2417,6 +3606,7 @@ class SubHubApp(ctk.CTk):
             self.run_status.configure(text=f"Код {code}", text_color=WARNING)
         self._log(f"■ Завершено (код {code})")
         self._refresh_youtube_hub()
+        self._ensure_window_visible()
 
     def _stop_run(self) -> None:
         import menu as m
@@ -2468,6 +3658,8 @@ class SubHubApp(ctk.CTk):
                     m._set_vpn_bg_status("ready", "Flipkart доступен")
             except Exception as e:
                 self._log(f"Ошибка: {e}")
+            finally:
+                self.after(0, self._ensure_window_visible)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2543,7 +3735,7 @@ class SubHubApp(ctk.CTk):
 
         ctk.CTkLabel(
             win, text=self._profile_menu_info(prof), justify="left", anchor="nw",
-            font=ctk.CTkFont(size=12), text_color=TEXT_DIM, wraplength=400,
+            font=_ui_font(FONT_BODY), text_color=TEXT_DIM, wraplength=460,
         ).pack(fill="x", padx=16, pady=(14, 8))
         if busy:
             ctk.CTkLabel(win, text="⏳ Операция выполняется…", text_color=WARNING).pack(
@@ -2556,7 +3748,7 @@ class SubHubApp(ctk.CTk):
         def _btn(txt: str, cmd: Callable, color: str = BTN_SECONDARY) -> None:
             state = "disabled" if busy else "normal"
             ctk.CTkButton(
-                scroll, text=txt, height=36, corner_radius=RADIUS_BTN,
+                scroll, text=txt, height=BTN_H, corner_radius=RADIUS_BTN,
                 fg_color=color, state=state,
                 command=lambda c=cmd: (win.destroy(), c()),
             ).pack(fill="x", pady=3)
@@ -2709,9 +3901,13 @@ class SubHubApp(ctk.CTk):
 
     # ── Cards ─────────────────────────────────────────────────────────────────
 
-    def _show_add_card_dialog(self) -> None:
+    def _show_add_card_dialog(self, edit_idx: int | None = None) -> None:
+        import menu as m
+        cards = m._load_cards()
+        existing = cards[edit_idx] if edit_idx is not None and 0 <= edit_idx < len(cards) else {}
+
         dlg = ctk.CTkToplevel(self)
-        dlg.title("Добавить карту")
+        dlg.title("Изменить карту" if edit_idx is not None else "Добавить карту")
         dlg.geometry("480x520")
         dlg.transient(self)
         dlg.grab_set()
@@ -2728,49 +3924,155 @@ class SubHubApp(ctk.CTk):
             ctk.CTkLabel(scroll, text=label, text_color=TEXT_DIM).pack(anchor="w")
             e = ctk.CTkEntry(scroll)
             e.pack(fill="x", pady=(2, 8))
+            if existing.get(key):
+                e.insert(0, str(existing[key]))
             fields[key] = e
-        fields["country"].insert(0, "USA")
+        if not fields["country"].get():
+            fields["country"].insert(0, "USA")
 
         def _save():
-            import menu as m
             data = {k: v.get().strip() for k, v in fields.items()}
             if len(data.get("number", "").replace(" ", "")) < 13:
                 messagebox.showerror("Ошибка", "Неверный номер карты")
                 return
             data["name"] = data["name"].upper()
-            cards = m._load_cards()
-            cards.append(data)
-            m._save_cards(cards)
-            self._log(f"Карта «{data['nickname']}» добавлена")
+            cards_local = m._load_cards()
+            if edit_idx is not None and 0 <= edit_idx < len(cards_local):
+                cards_local[edit_idx] = data
+                msg = f"Карта «{data['nickname']}» обновлена"
+            else:
+                cards_local.append(data)
+                msg = f"Карта «{data['nickname']}» добавлена"
+            m._save_cards(cards_local)
+            self._log(msg)
             self._refresh_cards()
             dlg.destroy()
 
         ctk.CTkButton(dlg, text="Сохранить", fg_color=SUCCESS, command=_save).pack(pady=12)
+
+    def _edit_selected_bank_card(self) -> None:
+        if self._sel_bank_idx is None:
+            messagebox.showinfo("Карты", "Выберите банковскую карту в списке")
+            return
+        self._show_add_card_dialog(self._sel_bank_idx)
 
     def _delete_card(self) -> None:
         import menu as m
         cards = m._load_cards()
         if not cards:
             return
-        dlg = ctk.CTkInputDialog(text=f"Номер карты [1-{len(cards)}]:", title="Удалить карту")
-        val = dlg.get_input()
+        if self._sel_bank_idx is not None and 0 <= self._sel_bank_idx < len(cards):
+            idx = self._sel_bank_idx
+        else:
+            dlg = ctk.CTkInputDialog(text=f"Номер карты [1-{len(cards)}]:", title="Удалить карту")
+            val = dlg.get_input()
+            try:
+                idx = int(val) - 1
+            except (TypeError, ValueError):
+                return
+        if 0 <= idx < len(cards):
+            nick = cards[idx].get("nickname", "?")
+            if not messagebox.askyesno("Удалить", f"Удалить карту «{nick}»?"):
+                return
+            cards.pop(idx)
+            m._save_cards(cards)
+            order = [i for i in m._load_card_order() if i != idx]
+            order = [i - 1 if i > idx else i for i in order]
+            m._save_card_order(order)
+            self._sel_bank_idx = None
+            self._log(f"Удалена: {nick}")
+            self._refresh_cards()
+
+    def _move_bank_card(self, delta: int) -> None:
+        import menu as m
+        cards = m._load_cards()
+        if len(cards) < 2:
+            return
+        order = self._ordered_bank_indices(len(cards), m._load_card_order())
+        if self._sel_bank_idx is None:
+            messagebox.showinfo("Карты", "Выберите карту для перемещения")
+            return
         try:
-            idx = int(val) - 1
-            if 0 <= idx < len(cards):
-                removed = cards.pop(idx)
-                m._save_cards(cards)
-                self._log(f"Удалена: {removed.get('nickname')}")
+            pos = order.index(self._sel_bank_idx)
+        except ValueError:
+            return
+        new_pos = pos + delta
+        if not (0 <= new_pos < len(order)):
+            return
+        order[pos], order[new_pos] = order[new_pos], order[pos]
+        m._save_card_order(order)
+        self._refresh_cards()
+
+    def _reset_bank_order(self) -> None:
+        import menu as m
+        if not m._load_cards():
+            return
+        if messagebox.askyesno("Порядок", "Сбросить порядок карт к списку по умолчанию?"):
+            m._save_card_order([])
+            self._refresh_cards()
+
+    def _edit_selected_gift_card(self) -> None:
+        import menu as m
+        gc = m._load_gift_cards()
+        if self._sel_gift_idx is None or not (0 <= self._sel_gift_idx < len(gc)):
+            messagebox.showinfo("Гифт-карты", "Выберите гифт-карту в списке")
+            return
+        c = gc[self._sel_gift_idx]
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Изменить гифт-карту")
+        dlg.geometry("420x280")
+        dlg.transient(self)
+        dlg.grab_set()
+        fields: dict[str, ctk.CTkEntry] = {}
+        for key, label in (("denom", "Номинал ₹"), ("number", "Серия"), ("pin", "PIN")):
+            ctk.CTkLabel(dlg, text=label, text_color=TEXT_DIM).pack(anchor="w", padx=16, pady=(8, 0))
+            e = ctk.CTkEntry(dlg, width=360)
+            e.pack(padx=16)
+            e.insert(0, str(c.get(key, "")))
+            fields[key] = e
+
+        def _save():
+            try:
+                denom = int(fields["denom"].get().strip())
+            except ValueError:
+                messagebox.showerror("Ошибка", "Номинал должен быть числом")
+                return
+            number = fields["number"].get().strip()
+            pin = fields["pin"].get().strip()
+            if len(number) < 14 or len(pin) < 4:
+                messagebox.showerror("Ошибка", "Проверьте серию и PIN")
+                return
+            cards_local = m._load_gift_cards()
+            if 0 <= self._sel_gift_idx < len(cards_local):
+                cards_local[self._sel_gift_idx].update({
+                    "denom": denom, "number": number, "pin": pin,
+                })
+                m._save_gift_cards(cards_local)
+                self._log(f"Гифт-карта ₹{denom} обновлена")
                 self._refresh_cards()
-        except (TypeError, ValueError):
-            pass
+            dlg.destroy()
+
+        ctk.CTkButton(dlg, text="Сохранить", fg_color=SUCCESS, command=_save).pack(pady=16)
+
+    def _move_gift_card(self, delta: int) -> None:
+        import menu as m
+        gc = m._load_gift_cards()
+        if len(gc) < 2 or self._sel_gift_idx is None:
+            return
+        pos = self._sel_gift_idx
+        new_pos = pos + delta
+        if not (0 <= new_pos < len(gc)):
+            return
+        gc[pos], gc[new_pos] = gc[new_pos], gc[pos]
+        m._save_gift_cards(gc)
+        self._sel_gift_idx = new_pos
+        self._refresh_cards()
 
     def _toggle_gift_add_panel(self) -> None:
-        if self._gift_add_visible:
-            self.gift_add_panel.pack_forget()
-            self._gift_add_visible = False
-        else:
-            self.gift_add_panel.pack(fill="x", pady=(0, 10), after=self.gift_summary)
-            self._gift_add_visible = True
+        if self._cards_tab != "gift":
+            self._set_cards_tab("gift")
+        self._gift_add_visible = not self._gift_add_visible
+        self._refresh_cards()
 
     def _gift_add_show_result(self, res: dict) -> None:
         parts = []
@@ -2840,31 +4142,40 @@ class SubHubApp(ctk.CTk):
 
     def _delete_gift_card(self) -> None:
         import menu as m
-        if self._selected_gift:
-            num = str(self._selected_gift.get("number", ""))
-            cards = [c for c in m._load_gift_cards() if str(c.get("number")) != num]
-            m._save_gift_cards(cards)
-            self._log(f"Удалена гифт-карта …{num[-4:]}")
-            self._refresh_cards()
-            return
         gc = m._load_gift_cards()
         if not gc:
             return
-        dlg = ctk.CTkInputDialog(text=f"Номер карты [1-{len(gc)}] или 0=все:", title="Удалить гифт-карту")
+        if self._sel_gift_idx is not None and 0 <= self._sel_gift_idx < len(gc):
+            removed = gc.pop(self._sel_gift_idx)
+            m._save_gift_cards(gc)
+            self._sel_gift_idx = None
+            self._selected_gift = None
+            self._log(f"Удалена гифт-карта …{str(removed.get('number', ''))[-4:]}")
+            self._refresh_cards()
+            return
+        if self._selected_gift:
+            num = str(self._selected_gift.get("number", ""))
+            cards = [c for c in gc if str(c.get("number")) != num]
+            m._save_gift_cards(cards)
+            self._selected_gift = None
+            self._sel_gift_idx = None
+            self._log(f"Удалена гифт-карта …{num[-4:]}")
+            self._refresh_cards()
+            return
+        dlg = ctk.CTkInputDialog(text=f"Номер [1-{len(gc)}] или 0=все:", title="Удалить гифт-карту")
         val = dlg.get_input()
         try:
             idx = int(val)
             if idx == 0:
                 if messagebox.askyesno("Подтверждение", f"Удалить все {len(gc)} гифт-карт?"):
                     m._save_gift_cards([])
+                    self._sel_gift_idx = None
                     self._log("Все гифт-карты удалены")
                     self._refresh_cards()
             elif 1 <= idx <= len(gc):
-                sorted_gc = sorted(gc, key=lambda x: -int(x.get("denom") or 0))
-                removed = sorted_gc[idx - 1]
-                cards = [c for c in gc if str(c.get("number")) != str(removed.get("number"))]
-                m._save_gift_cards(cards)
-                self._log(f"Удалена гифт-карта …{str(removed.get('number',''))[-4:]}")
+                removed = gc.pop(idx - 1)
+                m._save_gift_cards(gc)
+                self._log(f"Удалена гифт-карта …{str(removed.get('number', ''))[-4:]}")
                 self._refresh_cards()
         except (TypeError, ValueError):
             pass
@@ -3087,6 +4398,7 @@ class SubHubApp(ctk.CTk):
         return Path.home() / "Desktop" / f"{APP_NAME}.lnk"
 
     def _create_desktop_shortcut(self) -> bool:
+        _regenerate_app_ico()
         launcher = _launcher_path()
         work = str(_HERE.resolve())
         ico = _app_icon_path()
@@ -3161,7 +4473,7 @@ class SubHubApp(ctk.CTk):
             os.startfile(str(p))
 
     def _open_vpn_folder(self) -> None:
-        d = _HERE / "vpn_extension"
+        d = _HERE / "veepn_extension"
         d.mkdir(exist_ok=True)
         os.startfile(str(d))
 
@@ -3186,31 +4498,43 @@ class SubHubApp(ctk.CTk):
         if self._quitting:
             return
         bg = self._app_settings.get("background_mode", True)
-        tray = self._app_settings.get("minimize_to_tray", True)
-        if bg and tray:
-            if self._minimize_to_tray():
-                return
-            if messagebox.askyesno(
-                "Фоновый режим",
-                "Не удалось свернуть в трей.\nВсё равно выйти из приложения?",
-            ):
+        if not bg:
+            if messagebox.askyesno("Выход", "Закрыть приложение?"):
                 self._quit_app()
             return
-        if bg and not tray:
-            if messagebox.askyesno(
-                "Фоновый режим",
-                "Приложение продолжит работать в фоне (без окна).\n"
-                "Telegram-бот и мониторинг останутся активны.\n\nСвернуть окно?",
-            ):
-                self.withdraw()
+
+        tray = self._app_settings.get("minimize_to_tray", False)
+        hint = (
+            "• Да — свернуть в трей\n"
+            "• Нет — оставить окно открытым\n"
+            "• Отмена"
+        ) if tray else (
+            "• Да — скрыть окно (фон продолжит работу)\n"
+            "• Нет — оставить окно открытым\n"
+            "• Отмена"
+        )
+        r = messagebox.askyesnocancel(
+            "SubHub",
+            "Приложение может работать в фоне.\n"
+            "Полный выход — через меню иконки в трее → «Выход».\n\n" + hint,
+        )
+        if r is True:
+            if tray:
+                if not self._minimize_to_tray():
+                    if messagebox.askyesno("Выход", "Не удалось свернуть в трей. Выйти полностью?"):
+                        self._quit_app()
+            else:
                 self._hidden_to_tray = True
-                return
-        if messagebox.askyesno("Выход", "Закрыть приложение?"):
-            self._quit_app()
+                self.withdraw()
+                self._log("Окно скрыто — приложение работает в фоне")
+        elif r is False:
+            self._ensure_window_visible()
 
     def _shutdown_services(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            self._stop_run()
+        # Всегда останавливаем автоматизацию: и из UI (self._proc), и из Telegram
+        # (PID в runtime). Раньше при перезапуске TG-процесс menu.py оставался жить
+        # и продолжал покупать номера.
+        self._stop_run()
         try:
             from ggsell.monitor import stop_monitor
             stop_monitor()
@@ -3223,8 +4547,12 @@ class SubHubApp(ctk.CTk):
             pass
         try:
             import menu as m
-            m.clear_automation_proc()
             m._patch_runtime_state(tg_bot_pid=0, tg_bot_owner="")
+        except Exception:
+            pass
+        try:
+            import bot as bot_mod
+            bot_mod.stop_tg_bot()
         except Exception:
             pass
 
@@ -3312,7 +4640,7 @@ class SubHubApp(ctk.CTk):
 
     def _show_from_tray(self) -> None:
         self._hidden_to_tray = False
-        self.deiconify()
+        self._ensure_window_visible()
         self.lift()
         self.attributes("-topmost", True)
         self.after(200, lambda: self.attributes("-topmost", False))

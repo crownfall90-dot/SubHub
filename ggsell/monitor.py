@@ -37,6 +37,14 @@ YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
 # Очередь уведомлений для TG-бота (thread-safe)
 # Элементы: {"type": "new_order", "invoice_id": int, "order": dict}
 notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+# Копия событий для десктопного GUI SubHub
+gui_notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+
+
+def emit_ggs_notify(item: dict) -> None:
+    """Разослать событие GGSell в TG-бот и в GUI."""
+    notify_queue.put(item)
+    gui_notify_queue.put(item)
 
 # Сообщения, отправленные НАМИ (продавцом/ботом) — чтобы монитор не принял их
 # за сообщения покупателя. Хранит (invoice_id, нормализованный_текст, время).
@@ -119,13 +127,52 @@ MSG_GREETING = (
     "🙏 Продавец может выполнить заказ от 15 минут до 120 минут."
 )
 
+# ── Шаблоны для заказов DeepSeek (пополнение API-баланса) ────────────────────
+
+DS_MSG_ASK_CREDS = (
+    "👋 Здравствуйте! Для пополнения баланса DeepSeek API мне нужны данные "
+    "вашего аккаунта platform.deepseek.com.\n\n"
+    "Отправьте, пожалуйста, email и пароль ОДНОЙ строкой через пробел:\n"
+    "email@example.com вашпароль\n\n"
+    "Или двумя отдельными сообщениями: сначала email, затем пароль."
+)
+
+DS_MSG_ASK_PASSWORD = (
+    "Email получил ✅ Теперь отправьте пароль отдельным сообщением."
+)
+
+DS_MSG_PROCESSING = (
+    "Данные получил ✅ Выполняю пополнение на {amount}$ — обычно занимает "
+    "5–10 минут. Пожалуйста, не меняйте пароль до завершения."
+)
+
+DS_MSG_DONE = (
+    "Готово! ✅ Баланс DeepSeek API пополнен на {amount}$.\n"
+    "Текущий баланс: {balance}$ — проверить можно на "
+    "https://platform.deepseek.com/usage\n\n"
+    "Буду очень благодарен за ваш отзыв о сервисе 🙌"
+)
+
+DS_MSG_FAIL_CREDS = (
+    "Не получилось войти в аккаунт с этими данными ❌\n"
+    "Проверьте email и пароль и отправьте их ещё раз одной строкой через пробел."
+)
+
+DS_MSG_DELAY = (
+    "Спасибо! Продавцу потребуется немного больше времени на выполнение заказа — "
+    "напишу, как только всё будет готово 🙏"
+)
+
 
 # ── Хранение и загрузка шаблонов сообщений ───────────────────────────────────
 
 def get_template(name: str) -> str:
     """Загрузить шаблон из файла; если нет — вернуть встроенный по умолчанию."""
     defaults = {"msg_template": MSG_TEMPLATE, "msg_wait": MSG_WAIT,
-                "msg_review_promo": MSG_REVIEW_PROMO, "msg_greeting": MSG_GREETING}
+                "msg_review_promo": MSG_REVIEW_PROMO, "msg_greeting": MSG_GREETING,
+                "ds_ask_creds": DS_MSG_ASK_CREDS, "ds_ask_password": DS_MSG_ASK_PASSWORD,
+                "ds_processing": DS_MSG_PROCESSING, "ds_done": DS_MSG_DONE,
+                "ds_fail_creds": DS_MSG_FAIL_CREDS, "ds_delay": DS_MSG_DELAY}
     try:
         raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
         val = raw.get(name, "").strip()
@@ -241,6 +288,11 @@ class GGSellMonitor:
         processed = _load_processed()
         self._seen_msgs    = _load_seen_msgs()
         self._seen_reviews = _load_seen_reviews()
+        try:
+            from . import deepseek_orders as _ds
+            _ds.sweep_stale()
+        except Exception:
+            pass
         _msgs_initialized    = False
         _reviews_initialized = False
         _last_order_check  = 0.0
@@ -377,7 +429,7 @@ class GGSellMonitor:
                 # Уведомляем о ВСЕХ сообщениях (и своих, и покупателя), но с флагом —
                 # бот покажет «от вас» или «от покупателя».
                 buyer_email = (msg.get("author") or {}).get("email") or ""
-                notify_queue.put({
+                emit_ggs_notify({
                     "type": "new_message",
                     "invoice_id": id_i,
                     "message": msg,
@@ -388,6 +440,15 @@ class GGSellMonitor:
                 logger.info(
                     f"GGSell: новое сообщение ({'продавец' if is_seller else 'покупатель'}) "
                     f"в заказе #{id_i}")
+                # Заказ DeepSeek ждёт данные аккаунта — передаём сообщение покупателя
+                if not is_seller:
+                    try:
+                        from . import deepseek_orders as _ds
+                        if _ds.has_pending(id_i):
+                            asyncio.create_task(
+                                _ds.on_buyer_message(self.client, id_i, _mtext))
+                    except Exception as exc:
+                        logger.debug(f"DeepSeek msg-hook #{id_i}: {exc}")
 
             if max_id > last_id:
                 seen[seen_key] = max_id
@@ -421,7 +482,7 @@ class GGSellMonitor:
                     continue  # первый запуск — только запоминаем
                 changed = True
                 logger.info(f"GGSell: отзыв {rv}★ на заказ #{invoice_id} (orders v1)")
-                notify_queue.put({
+                emit_ggs_notify({
                     "type":       "new_review",
                     "invoice_id": invoice_id,
                     "review":     {
@@ -457,7 +518,7 @@ class GGSellMonitor:
             changed = True
             invoice_id = int(r.get("invoice_id") or r.get("id_i") or r.get("order_id") or 0)
             logger.info(f"GGSell: новый отзыв #{invoice_id if invoice_id else '?'} (reviews API)")
-            notify_queue.put({
+            emit_ggs_notify({
                 "type":       "new_review",
                 "invoice_id": invoice_id,
                 "review":     r,
@@ -485,6 +546,22 @@ class GGSellMonitor:
             if not invoice_id or invoice_id in processed:
                 continue
 
+            # Заказы DeepSeek (пополнение API) — отдельный авто-флоу
+            try:
+                from . import deepseek_orders as _ds
+            except Exception:
+                _ds = None
+            if _ds is not None and _ds.is_deepseek_order(order):
+                logger.info(
+                    f"GGSell: новый заказ DeepSeek #{invoice_id} "
+                    f"(продукт: {(order.get('product') or {}).get('name', '?')})"
+                )
+                emit_ggs_notify({"type": "new_order", "invoice_id": invoice_id, "order": order})
+                asyncio.create_task(_ds.handle_new_order(self.client, invoice_id, order))
+                processed.add(invoice_id)
+                _save_processed(processed)
+                continue
+
             # Проверяем product_id — обрабатываем только YouTube Premium
             product = order.get("product") or {}
             product_id = int(product.get("id") or 0)
@@ -502,7 +579,7 @@ class GGSellMonitor:
             )
 
             # Уведомляем TG-бот через очередь (всегда)
-            notify_queue.put({"type": "new_order", "invoice_id": invoice_id, "order": order})
+            emit_ggs_notify({"type": "new_order", "invoice_id": invoice_id, "order": order})
 
             # В режиме manual_confirm бот сам управляет отправкой
             if not self.manual_confirm:

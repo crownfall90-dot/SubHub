@@ -55,6 +55,7 @@ _tg_status: str  = "not_configured"
 _ggsel_status: str = ""   # "" — не настроен / "ok" — активен / "error:..." — ошибка
 _tg_thread = None
 _tg_owner: str = ""
+_tg_stop = threading.Event()
 _update_available: bool = False
 _update_commits: list   = []
 _update_checked: bool   = False
@@ -104,6 +105,22 @@ def _tg_status_line() -> str:
     return tg_part + ggsel_part
 
 
+def stop_tg_bot() -> None:
+    """Останавливает poll-цикл бота (перед перезапуском приложения)."""
+    global _tg_thread, _tg_owner
+    _tg_stop.set()
+    th = _tg_thread
+    _tg_thread = None
+    _tg_owner = ""
+    try:
+        _m("_patch_runtime_state")(tg_bot_pid=0, tg_bot_owner="")
+    except Exception:
+        pass
+    if th and th.is_alive():
+        th.join(timeout=10.0)
+    _tg_stop.clear()
+
+
 def ensure_tg_bot(owner: str = "console") -> str:
     """Запускает Telegram-бот (один экземпляр). Приоритет: app > console.
     Возвращает: started | active | blocked_by_app | no_token."""
@@ -120,6 +137,9 @@ def ensure_tg_bot(owner: str = "console") -> str:
     if owner == "console" and active == "app":
         _tg_status = "ok:app"
         return "blocked_by_app"
+
+    if _tg_thread and not _tg_thread.is_alive():
+        _tg_thread = None
 
     if _tg_thread and _tg_thread.is_alive():
         return "active"
@@ -336,7 +356,7 @@ def _menu_tg_bot_thread() -> None:
                  {"text": "📁 Профили",   "callback_data": "go:profiles"},
                  {"text": "⚙️ Другое",    "callback_data": "go:other"}],
                 [{"text": "💰 GGSell",    "callback_data": "go:ggsell"}],
-                [{"text": "🔄 Перезапустить консоль", "callback_data": "action:restart"}],
+                [{"text": "🔄 Перезапустить", "callback_data": "action:restart"}],
             ]
             return {"inline_keyboard": rows}
 
@@ -3578,7 +3598,7 @@ def _menu_tg_bot_thread() -> None:
                         except Exception:
                             pass
                         await asyncio.sleep(1)
-                        import os as _os; _os._exit(42)
+                        _m("request_host_restart")("telegram_update")
                     else:
                         await _edit(cid, mid,
                             f"❌ *Ошибка обновления*\n\n`{msg_upd[:600]}`",
@@ -3594,8 +3614,9 @@ def _menu_tg_bot_thread() -> None:
                 if _first:
                     await _ack(qid)
                     return
-                await _ack(qid, "Перезапускаю консоль...")
-                result = "⏳ *Перезапуск консоли...*\n\n⚡ _Перезапускаю..._"
+                _tgt = _m("restart_target_label")()
+                await _ack(qid, f"Перезапускаю {_tgt}...")
+                result = f"⏳ *Перезапуск {_tgt}...*\n\n⚡ _Перезапускаю активный процесс..._"
                 await _edit(cid, mid, result, {"inline_keyboard": []})
                 try:
                     rf = Path(__file__).parent / "._restart_msg.json"
@@ -3627,13 +3648,8 @@ def _menu_tg_bot_thread() -> None:
                 except Exception:
                     pass
                 await asyncio.sleep(1)
-                try:
-                    import menu as _menu_mod
-                    _menu_mod._shutting_down = True
-                except Exception:
-                    pass
-                import os as _os
-                _os._exit(42)
+                _m("request_host_restart")("telegram")
+                return
 
             # Управление процессом ─────────────────────────────────────────────
             if data in ("run:normal", "run:headless", "run:tg"):
@@ -4442,7 +4458,7 @@ def _menu_tg_bot_thread() -> None:
             except Exception:
                 pass
 
-            while True:
+            while not _tg_stop.is_set():
                 try:
                     resp = await client.get(
                         f"{api}/getUpdates",
@@ -4492,6 +4508,8 @@ def _menu_tg_bot_thread() -> None:
                                     asyncio.create_task(_ggsel_handler[0].notify_message(_gs_item))
                                 elif _gs_item.get("type") == "new_review":
                                     asyncio.create_task(_ggsel_handler[0].notify_review(_gs_item))
+                                elif _gs_item.get("type") == "ds_status":
+                                    asyncio.create_task(_ggsel_handler[0].notify_deepseek(_gs_item))
                             except Exception:
                                 break
                     except Exception:

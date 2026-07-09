@@ -612,6 +612,12 @@ class GGSellBotHandler:
         "msg_template":    ("Ссылка готова",    "Отправляется покупателю вместе со ссылкой на активацию. Используй `{link}` для вставки ссылки."),
         "msg_wait":        ("Ожидание",         "Отправляется покупателю пока ссылка ещё готовится."),
         "msg_review_promo":("Промокод за отзыв","Отправляется покупателю автоматически при получении отзыва 5 звёзд. Используй `{promo_code}` для вставки кода."),
+        "ds_ask_creds":    ("DS: запрос данных","DeepSeek: запрос email и пароля у покупателя, если их нет в заказе."),
+        "ds_ask_password": ("DS: запрос пароля","DeepSeek: email уже есть, просим прислать пароль отдельным сообщением."),
+        "ds_processing":   ("DS: выполняю",     "DeepSeek: данные получены, началось пополнение. Используй `{amount}`."),
+        "ds_done":         ("DS: готово",       "DeepSeek: пополнение выполнено. Используй `{amount}` и `{balance}`."),
+        "ds_fail_creds":   ("DS: неверные данные","DeepSeek: вход не удался, просим данные заново."),
+        "ds_delay":        ("DS: задержка",     "DeepSeek: авто-пополнение не прошло, продавец выполнит вручную."),
     }
 
     def load_templates(self) -> dict:
@@ -621,9 +627,15 @@ class GGSellBotHandler:
             return {}
 
     def _tpl_default(self, name: str) -> str:
-        from ggsell.monitor import MSG_TEMPLATE, MSG_WAIT, MSG_REVIEW_PROMO, MSG_GREETING
-        return {"msg_greeting": MSG_GREETING, "msg_template": MSG_TEMPLATE,
-                "msg_wait": MSG_WAIT, "msg_review_promo": MSG_REVIEW_PROMO}.get(name, "")
+        from ggsell import monitor as _mon
+        return {"msg_greeting": _mon.MSG_GREETING, "msg_template": _mon.MSG_TEMPLATE,
+                "msg_wait": _mon.MSG_WAIT, "msg_review_promo": _mon.MSG_REVIEW_PROMO,
+                "ds_ask_creds": _mon.DS_MSG_ASK_CREDS,
+                "ds_ask_password": _mon.DS_MSG_ASK_PASSWORD,
+                "ds_processing": _mon.DS_MSG_PROCESSING,
+                "ds_done": _mon.DS_MSG_DONE,
+                "ds_fail_creds": _mon.DS_MSG_FAIL_CREDS,
+                "ds_delay": _mon.DS_MSG_DELAY}.get(name, "")
 
     def bg_templates_page_sync(self, cid: int) -> tuple:
         saved = self.load_templates()
@@ -2631,6 +2643,15 @@ class GGSellBotHandler:
             except Exception:
                 pass
 
+        # Заказы DeepSeek ведёт отдельный авто-флоу (ggsell.deepseek_orders):
+        # YouTube-приветствие и авто-выдачу ссылки для них не запускаем.
+        try:
+            from ggsell.deepseek_orders import is_deepseek_order as _is_ds_order
+            if _is_ds_order(order):
+                return
+        except Exception:
+            pass
+
         # При ЛЮБОМ новом заказе сразу шлём приветствие покупателю в чат GGSell.
         try:
             import datetime as _dtg
@@ -2651,6 +2672,29 @@ class GGSellBotHandler:
                 and invoice_id not in self.get_refunded()):
             self._auto_pending[invoice_id] = order
             logger.info(f"GGSell auto #{invoice_id}: ждём первого сообщения от покупателя")
+
+    async def notify_deepseek(self, item: dict) -> None:
+        """Статус авто-обработки заказа DeepSeek (пополнение API-баланса)."""
+        invoice_id = item.get("invoice_id")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            return
+        payload: dict = {"text": text, "parse_mode": "Markdown"}
+        if invoice_id:
+            payload["reply_markup"] = {"inline_keyboard": [
+                [{"text": f"📋 Заказ #{invoice_id}",
+                  "callback_data": f"ggsell:order:{invoice_id}"},
+                 {"text": "💬 Ответить",
+                  "callback_data": f"ggsell:reply:{invoice_id}"}],
+            ]}
+        for _cid in list(self.subs):
+            if not self._get(_cid, "ggsel_notify_orders"):
+                continue
+            try:
+                await self._http.post(f"{self._api}/sendMessage",
+                                      json={"chat_id": _cid, **payload})
+            except Exception:
+                pass
 
     async def notify_message(self, item: dict) -> None:
         invoice_id = item.get("invoice_id")
