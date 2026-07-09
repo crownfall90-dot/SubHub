@@ -487,7 +487,7 @@ _UPDATE_FILES = [
     "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
     "assets/app.ico",
     "assets/subhub_icon.png",
-    "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/monitor.py",
+    "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/gui_orders.py", "ggsell/monitor.py",
 ]
 
 def _parse_git_remote() -> tuple[str, str, str]:

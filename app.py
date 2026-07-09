@@ -324,6 +324,12 @@ class SubHubApp(ctk.CTk):
         self._app_start_sha = _local_repo_sha()
         self._update_in_progress = False
         self._startup_done = False
+        self._ggs_orders: list[dict] = []
+        self._ggs_chat_map: dict[int, str] = {}
+        self._ggs_state: dict = {}
+        self._ggs_filter = "new"
+        self._ggs_selected_id: int | None = None
+        self._ggs_loading = False
 
         self.withdraw()
         _cleanup_legacy_branding()
@@ -905,15 +911,71 @@ class SubHubApp(ctk.CTk):
             ("📋  Шаблоны", self._open_ggsell_templates, BTN_SECONDARY),
         ])
 
-        orders_card = self._card(p, "Последние заказы", accent=SVC_GGSELL)
-        self.ggs_orders_list = self._list_panel(orders_card, height=300)
-        self.ggs_orders_list.pack(fill="both", expand=True)
+        orders_card = self._card(p, "Заказы YouTube Premium", accent=SVC_GGSELL)
+        filt_row = ctk.CTkFrame(orders_card, fg_color="transparent")
+        filt_row.pack(fill="x", pady=(0, 8))
+        self._ggs_filter_btns: dict[str, ctk.CTkButton] = {}
+        for key, label in (
+            ("new", "🟢 Новые"),
+            ("issued", "🔵 Выданные"),
+            ("used", "🟡 Архив"),
+            ("all", "Все"),
+        ):
+            btn = ctk.CTkButton(
+                filt_row, text=label, height=32, corner_radius=RADIUS_BTN,
+                font=ctk.CTkFont(size=12),
+                fg_color=SVC_GGSELL if key == "new" else BTN_SECONDARY,
+                command=lambda k=key: self._set_ggsell_filter(k),
+            )
+            btn.pack(side="left", padx=(0, 6))
+            self._ggs_filter_btns[key] = btn
+
+        self.ggs_orders_status = ctk.CTkLabel(
+            orders_card, text="Загрузка…", text_color=TEXT_DIM, anchor="w",
+        )
+        self.ggs_orders_status.pack(fill="x", pady=(0, 6))
+
+        body = ctk.CTkFrame(orders_card, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=4)
+        body.grid_rowconfigure(0, weight=1)
+
+        self.ggs_orders_list = self._list_panel(body, height=360)
+        self.ggs_orders_list.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        self.ggs_order_detail = ctk.CTkFrame(
+            body, fg_color=BG_ELEVATED, corner_radius=RADIUS_CARD,
+        )
+        self.ggs_order_detail.grid(row=0, column=1, sticky="nsew")
+        self.ggs_detail_title = ctk.CTkLabel(
+            self.ggs_order_detail, text="Выберите заказ",
+            font=ctk.CTkFont(size=15, weight="bold"), text_color="#f0f6fc", anchor="w",
+        )
+        self.ggs_detail_title.pack(fill="x", padx=14, pady=(14, 4))
+        self.ggs_detail_body = ctk.CTkLabel(
+            self.ggs_order_detail, text="Список загружается с GGSell API.",
+            justify="left", anchor="nw", text_color=TEXT_DIM, wraplength=360,
+        )
+        self.ggs_detail_body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        det_btns = ctk.CTkFrame(self.ggs_order_detail, fg_color="transparent")
+        det_btns.pack(fill="x", padx=12, pady=(0, 12))
+        self.ggs_btn_messages = ctk.CTkButton(
+            det_btns, text="💬 Сообщения", height=34, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, state="disabled", command=self._ggsell_open_messages,
+        )
+        self.ggs_btn_messages.pack(side="left", padx=(0, 6))
+        self.ggs_btn_seller = ctk.CTkButton(
+            det_btns, text="🌐 На GGSell", height=34, corner_radius=RADIUS_BTN,
+            fg_color=BTN_SECONDARY, state="disabled", command=self._ggsell_open_seller,
+        )
+        self.ggs_btn_seller.pack(side="left")
 
         info = self._card(p, "Справка")
         self._hint(
             info,
-            "Полное управление заказами — в Telegram-боте.\n"
-            "Монитор проверяет новые заказы каждые ~15 сек.",
+            "Монитор проверяет новые заказы каждые ~15 сек.\n"
+            "Выполнение и авто-выдача — через Telegram-бота или кнопки в карточке заказа.",
         )
 
     def _build_deepseek(self) -> None:
@@ -1643,6 +1705,12 @@ class SubHubApp(ctk.CTk):
         else:
             self.home_ggs_balance.configure(text="—")
 
+    def _set_ggsell_filter(self, flt: str) -> None:
+        self._ggs_filter = flt
+        for key, btn in getattr(self, "_ggs_filter_btns", {}).items():
+            btn.configure(fg_color=SVC_GGSELL if key == flt else BTN_SECONDARY)
+        self._render_ggsell_orders()
+
     def _refresh_ggsell(self) -> None:
         import menu as m
         sec = m._read_secrets()
@@ -1653,51 +1721,269 @@ class SubHubApp(ctk.CTk):
         monitor_on = any(t.name == "ggsel-monitor" and t.is_alive() for t in threading.enumerate())
         self.ggs_stat_monitor.configure(text="🟢" if monitor_on else "⚪")
 
-        done_count = 0
-        done_path = _HERE / "data" / "ggsel_done.json"
-        done_data: dict = {}
-        try:
-            if done_path.exists():
-                raw = json.loads(done_path.read_text(encoding="utf-8"))
-                done_data = raw.get("done", {}) or {}
-                done_count = len(done_data)
-        except Exception:
-            pass
+        from ggsell.gui_orders import load_local_state
+        self._ggs_state = load_local_state()
+        done_count = len(self._ggs_state.get("done", {}))
         self.ggs_stat_orders.configure(text=str(done_count))
         if hasattr(self, "home_ggs_orders"):
             self.home_ggs_orders.configure(text=str(done_count))
         if hasattr(self, "home_ggs_monitor"):
-            mon = "🟢" if monitor_on else "⚪"
-            self.home_ggs_monitor.configure(text=mon)
+            self.home_ggs_monitor.configure(text="🟢" if monitor_on else "⚪")
+
+        if not api_ok:
+            self.ggs_stat_balance.configure(text="—")
+            if hasattr(self, "ggs_orders_status"):
+                self.ggs_orders_status.configure(
+                    text="⚠ Настройте GGSell API в secrets.yaml",
+                )
+            self._render_ggsell_orders()
+            return
+
+        if self._ggs_loading:
+            return
+        self._ggs_loading = True
+        if hasattr(self, "ggs_orders_status"):
+            self.ggs_orders_status.configure(text="⏳ Загрузка заказов…")
+
+        def _w():
+            try:
+                asyncio.run(self._load_ggsell_orders())
+            except Exception as e:
+                self.after(0, lambda: self._log(f"GGSell заказы: {e}"))
+            finally:
+                self.after(0, self._ggsell_orders_loaded)
+
+        threading.Thread(target=_w, daemon=True, name="ggs-orders").start()
+        threading.Thread(target=self._fetch_ggsell_balance, daemon=True).start()
+
+    async def _load_ggsell_orders(self) -> None:
+        import menu as m
+        from ggsell.client import GGSellClient
+        from ggsell.gui_orders import fetch_youtube_orders, load_local_state
+
+        gs = m._read_secrets().get("ggsel") or {}
+        client = GGSellClient(gs["api_key"], int(gs["seller_id"]), http_timeout=20)
+        try:
+            orders, chat_map = await fetch_youtube_orders(client)
+            self._ggs_orders = orders
+            self._ggs_chat_map = chat_map
+            self._ggs_state = load_local_state()
+        finally:
+            await client.close()
+
+    def _ggsell_orders_loaded(self) -> None:
+        self._ggs_loading = False
+        self._render_ggsell_orders()
+        n = len(self._ggs_orders)
+        self._log(f"✓ GGSell: загружено {n} заказов")
+
+    def _render_ggsell_orders(self) -> None:
+        from ggsell.gui_orders import (
+            STATUS_LABEL, filter_orders, invoice_id, load_local_state,
+            order_email, row_label, status_key,
+        )
+
+        if not hasattr(self, "ggs_orders_list"):
+            return
+        if not self._ggs_state:
+            self._ggs_state = load_local_state()
 
         for w in self.ggs_orders_list.winfo_children():
             w.destroy()
-        if not done_data:
-            ctk.CTkLabel(
-                self.ggs_orders_list, text="Заказов пока нет", text_color=TEXT_DIM,
-            ).pack(pady=24)
-        else:
-            items = sorted(done_data.items(), key=lambda x: x[1], reverse=True)[:25]
-            links = {}
-            try:
-                if done_path.exists():
-                    links = json.loads(done_path.read_text(encoding="utf-8")).get("links", {}) or {}
-            except Exception:
-                pass
-            for inv_id, dt in items:
-                row = ctk.CTkFrame(self.ggs_orders_list, fg_color=BG_CARD, corner_radius=8)
-                row.pack(fill="x", pady=3, padx=2)
-                has_link = "✓" if str(inv_id) in links or int(inv_id) in links else "·"
-                ctk.CTkLabel(
-                    row, text=f"  #{inv_id}", font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
-                ).pack(side="left", padx=8, pady=10)
-                ctk.CTkLabel(row, text=f"{has_link}  {dt}", text_color=TEXT_DIM,
-                             font=ctk.CTkFont(size=11)).pack(side="right", padx=12)
 
-        if api_ok:
-            threading.Thread(target=self._fetch_ggsell_balance, daemon=True).start()
-        else:
-            self.ggs_stat_balance.configure(text="—")
+        orders = filter_orders(self._ggs_orders, self._ggs_state, self._ggs_filter)
+        counts = {k: len(filter_orders(self._ggs_orders, self._ggs_state, k))
+                  for k in ("new", "issued", "used", "all")}
+        if hasattr(self, "ggs_orders_status"):
+            self.ggs_orders_status.configure(
+                text=(
+                    f"Всего: {len(self._ggs_orders)}  ·  "
+                    f"🟢 {counts['new']}  ·  🔵 {counts['issued']}  ·  "
+                    f"🟡 {counts['used']}  ·  показано: {len(orders)}"
+                ),
+            )
+
+        if not self._ggs_orders:
+            ctk.CTkLabel(
+                self.ggs_orders_list, text="Нет заказов или API не настроен",
+                text_color=TEXT_DIM,
+            ).pack(pady=24)
+            self._show_ggsell_order_detail(None)
+            return
+
+        if not orders:
+            ctk.CTkLabel(
+                self.ggs_orders_list, text="В этой категории заказов нет",
+                text_color=TEXT_DIM,
+            ).pack(pady=24)
+            self._show_ggsell_order_detail(None)
+            return
+
+        sel = self._ggs_selected_id
+        if sel not in {invoice_id(o) for o in orders}:
+            sel = invoice_id(orders[0])
+            self._ggs_selected_id = sel
+
+        for o in orders[:40]:
+            inv = invoice_id(o)
+            sk = status_key(inv, self._ggs_state)
+            active = inv == sel
+            row = ctk.CTkFrame(
+                self.ggs_orders_list,
+                fg_color=SVC_GGSELL if active else BG_CARD,
+                corner_radius=10,
+                border_width=1 if active else 0,
+                border_color=SVC_GGSELL,
+            )
+            row.pack(fill="x", pady=3, padx=2)
+            lbl = row_label(o, self._ggs_state, self._ggs_chat_map)
+            ctk.CTkLabel(
+                row, text=lbl, anchor="w", font=ctk.CTkFont(size=12),
+                text_color="#f0f6fc" if active else TEXT_DIM,
+            ).pack(fill="x", padx=10, pady=10)
+            tip = STATUS_LABEL.get(sk, "")
+            if tip:
+                ctk.CTkLabel(
+                    row, text=tip, anchor="e", font=ctk.CTkFont(size=10),
+                    text_color=TEXT_MUTED,
+                ).pack(anchor="e", padx=10, pady=(0, 6))
+            for w in (row,):
+                w.bind("<Button-1>", lambda e, i=inv: self._select_ggsell_order(i))
+            for child in row.winfo_children():
+                child.bind("<Button-1>", lambda e, i=inv: self._select_ggsell_order(i))
+
+        self._show_ggsell_order_detail(sel)
+
+    def _select_ggsell_order(self, inv_id: int) -> None:
+        self._ggs_selected_id = inv_id
+        self._render_ggsell_orders()
+
+    def _ggsell_order_by_id(self, inv_id: int) -> dict | None:
+        from ggsell.gui_orders import invoice_id
+        for o in self._ggs_orders:
+            if invoice_id(o) == inv_id:
+                return o
+        return None
+
+    def _show_ggsell_order_detail(self, inv_id: int | None) -> None:
+        from ggsell.gui_orders import (
+            STATUS_ICON, STATUS_LABEL, order_email, parse_order, status_key,
+        )
+
+        if not hasattr(self, "ggs_detail_title"):
+            return
+        if not inv_id:
+            self.ggs_detail_title.configure(text="Выберите заказ")
+            self.ggs_detail_body.configure(text="Список слева — кликните на заказ.")
+            self.ggs_btn_messages.configure(state="disabled")
+            self.ggs_btn_seller.configure(state="disabled")
+            return
+
+        order = self._ggsell_order_by_id(inv_id)
+        if not order:
+            self.ggs_detail_title.configure(text=f"Заказ #{inv_id}")
+            self.ggs_detail_body.configure(text="Данные заказа не найдены.")
+            return
+
+        p = parse_order(order)
+        sk = status_key(inv_id, self._ggs_state)
+        email = order_email(order, self._ggs_state, self._ggs_chat_map)
+        link = self._ggs_state.get("links", {}).get(inv_id, "")
+        issued = self._ggs_state.get("done", {}).get(inv_id, "")
+        profile = self._ggs_state.get("profile_paths", {}).get(inv_id, "")
+
+        lines = [
+            f"{STATUS_ICON.get(sk, '•')} {STATUS_LABEL.get(sk, sk)}",
+            "",
+            f"🏷 {p['name_short']}",
+        ]
+        for opt in p["options"]:
+            lines.append(f"   {opt['name']}: {opt['value']}")
+        lines.append("")
+        if email:
+            lines.append(f"👤 {email}")
+        if p["sum_buy"]:
+            lines.append(f"💰 Покупка: {p['sum_buy']}₽")
+        if p["sum_sell"]:
+            lines.append(f"💼 Выплата: {p['sum_sell']}₽")
+        if p["date"]:
+            lines.append(f"🕒 {p['date']}")
+        if issued:
+            lines.append(f"📅 Выдан: {issued}")
+        if link:
+            lines.append(f"🔗 {link}")
+        if profile:
+            lines.append(f"📁 {Path(profile).name}")
+
+        self.ggs_detail_title.configure(text=f"Заказ #{inv_id}")
+        self.ggs_detail_body.configure(text="\n".join(lines))
+        self.ggs_btn_messages.configure(state="normal")
+        self.ggs_btn_seller.configure(state="normal")
+
+    def _ggsell_open_seller(self) -> None:
+        inv = self._ggs_selected_id
+        if not inv:
+            return
+        import webbrowser
+        webbrowser.open(f"https://seller.ggsel.com/order/{inv}")
+
+    def _ggsell_open_messages(self) -> None:
+        inv = self._ggs_selected_id
+        if not inv:
+            return
+
+        def _w():
+            try:
+                lines = asyncio.run(self._fetch_ggsell_messages(inv))
+                self.after(0, lambda: self._ggsell_messages_dialog(inv, lines))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Сообщения", str(e)))
+
+        threading.Thread(target=_w, daemon=True, name="ggs-chat").start()
+
+    async def _fetch_ggsell_messages(self, inv_id: int) -> list[str]:
+        import menu as m
+        from ggsell.client import GGSellClient
+
+        gs = m._read_secrets().get("ggsel") or {}
+        client = GGSellClient(gs["api_key"], int(gs["seller_id"]), http_timeout=20)
+        try:
+            messages = await client.get_messages(inv_id)
+        finally:
+            await client.close()
+
+        lines: list[str] = []
+        if not messages:
+            return ["Сообщений пока нет."]
+        for msg in messages[-25:]:
+            is_seller = bool(
+                msg.get("is_seller") or msg.get("is_seller_msg")
+                or msg.get("sender") == "seller" or msg.get("type") == "seller"
+            )
+            raw_date = (
+                msg.get("date") or msg.get("created_at")
+                or msg.get("timestamp") or msg.get("date_add") or ""
+            )
+            t = str(raw_date)[:16].replace("T", " ") if raw_date else ""
+            text_m = (msg.get("text") or msg.get("message") or msg.get("body") or "")
+            who = "Вы" if is_seller else "Покупатель"
+            lines.append(f"[{t}] {who}:")
+            lines.append(text_m or "(пусто)")
+            lines.append("")
+        return lines
+
+    def _ggsell_messages_dialog(self, inv_id: int, lines: list[str]) -> None:
+        win = ctk.CTkToplevel(self)
+        win.title(f"Чат · заказ #{inv_id}")
+        win.geometry("520x420")
+        win.transient(self)
+        txt = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=12))
+        txt.pack(fill="both", expand=True, padx=12, pady=12)
+        txt.insert("1.0", "\n".join(lines))
+        txt.configure(state="disabled")
+        ctk.CTkButton(
+            win, text="Закрыть", command=win.destroy,
+        ).pack(pady=(0, 12))
 
     def _fetch_ggsell_balance(self) -> None:
         async def _run():
