@@ -4164,6 +4164,47 @@ def _load_archive_records() -> list[dict]:
     return records
 
 
+def archive_record_file(record: dict) -> Path:
+    """Путь к JSON-записи архива для профиля."""
+    phone = str(record.get("username", "?"))
+    ts_int = int(record.get("used_ts") or 0)
+    return USED_PROFILES_DIR / f"record_{phone}_{ts_int}.json"
+
+
+def restore_archive_record(record: dict) -> tuple[bool, str]:
+    """Восстанавливает метаданные профиля в chrome_profiles_done/."""
+    phone = str(record.get("username", "?"))
+    rec_path = archive_record_file(record)
+    if (DONE_PROFILES_DIR / f"profile_{phone}").exists():
+        return False, "Профиль уже есть в chrome_profiles_done"
+    if (PROFILES_DIR / f"profile_{phone}").exists():
+        return False, "Профиль уже есть в chrome_profiles"
+    if not rec_path.exists():
+        return False, f"Запись не найдена: {rec_path.name}"
+    try:
+        profile_dir = DONE_PROFILES_DIR / f"profile_{phone}"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(
+            profile_dir / ".profile_meta.json",
+            json.dumps(record, ensure_ascii=False, indent=2),
+        )
+        rec_path.unlink()
+        return True, f"Восстановлен → chrome_profiles_done/profile_{phone}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def delete_archive_record(record: dict) -> tuple[bool, str]:
+    """Удаляет JSON-запись из архива."""
+    rec_path = archive_record_file(record)
+    try:
+        if rec_path.exists():
+            rec_path.unlink()
+        return True, "Запись удалена из архива"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def screen_used():
     """Архив использованных профилей — интерактивный список."""
     while True:
@@ -10739,7 +10780,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         await _client.post(
                             f"https://api.telegram.org/bot{_tok}/sendMessage",
                             json={"chat_id": _c,
-                                  "text": f"📞 *Куплен номер*\n\n`{ph}`\n_Жду OTP..._",
+                                  "text": f"📞 *Номер на Flipkart*\n\n`{ph}`\n_Жду OTP..._",
                                   "parse_mode": "Markdown"})
                     except Exception:
                         pass
@@ -10843,9 +10884,6 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 # Регистрируем аренду немедленно, чтобы избежать утечек
                 _grizzly_module.register_rental(phone_id, phone_10, time.monotonic(), pw=pw, login_url=login_url, months=months, intercept_mode=intercept_mode)
 
-                # TG: уведомление о покупке номера
-                await _send_tg_buy(phone_10)
-
                 # ── 2. Профиль и браузер ─────────────────────────────────────
                 profile_path = DONE_PROFILES_DIR / f"profile_{phone_10}"
                 profile_path.mkdir(parents=True, exist_ok=True)
@@ -10924,6 +10962,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 if p1 != "ok":
                     return False, p1.removeprefix("error:")
 
+                _grizzly_module.mark_phase1_ok(phone_id)
+                await _send_tg_buy(phone_10)
+
                 # ── 3b. Параллельный поиск номеров + ожидание OTP ───────────
                 # Все номера ищутся СРАЗУ в фоне, OTP полится у всех параллельно.
                 # _active: [act_id, phone_10, page, bought_at_monotonic, ctx]
@@ -10965,6 +11006,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     nid = None
                     nph10 = None
                     n_profile_path = None
+                    phase1_done = False
                     try:
                         nid, nph, ncost = await sms_client.get_number_parallel(
                             service=service, country=country,
@@ -10980,9 +11022,6 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                         # Регистрируем аренду немедленно, чтобы избежать утечек
                         _grizzly_module.register_rental(nid, nph10, time.monotonic(), pw=pw, login_url=login_url, months=months, intercept_mode=intercept_mode)
-
-                        # TG: уведомление о покупке номера
-                        await _send_tg_buy(nph10)
 
                         n_profile_path = DONE_PROFILES_DIR / f"profile_{nph10}"
                         n_profile_path.mkdir(parents=True, exist_ok=True)
@@ -11023,6 +11062,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                         r2 = await _flipkart_phase1(npage, login_url, nph10)
                         if r2 == "ok":
+                            phase1_done = True
+                            _grizzly_module.mark_phase1_ok(nid)
+                            await _send_tg_buy(nph10)
                             _pending.append([nid, nph10, npage, time.monotonic(), n_ctx])
                             print(f"  {G}Номер #{n} готов, жду OTP...{RST}")
                         else:
@@ -11037,7 +11079,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                     _sh.rmtree(n_profile_path, ignore_errors=True)
                                 except Exception: pass
                     except asyncio.CancelledError:
-                        if nid:
+                        if nid and not phase1_done:
                             _grizzly_module.mark_failed(nid)
                         if n_ctx:
                             try: await n_ctx.close()
@@ -11078,6 +11120,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 import shutil as _sh
                                 _sh.rmtree(n_profile_path, ignore_errors=True)
                             except Exception: pass
+                    finally:
+                        if nid and not phase1_done:
+                            _grizzly_module.mark_failed(nid)
 
                 try:
                     async def _poll_entry(entry):
@@ -11121,14 +11166,15 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 try:
                                     _est = await sms_client.get_status(e_id)
                                     if _est.get("type") == "OK" and _est.get("code"):
+                                        _grizzly_module.mark_otp_received(e_id)
                                         if intercept_mode:
-                                            print(f"  {G}+91 {e_ph}: 2 мин OTP={_est['code']} (перехват) → завершаю{RST}")
+                                            print(f"  {G}+91 {e_ph}: таймаут OTP={_est['code']} (перехват) → завершаю{RST}")
                                             await _send_tg_otp(e_ph, _est['code'], " (перехват)")
                                             try: await sms_client.complete(e_id)
                                             except Exception: pass
                                             _grizzly_module.mark_completed(e_id)
                                         else:
-                                            print(f"  {G}+91 {e_ph}: 2 мин OTP={_est['code']} → фон{RST}")
+                                            print(f"  {G}+91 {e_ph}: таймаут OTP={_est['code']} → фон{RST}")
                                             _submit_bg_login(api_key, e_id, _est["code"], login_url, months,
                                                              phone_10=e_ph)
                                             _grizzly_module.mark_completed(e_id)
@@ -11139,7 +11185,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                             except Exception: pass
                                         return
                                 except Exception: pass
-                                print(f"  {Y}+91 {e_ph}: 2 мин — отменяю в фоне (retry 10s){RST}")
+                                print(f"  {Y}+91 {e_ph}: таймаут — отменяю в фоне (retry 10s){RST}")
                                 _grizzly_module.mark_failed(e_id)
                                 try:
                                     if e_ctx: await e_ctx.close()
@@ -11182,6 +11228,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                     _try_next = True
                             elif rtype == "OK" and a_code and otp_code is None:
                                 otp_code = a_code
+                                _grizzly_module.mark_otp_received(a_id)
                                 win_id, win_ph, win_page = a_id, a_ph, a_pg
                                 win_ctx = next((e[4] for e in _active if e[0] == a_id), None)
                                 print(f"  {G}OTP для +91 {a_ph}: {otp_code}{RST}")
@@ -11305,6 +11352,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 _fst = await sms_client.get_status(o_id)
                                 if _fst.get("type") == "OK" and _fst.get("code"):
                                     _fin_otp = True
+                                    _grizzly_module.mark_otp_received(o_id)
                                     if intercept_mode:
                                         print(f"  {G}+91 {o_ph}: финал OTP={_fst['code']} (перехват) → завершаю{RST}")
                                         await _send_tg_otp(o_ph, _fst['code'], " (перехват)")
