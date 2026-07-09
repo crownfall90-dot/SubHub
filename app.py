@@ -41,6 +41,7 @@ BTN_SECONDARY = "#2d333b"
 BTN_SUCCESS = "#238636"
 RADIUS_CARD = 16
 RADIUS_BTN = 10
+_SIDEBAR_LOG_LINES = 36
 
 SVC_YOUTUBE = "#ff0033"
 SVC_GGSELL = "#ff8c00"
@@ -495,6 +496,18 @@ class SubHubApp(ctk.CTk):
             font=ctk.CTkFont(size=12), fg_color=BTN_SECONDARY,
             command=lambda: self.show_page("settings"),
         ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        self.sidebar_log = ctk.CTkTextbox(
+            bottom, height=118,
+            font=ctk.CTkFont(family="Consolas", size=9),
+            fg_color=BG_CARD, corner_radius=10,
+            border_width=1, border_color="#30363d",
+            text_color=TEXT_DIM, wrap="word",
+            activate_scrollbars=True,
+        )
+        self.sidebar_log.pack(fill="x", pady=(0, 8))
+        self.sidebar_log.configure(state="disabled")
+        self.sidebar_log.bind("<Button-1>", lambda _e: self.show_page("logs"))
 
         self.status_lbl = ctk.CTkLabel(
             bottom, text="", font=ctk.CTkFont(size=10), text_color=TEXT_MUTED, wraplength=200,
@@ -1453,10 +1466,27 @@ class SubHubApp(ctk.CTk):
 
         threading.Thread(target=_wrap, daemon=True).start()
 
+    def _append_log_widget(self, widget: ctk.CTkTextbox | None, text: str, max_lines: int = 0) -> None:
+        if widget is None:
+            return
+        try:
+            widget.configure(state="normal")
+            widget.insert("end", text)
+            if max_lines > 0:
+                lines = widget.get("1.0", "end").splitlines()
+                if len(lines) > max_lines:
+                    widget.delete("1.0", f"{len(lines) - max_lines + 1}.0")
+            widget.see("end")
+            widget.configure(state="disabled")
+        except Exception:
+            pass
+
     def _tick_logs(self) -> None:
         for chunk in self._log_sink.drain():
-            self.log_text.insert("end", chunk)
-            self.log_text.see("end")
+            self._append_log_widget(self.log_text, chunk)
+            self._append_log_widget(
+                getattr(self, "sidebar_log", None), chunk, _SIDEBAR_LOG_LINES,
+            )
         log_path = _HERE / "automation.log"
         try:
             if log_path.exists():
@@ -1467,8 +1497,10 @@ class SubHubApp(ctk.CTk):
                         new = f.read()
                         self._log_file_pos = size
                         if new:
-                            self.log_text.insert("end", new)
-                            self.log_text.see("end")
+                            self._append_log_widget(self.log_text, new)
+                            self._append_log_widget(
+                                getattr(self, "sidebar_log", None), new, _SIDEBAR_LOG_LINES,
+                            )
         except Exception:
             pass
         self.after(400, self._tick_logs)
@@ -2849,6 +2881,10 @@ class SubHubApp(ctk.CTk):
 
     def _clear_logs(self) -> None:
         self.log_text.delete("1.0", "end")
+        if hasattr(self, "sidebar_log"):
+            self.sidebar_log.configure(state="normal")
+            self.sidebar_log.delete("1.0", "end")
+            self.sidebar_log.configure(state="disabled")
 
     def _open_log_file(self) -> None:
         p = _HERE / "automation.log"
