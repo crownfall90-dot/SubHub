@@ -1099,6 +1099,10 @@ async def _ensure_vpn_connected(context) -> bool:
 
     pop = None
     try:
+        # Окну нужно время осесть/получить фокус после запуска — иначе попап
+        # зависает в неполном состоянии (без строки страны), а «Подключить»
+        # кликается, но соединение не устанавливается (проверено вживую).
+        await asyncio.sleep(3.0)
         pop = await context.new_page()
         await pop.goto(f"chrome-extension://{eid}/popup.html",
                        wait_until="domcontentloaded", timeout=15_000)
@@ -1185,10 +1189,13 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
             # Встроенный Chromium от Playwright такого ограничения не имеет и
             # грузит VPNLY нормально → форсируем его, когда есть VPN-расширение.
             use_bundled_chromium = True
-            if headless:
-                # старый headless не поддерживает расширения → включаем новый
-                args.append("--headless=new")
-                headless = False  # Playwright запустит окно, но с --headless=new оно скрыто
+            # ВАЖНО: VPNLY НЕ подключается ни в headless=new, ни в реальном окне,
+            # выведенном за пределы экрана (--window-position=-3000,-3000) — в обоих
+            # случаях попап зависает на "Not Protected" и клик «Подключить» падает
+            # с «Oops! Something went wrong» (проверено вживую). Единственный
+            # надёжный режим — настоящее видимое окно. Поэтому при наличии
+            # VPN-расширения headless всегда принудительно отключается.
+            headless = False
     except Exception:
         pass
 
@@ -8560,7 +8567,36 @@ async def _navigate_search_buy(page, months: int) -> str | None:
     return await _click_buy_now(page, _BLACK_URLS[months])
 
 
+_VPN_PING_PROFILE_DIR = Path("./data/_vpn_ping_profile")
+
+
 async def _check_flipkart_accessible() -> bool:
+    """Проверяет доступность Flipkart. Raw TCP-сокет НЕ учитывает VPN-расширение
+    (оно работает только внутри Chrome через chrome.proxy), поэтому если сайт
+    заблокирован без VPN, такая проверка ничего не значит. Порядок: сначала
+    грузим расширение и включаем VPN (в отдельном лёгком видимом браузере — VPNLY
+    не подключается в headless/офф-скрин режиме), затем проверяем реальный доступ
+    через него. Без расширения — быстрая raw TCP проверка."""
+    if _vpn_extension_dir():
+        try:
+            from playwright.async_api import async_playwright
+            _VPN_PING_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            async with async_playwright() as pw:
+                ctx = await pw.chromium.launch_persistent_context(
+                    str(_VPN_PING_PROFILE_DIR.resolve()),
+                    **_browser_launch_kw(headless=True, use_proxy=False))
+                try:
+                    await _ensure_vpn_connected(ctx)
+                    pg = await ctx.new_page()
+                    r = await pg.goto("https://www.flipkart.com/", timeout=20_000)
+                    body = (await pg.evaluate(
+                        "() => document.body ? document.body.innerText.slice(0, 200) : ''"
+                    )).lower()
+                    return bool(r) and r.status < 400 and "access denied" not in body
+                finally:
+                    await ctx.close()
+        except Exception:
+            pass  # браузерная проверка не удалась — пробуем raw TCP ниже
     try:
         _rd, _wr = await asyncio.wait_for(
             asyncio.open_connection("www.flipkart.com", 443),
@@ -12180,19 +12216,10 @@ if __name__ == "__main__":
 
                 # ── Проверка доступности Flipkart перед покупкой номеров ──────
                 print(f"  {DIM}Проверка доступности Flipkart...{RST}")
-                try:
-                    _rd, _wr = await asyncio.wait_for(
-                        asyncio.open_connection("www.flipkart.com", 443),
-                        timeout=10.0,
-                    )
-                    _wr.close()
-                    try:
-                        await _wr.wait_closed()
-                    except Exception:
-                        pass
+                if await _check_flipkart_accessible():
                     print(f"  {G}Flipkart доступен.{RST}")
-                except Exception as _ping_err:
-                    _ping_msg = f"Flipkart недоступен ({type(_ping_err).__name__}): {_ping_err}"
+                else:
+                    _ping_msg = "Flipkart недоступен"
                     print(f"\n  {R}⚠ {_ping_msg}{RST}")
                     print(f"  {Y}Номера покупаться не будут. Повторите позже.{RST}")
                     try:
