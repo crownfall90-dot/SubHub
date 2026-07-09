@@ -816,18 +816,72 @@ def _find_chrome() -> str | None:
     return next((c for c in candidates if Path(c).exists()), None)
 
 
+def _bundled_chromium_path() -> str | None:
+    """Путь к встроенному Chromium от Playwright (он, в отличие от системного
+    Chrome 137+, грузит распакованные расширения через --load-extension)."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            ep = p.chromium.executable_path
+        return ep if ep and Path(ep).exists() else None
+    except Exception:
+        return None
+
+
+def _connect_vpn_over_cdp(port: int) -> bool:
+    """Подключается к уже запущенному (subprocess) браузеру по CDP и включает
+    VPN через _ensure_vpn_connected, затем отсоединяется — браузер остаётся
+    открытым для ручной работы. Возвращает True при успехе."""
+    async def _run() -> bool:
+        from playwright.async_api import async_playwright as _ap
+        async with _ap() as pw:
+            br = None
+            for _ in range(20):
+                try:
+                    br = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                    break
+                except Exception:
+                    await asyncio.sleep(1)
+            if not br or not br.contexts:
+                return False
+            ok = await _ensure_vpn_connected(br.contexts[0])
+            # НЕ вызываем br.close() — иначе закроется весь браузер; просто
+            # выходим из async_playwright, соединение CDP разорвётся, а сам
+            # процесс Chromium (запущен subprocess) продолжит работать.
+            return ok
+    try:
+        return asyncio.run(_run())
+    except Exception:
+        return False
+
+
 def open_chrome(profile_path: Path) -> bool:
-    """Открывает Chrome с профилем и прокси-туннелем (если настроен)."""
-    chrome = _find_chrome()
+    """Открывает браузер с профилем и прокси-туннелем (если настроен).
+    Если есть VPN-расширение — запускает встроенный Chromium (грузит расширение,
+    в отличие от системного Chrome 137+) и авто-включает VPN через CDP."""
+    _ext = _vpn_extension_dir()   # VPNLY → грузим расширение и в ручном браузере
+    _dbg_port = 0
+    if _ext:
+        chrome = _bundled_chromium_path() or _find_chrome()
+    else:
+        chrome = _find_chrome()
     if not chrome:
         print(f"\n{R}  Chrome не найден. Запустите вручную:{RST}")
         print(f"  chrome.exe --user-data-dir=\"{profile_path.resolve()}\"")
         return False
     url  = _profile_url(profile_path)
     args = [chrome, f"--user-data-dir={profile_path.resolve()}"]
-    _ext = _vpn_extension_dir()   # VPN PLY → грузим расширение и в ручном Chrome
     if _ext:
+        args.append(f"--disable-extensions-except={_ext}")
         args.append(f"--load-extension={_ext}")
+        # свободный порт для CDP → авто-подключение VPN
+        try:
+            import socket as _sk
+            with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as _s:
+                _s.bind(("127.0.0.1", 0)); _dbg_port = _s.getsockname()[1]
+            args.append(f"--remote-debugging-port={_dbg_port}")
+        except Exception:
+            _dbg_port = 0
     proxy = _pick_proxy()
     if proxy:
         server = proxy.get("server", "")
@@ -866,6 +920,13 @@ def open_chrome(profile_path: Path) -> bool:
             print(f"  {DIM}Прокси: {bare}{RST}")
     args.append(url)
     subprocess.Popen(args)
+    # Авто-подключение VPN в открытом браузере (через порт отладки)
+    if _ext and _dbg_port:
+        print(f"  {DIM}VPN: подключаю…{RST}")
+        if _connect_vpn_over_cdp(_dbg_port):
+            print(f"  {G}✔ VPN подключён{RST}")
+        else:
+            print(f"  {Y}⚠ VPN не подключился автоматически — включите вручную в расширении{RST}")
     return True
 
 
