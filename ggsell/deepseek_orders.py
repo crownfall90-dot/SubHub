@@ -90,7 +90,7 @@ def _product_name(order: dict) -> str:
     product = order.get("product") or {}
     return str(product.get("name") or product.get("product_name")
                or order.get("product_name") or order.get("name")
-               or order.get("offer_title") or "")
+               or order.get("offer_title") or order.get("title") or "")
 
 
 def is_deepseek_order(order: dict) -> bool:

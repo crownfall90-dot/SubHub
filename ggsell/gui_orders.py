@@ -181,16 +181,22 @@ async def fetch_youtube_orders(client) -> tuple[list[dict], dict[int, str]]:
         chats_raw = []
     chat_map = _chat_email_map(chats_raw if isinstance(chats_raw, list) else [])
 
-    yt_orders = [
-        o for o in (orders_v1 or [])
-        if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID
-    ]
+    try:
+        from .deepseek_orders import is_deepseek_order as _is_ds
+    except Exception:
+        _is_ds = lambda _o: False  # noqa: E731
+
+    def _wanted(o: dict) -> bool:
+        if int(o.get("offer_ggsel_id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID:
+            return True
+        if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID:
+            return True
+        return _is_ds(o)
+
+    yt_orders = [o for o in (orders_v1 or []) if _wanted(o)]
     if not yt_orders:
         orders = await client.get_last_orders()
-        yt_orders = [
-            o for o in orders
-            if int((o.get("product") or {}).get("id") or 0) == YOUTUBE_PREMIUM_PRODUCT_ID
-        ]
+        yt_orders = [o for o in orders if _wanted(o)]
 
     yt_orders.sort(key=lambda o: invoice_id(o), reverse=True)
 
