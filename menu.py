@@ -973,47 +973,61 @@ async def _ensure_vpn_connected(context) -> bool:
         print(f"  {Y}⚠ VPN: не удалось определить ID расширения — пропускаю{RST}")
         return False
 
-    _CONNECTED = ("защищено", "отключить", "protected", "disconnect", "connected")
-    _NOTCONN   = ("не защищено", "не подключено", "подключить", "not protected",
-                  "not connected", "disconnected")
-
-    async def _status(pop) -> str:
+    async def _connected(pop) -> bool:
+        """True, если статус «Защищено»/Protected (исключая «Не защищено»).
+        ВАЖНО: «Не защищено» содержит подстроку «защищено» — учитываем это."""
         try:
             b = (await pop.evaluate("() => document.body ? document.body.innerText : ''")).lower()
         except Exception:
-            return ""
-        # «отключить»/«disconnect» = уже подключены (кнопка отключения)
-        if any(s in b for s in ("защищено", "отключить", "disconnect")) and "не защищено" not in b:
-            return "connected"
-        if any(s in b for s in _NOTCONN):
-            return "disconnected"
-        if "connected" in b and "disconnected" not in b and "not connected" not in b:
-            return "connected"
-        return "unknown"
+            return False
+        if "не защищено" in b or "not protected" in b or "не подключено" in b:
+            return False
+        return ("защищено" in b or "protected" in b or "отключить" in b
+                or "disconnect" in b)
 
-    async def _click_connect(pop) -> bool:
-        # Точный текст кнопки «Подключить»/«Connect»
-        for _t in ("Подключить", "Connect", "CONNECT", "Подключиться", "Turn on"):
+    async def _accept_consent(pop) -> None:
+        # Модалка согласия VPNLY закрывает кнопку «Подключить» → сначала жмём её.
+        for _sel in ("button.modal-consent__btn",):
+            try:
+                _loc = pop.locator(_sel).first
+                if await _loc.count() > 0 and await _loc.is_visible():
+                    await _loc.click(timeout=2_000)
+                    await pop.wait_for_timeout(1_200)
+                    return
+            except Exception:
+                pass
+        for _t in ("Согласиться и продолжить", "Accept and continue", "Agree and continue"):
             try:
                 _loc = pop.get_by_text(_t, exact=True).first
                 if await _loc.count() > 0 and await _loc.is_visible():
-                    await _loc.click(timeout=1_500)
+                    await _loc.click(timeout=2_000)
+                    await pop.wait_for_timeout(1_200)
+                    return
+            except Exception:
+                pass
+
+    async def _click_connect(pop) -> bool:
+        # Кнопка «Подключить» — <button class="v-button"> с точным текстом.
+        for _t in ("Подключить", "Connect", "Подключиться", "Turn on"):
+            try:
+                _loc = pop.get_by_role("button", name=_t, exact=True).first
+                if await _loc.count() > 0 and await _loc.is_visible():
+                    await _loc.click(timeout=2_000)
                     return True
             except Exception:
                 pass
-        # Fallback: крупная нижняя кнопка (оранжевая) по координатам через JS
+        # Fallback: клик по координатам кнопки .v-button с нужным текстом
         try:
             _bb = await pop.evaluate(r"""() => {
                 const want = ['подключить','connect','подключиться','turn on'];
-                let best=null;
-                for (const el of document.querySelectorAll('button,a,div,span,[role="button"]')) {
+                for (const el of document.querySelectorAll('button')) {
                     const t=(el.innerText||el.textContent||'').trim().toLowerCase();
-                    if (!want.some(w=>t===w || (t.includes(w)&&t.length<20))) continue;
+                    if (!want.some(w=>t===w)) continue;
                     const r=el.getBoundingClientRect();
-                    if (r.width<60||r.height<20||el.offsetParent===null) continue;
-                    if (!best || r.top>best.top) best={x:r.x+r.width/2,y:r.y+r.height/2,top:r.top};
+                    if (r.width<40||el.offsetParent===null) continue;
+                    return {x:r.x+r.width/2, y:r.y+r.height/2};
                 }
-                return best;
+                return null;
             }""")
             if _bb:
                 await pop.mouse.click(_bb["x"], _bb["y"])
@@ -1025,29 +1039,21 @@ async def _ensure_vpn_connected(context) -> bool:
     pop = None
     try:
         pop = await context.new_page()
-        # popup.html НЕ в web_accessible_resources → прямой переход из обычной
-        # вкладки блокируется как ERR_BLOCKED_BY_CLIENT. Сначала открываем
-        # offscreen.html (он web-accessible), страница получает origin
-        # расширения, затем переход на popup.html — уже свой origin (разрешён).
-        try:
-            await pop.goto(f"chrome-extension://{eid}/offscreen.html",
-                           wait_until="domcontentloaded", timeout=15_000)
-        except Exception:
-            pass
         await pop.goto(f"chrome-extension://{eid}/popup.html",
                        wait_until="domcontentloaded", timeout=15_000)
         await pop.wait_for_timeout(2_500)
 
-        if await _status(pop) == "connected":
+        if await _connected(pop):
             print(f"  {G}✔ VPN уже подключён{RST}")
             return True
 
-        # Жмём «Подключить» (до 3 попыток) и ждём статус «Защищено» (VPN стартует не мгновенно)
+        # Жмём «Подключить» (до 3 попыток) и ждём статус «Защищено».
         for _try in range(3):
+            await _accept_consent(pop)          # закрыть модалку согласия, если есть
             await _click_connect(pop)
-            for _ in range(20):   # до ~20 сек ждём подключения
+            for _ in range(20):                 # до ~20 сек ждём подключения
                 await pop.wait_for_timeout(1_000)
-                if await _status(pop) == "connected":
+                if await _connected(pop):
                     print(f"  {G}✔ VPN подключён{RST}")
                     return True
             print(f"  {Y}VPN ещё не подключился — повтор ({_try + 1}/3)…{RST}")
@@ -1113,6 +1119,11 @@ def _browser_launch_kw(headless: bool = False, use_proxy: bool = True,
         if _ext_dir:
             args.append(f"--disable-extensions-except={_ext_dir}")
             args.append(f"--load-extension={_ext_dir}")
+            # ВАЖНО: системный Chrome 137+ ИГНОРИРУЕТ --load-extension (Google
+            # отключил загрузку распакованных расширений из командной строки).
+            # Встроенный Chromium от Playwright такого ограничения не имеет и
+            # грузит VPNLY нормально → форсируем его, когда есть VPN-расширение.
+            use_bundled_chromium = True
             if headless:
                 # старый headless не поддерживает расширения → включаем новый
                 args.append("--headless=new")
