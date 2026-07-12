@@ -2475,7 +2475,10 @@ async def _warmup_vpn_extension() -> bool:
     return True
 
 
-def start_background_bootstrap(force: bool = False) -> None:
+def start_background_bootstrap(
+    force: bool = False,
+    on_complete=None,
+) -> None:
     """Фон при старте: только скан + копирование файлов. Chrome НЕ открывается."""
     global _bg_bootstrap_started
 
@@ -2486,7 +2489,7 @@ def start_background_bootstrap(force: bool = False) -> None:
 
     def _worker():
         try:
-            time.sleep(4.0)
+            time.sleep(1.5)
 
             if not _vpn_extension_dir():
                 _set_vpn_bg_status("no_ext", "vpn_extension/ не найдено")
@@ -2498,17 +2501,20 @@ def start_background_bootstrap(force: bool = False) -> None:
             scan = scan_profiles_extension_status()
             _set_vpn_bg_status(
                 "warming",
-                f"Скан: {scan['with_ext']}/{scan['total']} с расширением…",
+                f"Установка расширения: {scan['with_ext']}/{scan['total']} проф.…",
             )
 
             n = install_extensions_filesystem_all()
             scan = scan_profiles_extension_status()
 
             if scan["missing"]:
+                names = ", ".join(scan["missing_names"][:3])
+                if scan["missing"] > 3:
+                    names += "…"
                 _set_vpn_bg_status(
                     "ready",
                     f"Расширение {scan['with_ext']}/{scan['total']} · "
-                    f"без {scan['missing']} (установка при запуске автоматизации)",
+                    f"без: {names} (поставится при запуске)",
                 )
                 if n:
                     print(f"  {G}✔ Расширение скопировано в {n} профил(ей) без Chrome{RST}")
@@ -2519,12 +2525,18 @@ def start_background_bootstrap(force: bool = False) -> None:
             else:
                 _set_vpn_bg_status(
                     "ready",
-                    f"Расширение {scan['total']}/{scan['total']} проф. · VPN при использовании",
+                    f"Все {scan['total']} профилей с расширением · VPN при использовании",
                 )
                 if n:
                     print(f"  {G}✔ Расширение установлено в {n} профил(ей) без Chrome{RST}")
         except Exception as exc:
             _set_vpn_bg_status("error", str(exc)[:120])
+        finally:
+            if on_complete:
+                try:
+                    on_complete()
+                except Exception:
+                    pass
 
     threading.Thread(target=_worker, daemon=True, name="bg-bootstrap").start()
 

@@ -312,6 +312,34 @@ def _set_windows_startup(enabled: bool) -> bool:
         return False
 
 
+def _windows_startup_enabled() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _WIN_STARTUP_KEY, 0, winreg.KEY_READ,
+        )
+        try:
+            winreg.QueryValueEx(key, _WIN_STARTUP_NAME)
+            return True
+        finally:
+            winreg.CloseKey(key)
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def _sync_windows_startup_from_settings(settings: dict[str, Any]) -> bool:
+    """Применяет run_at_startup из настроек к реестру Windows."""
+    want = bool(settings.get("run_at_startup"))
+    have = _windows_startup_enabled()
+    if want == have:
+        return True
+    return _set_windows_startup(want)
+
+
 class LogSink:
     def __init__(self) -> None:
         self._q: queue.Queue[str] = queue.Queue()
@@ -435,6 +463,7 @@ class SubHubApp(ctk.CTk):
             self._app_settings.get("start_minimized")
             and self._app_settings.get("background_mode")
         ):
+            self._hidden_to_tray = True
             self.withdraw()
         else:
             self._ensure_window_visible()
@@ -539,10 +568,16 @@ class SubHubApp(ctk.CTk):
         self.after(2000, self._guard_window_visible)
 
     def _guard_window_visible(self) -> None:
-        """Если окно пропало без явного «в трей» — вернуть на экран."""
+        """Если окно пропало без явного скрытия — вернуть на экран."""
         if self._quitting or self._hidden_to_tray:
             pass
-        elif not self._app_settings.get("start_minimized") or self._startup_done:
+        elif (
+            self._app_settings.get("start_minimized")
+            and self._app_settings.get("background_mode")
+            and not self._startup_done
+        ):
+            pass
+        else:
             try:
                 if not self.winfo_viewable():
                     self.deiconify()
@@ -552,15 +587,17 @@ class SubHubApp(ctk.CTk):
         self.after(3000, self._guard_window_visible)
 
     def _startup_tray(self) -> None:
-        """Иконка SubHub в системном трее — сразу при запуске."""
+        """Иконка SubHub в системном трее — нужна для фонового режима."""
+        if not self._app_settings.get("background_mode", True):
+            return
         if not self._ensure_tray():
-            self._log("⚠ Трей: pip install pystray Pillow")
+            self._log("⚠ Трей: pip install pystray Pillow — без иконки нельзя скрыть окно")
             return
         if (self._app_settings.get("start_minimized")
                 and self._app_settings.get("background_mode")):
             self._hidden_to_tray = True
             self.withdraw()
-            self._log("Запущено в трее — двойной клик откроет окно")
+            self._log("Запущено в фоне — иконка в трее, двойной клик откроет окно")
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -963,7 +1000,9 @@ class SubHubApp(ctk.CTk):
             "logs": lambda: None,
             "deepseek": self._refresh_deepseek,
             "settings": lambda: (
-                self._refresh_settings_keys(), self._refresh_update_badge(), self._sync_settings_switches(),
+                self._refresh_settings_keys(), self._refresh_update_badge(),
+                self._sync_settings_switches(), self._refresh_grizzly_status(),
+                self._sync_windows_startup(),
             ),
         }
         fn = refresh.get(name)
@@ -2337,15 +2376,18 @@ class SubHubApp(ctk.CTk):
             font=_ui_font(FONT_SMALL),
         ).pack(fill="x", pady=(0, 6))
         self.grizzly_cancel_status = ctk.CTkLabel(
-            inner_gs, text="", justify="left", anchor="w", text_color=TEXT_DIM,
-            font=_ui_font(FONT_SMALL),
+            inner_gs, text="Сейчас активных номеров нет", justify="left", anchor="w",
+            text_color=TEXT_DIM, font=_ui_font(FONT_SMALL),
         )
         self.grizzly_cancel_status.pack(fill="x", pady=(0, 4))
-        ctk.CTkButton(
+        self.grizzly_cancel_btn = ctk.CTkButton(
             inner_gs, text="🛑 Отменить все активные номера", height=BTN_H,
             corner_radius=RADIUS_BTN, fg_color=ERROR, hover_color="#da3633",
             command=self._cancel_grizzly_numbers,
-        ).pack(fill="x")
+        )
+        self._grizzly_active_total = 0
+        self._grizzly_btn_shown = False
+        self._set_grizzly_cancel_status("Сейчас активных номеров нет", active_total=0)
 
         inner2 = self._card(right, "API-ключи")
         self._settings_key_labels: dict[str, ctk.CTkLabel] = {}
@@ -2421,18 +2463,38 @@ class SubHubApp(ctk.CTk):
             else:
                 sw.deselect()
 
+    def _sync_windows_startup(self) -> None:
+        if not _sync_windows_startup_from_settings(self._app_settings):
+            self._log("⚠ Не удалось синхронизировать автозагрузку Windows")
+            return
+        want = bool(self._app_settings.get("run_at_startup"))
+        have = _windows_startup_enabled()
+        if want != have and hasattr(self, "sw_startup"):
+            if want:
+                self.sw_startup.select()
+            else:
+                self.sw_startup.deselect()
+
     def _persist_app_settings(self) -> None:
         _save_app_settings(self._app_settings)
 
     def _on_setting_background(self) -> None:
+        self.after_idle(self._apply_background_setting)
+
+    def _apply_background_setting(self) -> None:
         self._app_settings["background_mode"] = bool(self.sw_background.get())
         if not self._app_settings["background_mode"]:
             self._app_settings["start_minimized"] = False
             if hasattr(self, "sw_start_min"):
                 self.sw_start_min.deselect()
+        else:
+            self._startup_tray()
         self._persist_app_settings()
 
     def _on_setting_tray(self) -> None:
+        self.after_idle(self._apply_tray_setting)
+
+    def _apply_tray_setting(self) -> None:
         self._app_settings["minimize_to_tray"] = bool(self.sw_tray.get())
         self._persist_app_settings()
 
@@ -2465,7 +2527,7 @@ class SubHubApp(ctk.CTk):
 
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
-    def _grizzly_cancel_summary(self, r: dict) -> str:
+    def _grizzly_status_text(self, r: dict) -> str:
         if r.get("error") == "no_api_key":
             return "API-ключ GrizzlySMS не настроен"
         if r.get("error"):
@@ -2475,15 +2537,96 @@ class SubHubApp(ctk.CTk):
         failed = int(r.get("failed") or 0)
         bal = r.get("balance")
         bal_s = f" · баланс ${bal:.4f}" if bal is not None else ""
+        if cancelled or failed:
+            if total == 0 and cancelled == 0 and failed == 0:
+                return f"Сейчас активных номеров нет{bal_s}"
+            if cancelled == total and total:
+                return f"Отменено {cancelled} номер(ов){bal_s}"
+            if cancelled:
+                return f"Отменено {cancelled}/{total}, не удалось: {failed}{bal_s}"
+            return f"Не удалось отменить {failed}/{total} (лимит Grizzly 1:30?){bal_s}"
         if total == 0:
-            return f"Активных номеров нет{bal_s}"
-        if cancelled == total:
-            return f"Отменено {cancelled} номер(ов){bal_s}"
+            return f"Сейчас активных номеров нет{bal_s}"
+        return f"Активных номеров: {total}{bal_s}"
+
+    def _grizzly_cancel_summary(self, r: dict) -> str:
+        return self._grizzly_status_text(r)
+
+    def _set_grizzly_cancel_status(self, msg: str, active_total: int | None = None) -> None:
+        if not hasattr(self, "grizzly_cancel_status"):
+            return
+        if active_total is not None:
+            self._grizzly_active_total = max(0, int(active_total))
+        elif msg.startswith("Активных номеров:"):
+            try:
+                self._grizzly_active_total = int(msg.split(":", 1)[1].split()[0])
+            except Exception:
+                pass
+        elif msg.startswith("Сейчас активных номеров нет") or msg.startswith("Отменено"):
+            self._grizzly_active_total = 0
+        if msg.startswith("Сейчас активных номеров нет"):
+            color = TEXT_DIM
+        elif msg.startswith("Активных номеров:"):
+            color = WARNING
+        elif msg.startswith("Ошибка") or "Не удалось" in msg:
+            color = ERROR
+        else:
+            color = TEXT_DIM
+        self.grizzly_cancel_status.configure(text=msg, text_color=color)
+        self._update_grizzly_cancel_btn(
+            self._grizzly_active_total > 0
+            and not msg.startswith("API-ключ")
+            and not msg.startswith("Ошибка")
+        )
+
+    def _update_grizzly_cancel_btn(self, visible: bool) -> None:
+        if not hasattr(self, "grizzly_cancel_btn"):
+            return
+        if visible:
+            self.grizzly_cancel_btn.configure(
+                state="normal", fg_color=ERROR, hover_color="#da3633",
+            )
+            if not self._grizzly_btn_shown:
+                self.grizzly_cancel_btn.pack(fill="x")
+                self._grizzly_btn_shown = True
+        else:
+            if self._grizzly_btn_shown:
+                self.grizzly_cancel_btn.pack_forget()
+                self._grizzly_btn_shown = False
+
+    def _apply_grizzly_result(self, r: dict) -> None:
+        total = int(r.get("total") or 0)
+        cancelled = int(r.get("cancelled") or 0)
         if cancelled:
-            return f"Отменено {cancelled}/{total}, не удалось: {failed}{bal_s}"
-        return f"Не удалось отменить {failed}/{total} (лимит Grizzly 1:30?){bal_s}"
+            active_left = max(0, total - cancelled)
+        else:
+            active_left = total
+        self._set_grizzly_cancel_status(
+            self._grizzly_status_text(r),
+            active_total=active_left,
+        )
+
+    def _refresh_grizzly_status(self) -> None:
+        if getattr(self, "_grizzly_status_busy", False):
+            return
+        self._grizzly_status_busy = True
+
+        def _worker() -> None:
+            import grizzly as gz
+            try:
+                r = gz.fetch_active_rentals_status_blocking()
+            except Exception as exc:
+                r = {"error": str(exc), "total": 0}
+            try:
+                self.after(0, lambda: self._apply_grizzly_result(r))
+            finally:
+                self.after(0, lambda: setattr(self, "_grizzly_status_busy", False))
+
+        threading.Thread(target=_worker, daemon=True, name="grizzly-status").start()
 
     def _cancel_grizzly_numbers(self) -> None:
+        if getattr(self, "_grizzly_active_total", 0) <= 0:
+            return
         self._run_bg(self._cancel_grizzly_numbers_worker, "Отмена активных номеров GrizzlySMS…")
 
     def _cancel_grizzly_numbers_worker(self) -> None:
@@ -2491,7 +2634,7 @@ class SubHubApp(ctk.CTk):
         r = gz.cancel_all_active_rentals_blocking("вручную")
         msg = self._grizzly_cancel_summary(r)
         self.after(0, lambda: self._log(f"Grizzly: {msg}"))
-        self.after(0, lambda: self.grizzly_cancel_status.configure(text=msg))
+        self.after(0, lambda: self._apply_grizzly_result(r))
 
     def _bootstrap_backend(self) -> None:
         import menu as m
@@ -2510,6 +2653,11 @@ class SubHubApp(ctk.CTk):
             def _startup_cancel() -> None:
                 cleanup_box["r"] = gz.startup_cleanup_active_rentals("старт приложения")
 
+            if not _sync_windows_startup_from_settings(self._app_settings):
+                self._log("⚠ Автозагрузка Windows: не удалось применить настройку")
+            elif self._app_settings.get("run_at_startup"):
+                self._log("✓ Автозагрузка Windows включена")
+
             t = _thr.Thread(target=_startup_cancel, daemon=True, name="grizzly-startup-cancel")
             t.start()
             t.join(timeout=35)
@@ -2518,15 +2666,13 @@ class SubHubApp(ctk.CTk):
             if int(r.get("total") or 0) > 0 or r.get("error"):
                 self._log(f"Grizzly: {summary}")
             if hasattr(self, "grizzly_cancel_status"):
-                self.grizzly_cancel_status.configure(text=summary)
+                self._apply_grizzly_result(r)
+            self.after(1500, self._refresh_grizzly_status)
 
-            scan = m.scan_profiles_extension_status()
-            if m._vpn_extension_dir() and scan["total"]:
-                m._set_vpn_bg_status(
-                    "warming",
-                    f"Фон: расширение {scan['with_ext']}/{scan['total']} проф.…",
-                )
-            m.start_background_bootstrap()
+            m.start_background_bootstrap(
+                on_complete=lambda: self.after(0, self._refresh_vpn_page),
+            )
+            self.after(2000, self._poll_vpn_bootstrap)
             gz.start_global_monitor()
             try:
                 from ggsell.monitor import start_monitor
@@ -2700,8 +2846,8 @@ class SubHubApp(ctk.CTk):
             }
             labels = {
                 "ready": f"🔒 VPN: {msg or 'готов'}",
-                "warming": "📦 Расширения в профили…",
-                "installing": "📦 Установка…",
+                "warming": f"🔒 VPN: {msg or 'подготовка…'}",
+                "installing": f"🔒 VPN: {msg or 'установка…'}",
                 "error": f"🔒 VPN: {msg[:40]}",
                 "no_ext": "🔒 VPN: нет расширения",
                 "idle": "🔒 VPN: ожидание",
@@ -2712,6 +2858,10 @@ class SubHubApp(ctk.CTk):
                 self._vpn_status_lbl.configure(text=text, text_color=color)
             if hasattr(self, "dash_vpn_chip"):
                 self.dash_vpn_chip.configure(text=text.replace("🔒 ", ""), text_color=color)
+            if self._current_page == "vpn" and hasattr(self, "vpn_page_status"):
+                self._refresh_vpn_page()
+            if self._current_page == "settings" and self._status_tick_count % 8 == 0:
+                self._refresh_grizzly_status()
             self._status_tick_count += 1
             if self._status_tick_count % 6 == 0 or self._current_page == "settings":
                 self._refresh_update_badge()
@@ -4357,6 +4507,16 @@ class SubHubApp(ctk.CTk):
         if hasattr(self, "ds_card_box"):
             self._refresh_deepseek()
 
+    def _poll_vpn_bootstrap(self, attempt: int = 0) -> None:
+        """Обновляет вкладку VPN, пока фоновая установка расширений не завершится."""
+        import menu as m
+        if hasattr(self, "vpn_page_status"):
+            self._refresh_vpn_page()
+        state = m.get_vpn_bg_status().get("state", "idle")
+        if state in ("ready", "error", "no_ext") or attempt >= 45:
+            return
+        self.after(2000, lambda: self._poll_vpn_bootstrap(attempt + 1))
+
     def _refresh_vpn_page(self) -> None:
         import menu as m
         vs = m.get_vpn_bg_status()
@@ -4364,15 +4524,35 @@ class SubHubApp(ctk.CTk):
         scan = m.scan_profiles_extension_status()
         state = vs.get("state", "idle")
         msg = vs.get("message", "")
-        icons = {"ready": "✅", "error": "❌", "warming": "⏳", "installing": "📦", "no_ext": "⚠️"}
-        prof_line = (
-            f"Профили: {scan['with_ext']}/{scan['total']} с расширением"
-            + (f" · без: {scan['missing']}" if scan["missing"] else "")
-        )
-        self.vpn_page_status.configure(
-            text=f"{icons.get(state, '•')}  {state.upper()}\n{msg}\n{prof_line}"
-            + (f"\n\nПроверка: {self._vpn_last_check}" if self._vpn_last_check else ""),
-        )
+        state_ru = {
+            "ready": ("✅", "Готово"),
+            "error": ("❌", "Ошибка"),
+            "warming": ("⏳", "Подготовка"),
+            "installing": ("📦", "Установка"),
+            "no_ext": ("⚠️", "Нет расширения"),
+            "idle": ("○", "Ожидание"),
+        }
+        icon, title = state_ru.get(state, ("•", state))
+        if scan["total"]:
+            if scan["missing"] == 0:
+                prof_line = f"Профили: {scan['with_ext']}/{scan['total']} — все с расширением"
+            else:
+                names = ", ".join(scan["missing_names"][:3])
+                if scan["missing"] > 3:
+                    names += "…"
+                prof_line = (
+                    f"Профили: {scan['with_ext']}/{scan['total']} с расширением"
+                    f" · без: {scan['missing']} ({names})"
+                )
+        else:
+            prof_line = "Профили: не найдены"
+        body = f"{icon}  {title}"
+        if msg:
+            body += f"\n{msg}"
+        body += f"\n{prof_line}"
+        if self._vpn_last_check:
+            body += f"\n\nПроверка: {self._vpn_last_check}"
+        self.vpn_page_status.configure(text=body)
         self.vpn_page_ext.configure(
             text=f"Расширение: {ext or 'не найдено (положите в veepn_extension/)'}")
 
@@ -5464,7 +5644,11 @@ class SubHubApp(ctk.CTk):
             ok, msg = m.ensure_dependencies(log_fn=self._log)
             self._log(f"{'✓' if ok else '⚠'} {msg}")
             if ok:
-                m.start_background_bootstrap(force=True)
+                m.start_background_bootstrap(
+                    force=True,
+                    on_complete=lambda: self.after(0, self._refresh_vpn_page),
+                )
+                self.after(2000, self._poll_vpn_bootstrap)
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -5502,39 +5686,58 @@ class SubHubApp(ctk.CTk):
         if p.exists():
             os.startfile(str(p))
 
+    def _hide_to_background(self) -> bool:
+        """Скрыть окно, оставив сервисы в фоне. Возвращает False, если скрыть нельзя."""
+        if not self._app_settings.get("background_mode", True):
+            return False
+        if not self._ensure_tray():
+            messagebox.showwarning(
+                "SubHub",
+                "Не удалось создать иконку в трее.\n"
+                "Установите: pip install pystray Pillow\n\n"
+                "Без трея окно нельзя безопасно скрыть.",
+            )
+            return False
+        if self._hidden_to_tray:
+            return True
+        self._hidden_to_tray = True
+        self.withdraw()
+        self._log("Окно скрыто — приложение работает в фоне (иконка в трее)")
+        return True
+
     def _on_close(self) -> None:
         if self._quitting:
             return
         bg = self._app_settings.get("background_mode", True)
         if not bg:
-            if messagebox.askyesno("Выход", "Закрыть приложение?"):
+            if messagebox.askyesno("Выход", "Закрыть SubHub?"):
                 self._quit_app()
             return
 
         tray = self._app_settings.get("minimize_to_tray", False)
-        hint = (
-            "• Да — свернуть в трей\n"
-            "• Нет — оставить окно открытым\n"
-            "• Отмена"
-        ) if tray else (
-            "• Да — скрыть окно (фон продолжит работу)\n"
-            "• Нет — оставить окно открытым\n"
-            "• Отмена"
-        )
+        if tray:
+            hint = (
+                "• Да — свернуть в трей\n"
+                "• Нет — оставить окно открытым\n"
+                "• Отмена"
+            )
+            title = "SubHub — свернуть в трей?"
+        else:
+            hint = (
+                "• Да — скрыть окно (фон продолжит работу)\n"
+                "• Нет — оставить окно открытым\n"
+                "• Отмена"
+            )
+            title = "SubHub — скрыть окно?"
         r = messagebox.askyesnocancel(
-            "SubHub",
-            "Приложение может работать в фоне.\n"
-            "Полный выход — через меню иконки в трее → «Выход».\n\n" + hint,
+            title,
+            "Telegram-бот и автоматизация продолжат работу.\n"
+            "Полный выход — через иконку в трее → «Выход».\n\n" + hint,
         )
         if r is True:
-            if tray:
-                if not self._minimize_to_tray():
-                    if messagebox.askyesno("Выход", "Не удалось свернуть в трей. Выйти полностью?"):
-                        self._quit_app()
-            else:
-                self._hidden_to_tray = True
-                self.withdraw()
-                self._log("Окно скрыто — приложение работает в фоне")
+            if not self._hide_to_background():
+                if messagebox.askyesno("Выход", "Скрыть не удалось. Закрыть SubHub полностью?"):
+                    self._quit_app()
         elif r is False:
             self._ensure_window_visible()
 
@@ -5655,15 +5858,7 @@ class SubHubApp(ctk.CTk):
         self.focus_force()
 
     def _minimize_to_tray(self) -> bool:
-        if not self._ensure_tray():
-            self._log("⚠ Для трея: pip install pystray Pillow")
-            return False
-        if self._hidden_to_tray:
-            return True
-        self._hidden_to_tray = True
-        self.withdraw()
-        self._log("Свёрнуто в трей")
-        return True
+        return self._hide_to_background()
 
 
 def main() -> None:

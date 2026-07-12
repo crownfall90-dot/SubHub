@@ -393,6 +393,55 @@ def start_global_monitor():
     _wd.start()
 
 
+async def fetch_active_rentals_status() -> dict:
+    """Только чтение: сколько активных номеров и баланс (без отмены)."""
+    result: dict = {"total": 0, "balance": None}
+    api_key = _get_grizzly_api_key()
+    if not api_key:
+        result["error"] = "no_api_key"
+        return result
+    if GrizzlySMSClient is None:
+        result["error"] = "no_client"
+        return result
+
+    client = GrizzlySMSClient(api_key, http_timeout=10)
+    try:
+        try:
+            active = await client.get_active_activations() or []
+            result["total"] = len(active)
+        except Exception as exc:
+            result["error"] = str(exc)
+            return result
+        try:
+            result["balance"] = await client.get_balance()
+        except Exception:
+            pass
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+    return result
+
+
+def fetch_active_rentals_status_blocking(timeout: float = 12.0) -> dict:
+    """Синхронная обёртка для UI."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            asyncio.wait_for(fetch_active_rentals_status(), timeout=timeout)
+        )
+    except asyncio.TimeoutError:
+        return {"error": "timeout", "total": 0, "balance": None}
+    except Exception as exc:
+        return {"error": str(exc), "total": 0, "balance": None}
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+
 async def cancel_all_active_rentals(reason: str = "") -> dict:
     """Отменяет все активные номера через GrizzlySMS API."""
     result: dict = {
