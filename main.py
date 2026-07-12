@@ -1139,10 +1139,10 @@ class LoginAutomation:
             return False
         finally:
             if context:
-                try:
-                    await context.close()
-                except Exception:
-                    pass
+                import menu as _menu
+                await _menu._close_browser_session(
+                    context, profile_path=profile_path, disconnect_vpn=True,
+                )
 
     # ── private ─────────────────────────────────────────────────────────────
 
@@ -2193,7 +2193,9 @@ class LoginAutomation:
                 lambda route: route.abort()
             )
         if _vpn_ext:
+            _menu._register_purchase_profile(profile_path)
             if not await _menu._vpn_connect_on_use(context, profile_path):
+                _menu._unregister_purchase_profile(profile_path)
                 await context.close()
                 raise RuntimeError("VPN не подключился — Flipkart недоступен без VPN")
         logger.debug(f"Контекст: {profile_path.name} | {vp['width']}×{vp['height']} | {ua[:40]}...")

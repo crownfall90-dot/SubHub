@@ -1160,15 +1160,11 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
         except Exception:
             pass
 
-        vpn_ok = True
         if _vpn_extension_dir():
-            print(f"  {DIM}VPN + Flipkart (+91 {tag}) → {url[:80]}…{RST}")
-            vpn_ok = await _vpn_connect_for_profile(ctx, profile_path)
-            if not vpn_ok:
-                print(f"  {Y}⚠ VPN не подключился — открою Flipkart, включите VPN вручную{RST}")
-                _set_vpn_bg_status("error", f"VPN не подключился · {profile_path.name}")
-            else:
-                _set_vpn_bg_status("ready", f"VPN OK · {profile_path.name}")
+            print(f"  {DIM}Flipkart (+91 {tag}) → {url[:80]}…{RST}")
+            print(f"  {DIM}VPN не включается — только во время автоматизации{RST}")
+            with contextlib.suppress(Exception):
+                await _vpn_disconnect(ctx)
         else:
             print(f"  {DIM}Открываю Flipkart (+91 {tag}) → {url[:80]}…{RST}")
 
@@ -1191,12 +1187,7 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
                 await page.bring_to_front()
             except Exception:
                 pass
-        elif vpn_ok:
-            print(
-                f"  {Y}⚠ VPN включён, но Flipkart не загрузился — "
-                f"перейдите вручную: {url}{RST}"
-            )
-        else:
+        elif not ok:
             print(f"  {Y}⚠ Откройте Flipkart вручную: {url}{RST}")
 
         while ctx:
@@ -1218,6 +1209,8 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
             await asyncio.sleep(0.5)
     finally:
         if ctx:
+            with contextlib.suppress(Exception):
+                await _vpn_disconnect(ctx)
             try:
                 await ctx.close()
             finally:
@@ -1567,13 +1560,81 @@ async def _bg_vpn_warmup_ping() -> bool:
         return False
 
 
+def _profile_allows_vpn(
+    profile_path: Path | str | None, *, ping_check: bool = False,
+) -> bool:
+    """VPN только при активном сценарии автоматизации (или ping-профиль для проверки)."""
+    if not profile_path:
+        return False
+    pp = Path(profile_path).resolve()
+    if pp == _VPN_PING_PROFILE_DIR.resolve():
+        return ping_check
+    with _app_lock:
+        return _active_purchase_profiles.get(str(pp), 0) > 0
+
+
+async def _vpn_disconnect(context) -> bool:
+    """Отключает VeepN/VPNLY в открытом браузере."""
+    if not _vpn_extension_dir() or context is None:
+        return True
+    eid = await _vpn_ext_id(context)
+    if not eid:
+        return False
+    sw = await _wait_vpn_service_worker(context, eid, timeout=8.0)
+    _js = """async () => {
+        try {
+            await chrome.runtime.sendMessage({type: 'disconnect', data: {}});
+            await new Promise(r => setTimeout(r, 900));
+            const mode = await chrome.proxy.settings.get({});
+            const m = (mode?.value?.mode) || 'direct';
+            return !m || m === 'direct' || m === 'system';
+        } catch (e) { return false; }
+    }"""
+    if sw:
+        with contextlib.suppress(Exception):
+            if await sw.evaluate(_js):
+                return True
+    with contextlib.suppress(Exception):
+        for p in list(context.pages):
+            u = (p.url or "").lower()
+            if u.startswith(f"chrome-extension://{eid}"):
+                return bool(await p.evaluate(_js))
+    return False
+
+
+async def _close_browser_session(
+    ctx, pw=None, profile_path: Path | str | None = None, *,
+    disconnect_vpn: bool = True,
+) -> None:
+    """Закрывает браузер; по умолчанию сначала отключает VPN."""
+    if ctx and disconnect_vpn and _vpn_extension_dir():
+        with contextlib.suppress(Exception):
+            await _vpn_disconnect(ctx)
+    if ctx:
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+        finally:
+            _note_chromium_closed()
+    if pw:
+        with contextlib.suppress(Exception):
+            await pw.stop()
+    if profile_path is not None:
+        _unregister_purchase_profile(profile_path)
+
+
 async def _vpn_connect_on_use(
     context, profile_path: Path | str | None = None, *,
-    max_attempts: int = 3, quick: bool = False,
+    max_attempts: int = 3, quick: bool = False, ping_check: bool = False,
 ) -> bool:
     """Включает VPN при использовании профиля (расширение уже в профиле или только что загружено)."""
     if not _vpn_extension_dir():
         return True
+    if profile_path is not None and not _profile_allows_vpn(profile_path, ping_check=ping_check):
+        tag = Path(profile_path).name
+        print(f"  {DIM}VPN: нет активного сценария для {tag} — подключение пропущено{RST}")
+        return False
     await _close_junk_tabs(context)
     wait = 3.0 if quick else (4.0 if profile_path and _profile_has_vpn_extension(profile_path) else 6.0)
     await asyncio.sleep(wait)
@@ -1597,10 +1658,15 @@ async def _vpn_connect_on_use(
 async def _vpn_connect_for_profile(
     context, profile_path: Path | str | None = None, *,
     timeout: float = 120.0, max_attempts: int = 3, quick: bool = False,
+    ping_check: bool = False,
 ) -> bool:
     """VPN → закрыть popup → рабочая вкладка (единый сценарий для всех потоков)."""
     if not _vpn_extension_dir():
         return True
+    if profile_path is not None and not _profile_allows_vpn(profile_path, ping_check=ping_check):
+        tag = Path(profile_path).name
+        print(f"  {DIM}VPN: нет активного сценария для {tag} — подключение пропущено{RST}")
+        return False
     await _close_junk_tabs(context)
     wait = 2.5 if quick else (3.5 if profile_path and _profile_has_vpn_extension(profile_path) else 5.0)
     await asyncio.sleep(wait)
@@ -3802,6 +3868,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         if not headless:
             await _maximize_window(ctx, page)
+        _register_purchase_profile(profile_path)
         if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
             result["status"] = "vpn_failed"
             result["error"] = "VPN не подключился"
@@ -4222,16 +4289,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         result["error"] = str(e)
         return result
     finally:
-        if ctx:
-            try:
-                await ctx.close()
-            except Exception:
-                pass
-        if pw:
-            try:
-                await pw.stop()
-            except Exception:
-                pass
+        await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
 
 
 def screen_restore_from_cookies():
@@ -5265,8 +5323,6 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
                 ignore_https_errors=True,
             )
             _pg2 = _ctx2.pages[0] if _ctx2.pages else await _ctx2.new_page()
-            if _vpn_extension_dir() and not await _vpn_connect_on_use(_ctx2, profile_path):
-                return False
             try:
                 await _pg2.goto("https://www.flipkart.com",
                                 timeout=20_000, wait_until="domcontentloaded")
@@ -5706,14 +5762,8 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         except Exception as _pp_e:
             print(f"  Post-payment: {_pp_e}")
         # Пост-пеймент завершён — закрываем браузер
-        try:
-            await ctx.close()
-        except Exception:
-            pass
-        try:
-            await pw.stop()
-        except Exception:
-            pass
+        await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
+        ctx = None
         return True, f"{addr['name']} | {addr.get('pincode','')} {addr.get('city','')} → ✅ оплата запущена"
     except _PurchaseCancelled:
         print(f"  {Y}🛑 Выполнение отменено пользователем — закрываю браузер.{RST}")
@@ -5730,14 +5780,12 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _keep_open = False
         return False, msg
     finally:
-        # Закрываем контекст и драйвер аккуратно (graceful), чтобы Node-драйвер
-        # Playwright не падал с EPIPE от убитого извне браузера.
         if not _keep_open:
-            if ctx:
-                try: await ctx.close()
-                except Exception: pass
-            try: await pw.stop()
-            except Exception: pass
+            await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
+        else:
+            with contextlib.suppress(Exception):
+                await _vpn_disconnect(ctx)
+            _unregister_purchase_profile(profile_path)
 
 
 def screen_fill_address():
@@ -8861,6 +8909,7 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
             str(profile_path.resolve()),
             **_browser_launch_kw(phone=phone_digits, profile_path=profile_path))
         page = await _main_work_page(ctx)
+        _register_purchase_profile(profile_path)
         if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
             return False, "VPN не подключился — восстановление куков отменено"
 
@@ -8908,16 +8957,7 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
     except Exception as e:
         return False, str(e)
     finally:
-        if ctx:
-            try:
-                await ctx.close()
-            except Exception:
-                pass
-        if pw:
-            try:
-                await pw.stop()
-            except Exception:
-                pass
+        await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
 
 
 async def _handle_post_payment(page, ctx, profile_path: "Path", phone_number: str = "", months: int = 3) -> dict:
@@ -10520,23 +10560,14 @@ async def _check_flipkart_accessible() -> bool:
         kw["args"] = _hidden_chrome_args(kw.get("args", []))
         ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
         await _close_extension_startup_tabs(ctx)
-        if not await _vpn_connect_on_use(ctx, profile):
+        if not await _vpn_connect_on_use(ctx, profile, ping_check=True):
             return False
         page = await _main_work_page(ctx)
         return await _verify_flipkart_reachable(page)
     except Exception:
         return False
     finally:
-        if ctx:
-            try:
-                await ctx.close()
-            finally:
-                _note_chromium_closed()
-        if pw:
-            try:
-                await pw.stop()
-            except Exception:
-                pass
+        await _close_browser_session(ctx, pw, profile_path=profile, disconnect_vpn=True)
 
 
 def _is_flipkart_accessible_sync() -> bool:
@@ -11685,6 +11716,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     if not _profile_has_vpn_extension(profile_path):
                         _install_extension_filesystem(profile_path)
 
+                _register_purchase_profile(profile_path)
                 await _vpn_chrome_cooldown(extra=2.0)
                 ctx = await pw.chromium.launch_persistent_context(
                     str(profile_path.resolve()),
@@ -12641,11 +12673,14 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
             finally:
                 if not _keep_open:
-                    if ctx:
-                        try: await ctx.close()
-                        except Exception: pass
-                    try: await pw.stop()
-                    except Exception: pass
+                    await _close_browser_session(
+                        ctx, pw, profile_path, disconnect_vpn=True,
+                    )
+                    ctx = None
+                else:
+                    with contextlib.suppress(Exception):
+                        await _vpn_disconnect(ctx)
+                    _unregister_purchase_profile(profile_path)
                 _no_meta = profile_path is not None and not (profile_path / ".profile_meta.json").exists()
                 if profile_path and profile_path.exists() and (_del_profile or _no_meta):
                     import shutil as _sh
