@@ -49,6 +49,8 @@ DONE_PROFILES_DIR   = Path("./chrome_profiles_done")
 USED_PROFILES_DIR   = Path("./chrome_profiles_used")
 BACKUP_PROFILES_DIR = Path("./chrome_profiles_backup")
 _VPN_PING_PROFILE_DIR = Path("./data/_vpn_ping_profile")
+_OPEN_CHROME_LOCK = threading.Lock()
+_OPEN_CHROME_SESSIONS: dict[str, threading.Thread] = {}
 _HERE               = Path(__file__).parent
 _AUTOMATION_LOG     = _HERE / "automation.log"
 
@@ -103,6 +105,8 @@ class _TeeWriter:
 
 def _start_log_tee():
     """Включает дублирование stdout/stderr → automation.log (append)."""
+    if isinstance(sys.stdout, _TeeWriter):
+        return
     try:
         fh = open(_AUTOMATION_LOG, "a", encoding="utf-8", errors="replace")
         fh.write(f"\n{'='*60}\n")
@@ -908,9 +912,22 @@ def get_profiles() -> list[dict]:
     return profiles
 
 
-def _load_done_profiles() -> list[dict]:
+_DONE_PROFILES_CACHE: tuple[float, list] = (0.0, [])
+
+
+def _invalidate_done_profiles_cache() -> None:
+    global _DONE_PROFILES_CACHE
+    _DONE_PROFILES_CACHE = (0.0, [])
+
+
+def _load_done_profiles(*, force: bool = False) -> list[dict]:
     """Возвращает список профилей из DONE_PROFILES_DIR у которых есть .profile_meta.json."""
+    global _DONE_PROFILES_CACHE
     import time as _t
+    now = _t.monotonic()
+    ts, cached = _DONE_PROFILES_CACHE
+    if not force and cached and now - ts < 2.5:
+        return cached
     profiles = []
     if not DONE_PROFILES_DIR.exists():
         return profiles
@@ -932,21 +949,27 @@ def _load_done_profiles() -> list[dict]:
             except Exception:
                 pass
     profiles.sort(key=lambda x: x["login_ts"] or 0, reverse=True)
+    _DONE_PROFILES_CACHE = (now, profiles)
     return profiles
 
 
 def _profile_url(profile_path: Path) -> str:
     """
-    Возвращает URL для открытия профиля.
-    Если профиль залогинен → главная страница Flipkart (не будет показан экран входа).
-    Если сессии нет → страница входа из config.yaml.
+    URL для «Открыть Chrome»:
+    профиль с сессией → страница Black Membership (3 или 12 мес.);
+    без сессии → страница входа из config.yaml.
     """
     meta_file = profile_path / ".profile_meta.json"
     if meta_file.exists():
-        # Есть сохранённая сессия — открываем целевую страницу
-        return "https://www.flipkart.com/flipkart-black-store"
+        months = 3
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            m = int(meta.get("subscription_months") or meta.get("months") or 3)
+            months = m if m in _BLACK_URLS else 3
+        except Exception:
+            pass
+        return _BLACK_URLS[months]
 
-    # Нет сессии — читаем URL входа из config.yaml
     login_url = "https://www.flipkart.com/account/login?ret=/"
     config_path = _HERE / "config.yaml"
     if config_path.exists():
@@ -1012,13 +1035,24 @@ def _bundled_chromium_path() -> str | None:
 def _chrome_executable_for_profile(
     profile_path: Path | str | None = None, *, force_bundled: bool = False,
 ) -> str | None:
-    """Playwright Chromium для VPN; системный Chrome — без расширений."""
+    """Playwright Chromium + --load-extension для VeepN; системный Chrome — без VPN."""
     if force_bundled or _vpn_extension_dir():
         return _bundled_chromium_path() or _find_chrome()
     chrome = _find_chrome()
     if chrome:
         return chrome
     return _bundled_chromium_path()
+
+
+def _browser_label(exe: str | None) -> str:
+    if not exe:
+        return "Chromium"
+    low = exe.lower()
+    if "ms-playwright" in low or "chromium" in Path(exe).name.lower():
+        return "Playwright Chromium"
+    if "chrome.exe" in low:
+        return "Google Chrome"
+    return Path(exe).name
 
 
 def _connect_vpn_over_cdp(port: int, target_url: str | None = None) -> bool:
@@ -1054,50 +1088,144 @@ def _connect_vpn_over_cdp(port: int, target_url: str | None = None) -> bool:
 
 
 def open_chrome(profile_path: Path) -> bool:
-    """Фон: расширение + VPN. Затем видимый Chrome → Flipkart."""
+    """Один видимый Chrome: VPN → Flipkart. Окно остаётся открытым до закрытия пользователем."""
     profile_path = Path(profile_path)
-    chrome = _chrome_executable_for_profile(profile_path)
-    if not chrome:
+    key = str(profile_path.resolve())
+    with _OPEN_CHROME_LOCK:
+        t = _OPEN_CHROME_SESSIONS.get(key)
+        if t and t.is_alive():
+            print(f"  {Y}Chrome уже открыт/открывается для этого профиля{RST}")
+            return True
+
+    if not _chrome_executable_for_profile(profile_path):
         print(f"\n{R}  Chrome не найден. Запустите вручную:{RST}")
         print(f"  chrome.exe --user-data-dir=\"{profile_path.resolve()}\"")
         return False
-    url = _profile_url(profile_path)
-    if _vpn_extension_dir():
-        ok, err = prepare_profile_vpn_sync(profile_path)
-        if not ok:
-            print(f"  {Y}⚠ VPN фон: {err}{RST}")
-            print(f"  {Y}  Браузер откроется — при необходимости включите VPN вручную.{RST}")
-        _dbg_port = 0
-        args = [chrome, f"--user-data-dir={profile_path.resolve()}"]
-        if _needs_load_extension(profile_path):
-            _ext = _vpn_extension_dir()
-            args.append("--disable-features=DisableLoadExtensionCommandLineSwitch")
-            args.append(f"--disable-extensions-except={_ext}")
-            args.append(f"--load-extension={_ext}")
+
+    def _worker() -> None:
         try:
-            import socket as _sk
-            with _sk.socket(_sk.AF_INET, _sk.SOCK_STREAM) as _s:
-                _s.bind(("127.0.0.1", 0))
-                _dbg_port = _s.getsockname()[1]
-            args.append(f"--remote-debugging-port={_dbg_port}")
-        except Exception:
-            _dbg_port = 0
-        args.append("about:blank" if _dbg_port else url)
-        subprocess.Popen(args)
-        if _dbg_port:
-            _phone = _phone_from_path(profile_path)
+            asyncio.run(_open_chrome_keep_alive(profile_path))
+        except Exception as exc:
+            print(f"  {R}Chrome: {exc}{RST}")
+        finally:
+            with _OPEN_CHROME_LOCK:
+                _OPEN_CHROME_SESSIONS.pop(key, None)
 
-            def _visible() -> None:
-                print(f"  {DIM}Открываю Flipkart (+91 {_phone})…{RST}")
-                if _connect_vpn_over_cdp(_dbg_port, url):
-                    print(f"  {G}✔ Flipkart открыт{RST}")
-                else:
-                    print(f"  {Y}⚠ Откройте Flipkart вручную или включите VPN{RST}")
-
-            threading.Thread(target=_visible, daemon=True, name=f"fk-{_phone}").start()
-        return True
-    subprocess.Popen([chrome, f"--user-data-dir={profile_path.resolve()}", url])
+    t = threading.Thread(
+        target=_worker, daemon=True,
+        name=f"chrome-{_phone_from_path(profile_path) or profile_path.name}",
+    )
+    with _OPEN_CHROME_LOCK:
+        _OPEN_CHROME_SESSIONS[key] = t
+    t.start()
     return True
+
+
+async def _open_chrome_keep_alive(profile_path: Path) -> None:
+    """Запускает профиль, подключает VPN, открывает Flipkart; держит сессию до закрытия окна."""
+    profile_path = Path(profile_path)
+    tag = _phone_from_path(profile_path) or profile_path.name
+    url = _profile_url(profile_path)
+    if _is_profile_locked(profile_path):
+        _clear_stale_profile_locks(profile_path)
+
+    if _vpn_extension_dir():
+        if not _profile_has_vpn_extension(profile_path):
+            if not _install_extension_filesystem(profile_path):
+                print(f"  {Y}⚠ VPN-расширение не установлено в профиль{RST}")
+        await _vpn_chrome_cooldown(extra=0.5)
+
+    from playwright.async_api import async_playwright
+    pw = await async_playwright().start()
+    ctx = None
+    try:
+        _pre_inject_chrome_prefs(profile_path)
+        launch_kw = _browser_launch_kw(phone=tag, profile_path=profile_path)
+        exe = launch_kw.get("executable_path")
+        print(f"  {DIM}Браузер: {_browser_label(exe)}{RST}")
+        ctx = await pw.chromium.launch_persistent_context(
+            str(profile_path.resolve()),
+            **launch_kw,
+        )
+        await asyncio.sleep(2.0)
+        await _close_extension_startup_tabs(ctx)
+        await _block_vpn_junk_routes(ctx)
+
+        with contextlib.suppress(Exception):
+            await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
+
+        page = await _main_work_page(ctx)
+        try:
+            await _maximize_window(ctx, page)
+        except Exception:
+            pass
+
+        vpn_ok = True
+        if _vpn_extension_dir():
+            print(f"  {DIM}VPN + Flipkart (+91 {tag}) → {url[:80]}…{RST}")
+            vpn_ok = await _vpn_connect_for_profile(ctx, profile_path)
+            if not vpn_ok:
+                print(f"  {Y}⚠ VPN не подключился — открою Flipkart, включите VPN вручную{RST}")
+                _set_vpn_bg_status("error", f"VPN не подключился · {profile_path.name}")
+            else:
+                _set_vpn_bg_status("ready", f"VPN OK · {profile_path.name}")
+        else:
+            print(f"  {DIM}Открываю Flipkart (+91 {tag}) → {url[:80]}…{RST}")
+
+        _stealth = _build_stealth_js_m()
+        if _stealth:
+            await ctx.add_init_script(_stealth)
+
+        ok, page = await _open_flipkart_page(ctx, url, label=tag, work_page=page)
+        if not ok:
+            with contextlib.suppress(Exception):
+                fresh = await ctx.new_page()
+                await fresh.bring_to_front()
+                ok, page = await _open_flipkart_page(ctx, url, label=tag, work_page=fresh)
+
+        if ok:
+            print(f"  {G}✔ Flipkart открыт (+91 {tag}){RST}")
+            try:
+                page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
+                await _maximize_window(ctx, page)
+                await page.bring_to_front()
+            except Exception:
+                pass
+        elif vpn_ok:
+            print(
+                f"  {Y}⚠ VPN включён, но Flipkart не загрузился — "
+                f"перейдите вручную: {url}{RST}"
+            )
+        else:
+            print(f"  {Y}⚠ Откройте Flipkart вручную: {url}{RST}")
+
+        while ctx:
+            try:
+                if not ctx.pages:
+                    break
+                alive = False
+                for p in ctx.pages:
+                    try:
+                        _ = p.url
+                        alive = True
+                        break
+                    except Exception:
+                        pass
+                if not alive:
+                    break
+            except Exception:
+                break
+            await asyncio.sleep(0.5)
+    finally:
+        if ctx:
+            try:
+                await ctx.close()
+            finally:
+                _note_chromium_closed()
+        try:
+            await pw.stop()
+        except Exception:
+            pass
 
 
 async def _maximize_window(ctx, page) -> None:
@@ -1244,9 +1372,6 @@ def _needs_load_extension(profile_path: Path | str | None) -> bool:
     """Нужно ли передавать --load-extension при запуске браузера."""
     if not _vpn_extension_dir():
         return False
-    # VeepN надёжнее всегда грузить через --load-extension (нет manifest.key).
-    if _vpn_is_veepn():
-        return True
     if profile_path is None:
         return True
     return not _profile_has_vpn_extension(profile_path)
@@ -1294,16 +1419,31 @@ def _iter_profile_dirs() -> list[Path]:
 
 
 async def _close_vpn_extension_tabs(context, eid: str | None = None) -> None:
-    """Закрыть вкладки popup/offscreen VPN — не показывать чёрный экран."""
+    """Закрыть вкладки popup/offscreen VPN — не показывать popup вместо Flipkart."""
     if not eid:
-        eid = _vpn_ext_id_for_install() or _vpn_ext_id_from_key()
-    if not eid:
-        return
-    prefix = f"chrome-extension://{eid}"
+        eid = await _vpn_ext_id(context) or _vpn_ext_id_for_install() or _vpn_ext_id_from_key()
+    prefix = f"chrome-extension://{eid}" if eid else "chrome-extension://"
+
+    def _is_ext_tab(url: str) -> bool:
+        u = (url or "").lower()
+        if _is_vpn_junk_url(u):
+            return True
+        if u.startswith("chrome-extension://"):
+            if not eid:
+                return True
+            return eid in u or u.startswith(prefix)
+        return False
+
+    ext_pages = [p for p in context.pages if _is_ext_tab(p.url or "")]
+    work_pages = [p for p in context.pages if not _is_ext_tab(p.url or "")]
+    if ext_pages and not work_pages:
+        with contextlib.suppress(Exception):
+            await context.new_page()
+
     for p in list(context.pages):
         try:
-            u = (p.url or "").lower()
-            if not (u.startswith(prefix) or _is_vpn_junk_url(u)):
+            u = p.url or ""
+            if not _is_ext_tab(u):
                 continue
             if len(context.pages) > 1:
                 await p.close()
@@ -1323,16 +1463,6 @@ async def _close_extension_startup_tabs(context) -> None:
         u = (url or "").lower()
         return _is_junk_url(u) or u.startswith("chrome-extension://")
 
-    has_work = any(
-        not _is_closable(p.url or "")
-        for p in context.pages
-    )
-    if not has_work:
-        try:
-            await context.new_page()
-        except Exception:
-            pass
-
     for p in list(context.pages):
         try:
             if len(context.pages) <= 1:
@@ -1341,6 +1471,7 @@ async def _close_extension_startup_tabs(context) -> None:
                 await p.close()
         except Exception:
             pass
+    await _close_extra_blank_tabs(context)
 
 
 async def _bg_install_extensions_on_profiles(browser_only: bool = False) -> int:
@@ -1436,20 +1567,126 @@ async def _bg_vpn_warmup_ping() -> bool:
         return False
 
 
-async def _vpn_connect_on_use(context, profile_path: Path | str | None = None) -> bool:
+async def _vpn_connect_on_use(
+    context, profile_path: Path | str | None = None, *,
+    max_attempts: int = 3, quick: bool = False,
+) -> bool:
     """Включает VPN при использовании профиля (расширение уже в профиле или только что загружено)."""
     if not _vpn_extension_dir():
         return True
     await _close_junk_tabs(context)
-    wait = 4.0 if profile_path and _profile_has_vpn_extension(profile_path) else 6.0
+    wait = 3.0 if quick else (4.0 if profile_path and _profile_has_vpn_extension(profile_path) else 6.0)
     await asyncio.sleep(wait)
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         if attempt > 0:
-            print(f"  {Y}Повторная попытка подключить VPN ({attempt + 1}/3)…{RST}")
-            await _vpn_chrome_cooldown(extra=2.0)
-        if await _ensure_vpn_connected(context):
+            print(f"  {Y}Повторная попытка подключить VPN ({attempt + 1}/{max_attempts})…{RST}")
+            await _vpn_chrome_cooldown(extra=1.0 if quick else 2.0)
+        if await _ensure_vpn_connected(context, quick=quick):
+            eid = await _vpn_ext_id(context)
+            if eid:
+                await _close_vpn_extension_tabs(context, eid)
+            try:
+                wp = await _main_work_page(context)
+                await wp.bring_to_front()
+            except Exception:
+                pass
             return True
     return False
+
+
+async def _vpn_connect_for_profile(
+    context, profile_path: Path | str | None = None, *,
+    timeout: float = 120.0, max_attempts: int = 3, quick: bool = False,
+) -> bool:
+    """VPN → закрыть popup → рабочая вкладка (единый сценарий для всех потоков)."""
+    if not _vpn_extension_dir():
+        return True
+    await _close_junk_tabs(context)
+    wait = 2.5 if quick else (3.5 if profile_path and _profile_has_vpn_extension(profile_path) else 5.0)
+    await asyncio.sleep(wait)
+    deadline = time.monotonic() + timeout
+    connected = False
+    for attempt in range(max_attempts):
+        if time.monotonic() >= deadline:
+            break
+        if attempt > 0:
+            print(f"  {Y}Повторная попытка подключить VPN ({attempt + 1}/{max_attempts})…{RST}")
+            await _vpn_chrome_cooldown(extra=1.0 if quick else 2.0)
+        if await _ensure_vpn_connected(context, quick=quick):
+            connected = True
+            break
+    if not connected:
+        print(f"  {Y}⚠ VPN: не подключился за {int(timeout)}s{RST}")
+        return False
+    eid = await _vpn_ext_id(context)
+    if eid:
+        await _close_vpn_extension_tabs(context, eid)
+        if not await _wait_vpn_proxy_ready(context, eid, timeout=8.0):
+            await _wait_vpn_proxy_ready(context, eid, timeout=15.0)
+    with contextlib.suppress(Exception):
+        wp = await _main_work_page(context)
+        await wp.bring_to_front()
+    return True
+
+
+async def _veepn_reconnect_india(context, profile_path=None) -> bool:
+    """Переподключить VeepN с сервером India (при timeout Flipkart)."""
+    if not _vpn_is_veepn():
+        return await _vpn_connect_for_profile(context, profile_path)
+    eid = await _vpn_ext_id(context)
+    if not eid:
+        return False
+    print(f"  {Y}⚠ Flipkart timeout — переключаю VPN на India…{RST}")
+    sw = await _wait_vpn_service_worker(context, eid, timeout=12.0)
+    _js = f"""async () => {{
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        const msg = async (type, data = {{}}) => {{
+            try {{ return await chrome.runtime.sendMessage({{ type, data }}); }}
+            catch (e) {{ return null; }}
+        }};
+        await msg('disconnect', {{}});
+        await sleep(1200);
+        await msg('update-locations-data', {{}});
+        await sleep(800);
+        {_veepn_india_pick_js()}
+        await sleep(600);
+        await msg('connect', {{}});
+        await sleep(4000);
+        const mode = await chrome.proxy.settings.get({{}});
+        const m = (mode?.value?.mode) || 'direct';
+        return m && m !== 'direct' && m !== 'system';
+    }}"""
+    if sw:
+        with contextlib.suppress(Exception):
+            ok = await sw.evaluate(_js)
+            if ok:
+                await _veepn_finalize_connected(context, eid, via="India")
+                return True
+    return await _ensure_veepn_connected(context, quick=False)
+
+
+def _is_flipkart_nav_error(err: str) -> bool:
+    u = (err or "").upper()
+    return any(x in u for x in (
+        "TIMEOUT", "TIMED_OUT", "CONNECTION", "ERR_", "NET::",
+        "ACCESS DENIED", "REFUSED",
+    ))
+
+
+async def _navigate_flipkart_resilient(
+    context, page, url: str, *, label: str = "", profile_path=None,
+) -> tuple[bool, object, str]:
+    """Flipkart с retry: при сетевой ошибке — VPN India и повтор."""
+    ok, err = await _force_navigate_flipkart(page, url, label=label)
+    if ok:
+        return True, page, ""
+    if _vpn_extension_dir() and _is_flipkart_nav_error(err):
+        if await _veepn_reconnect_india(context, profile_path):
+            page = await _main_work_page(context)
+            ok, err = await _force_navigate_flipkart(page, url, label=label)
+            if ok:
+                return True, page, ""
+    return False, page, err
 
 
 async def _vpn_ext_id(context) -> str | None:
@@ -1522,6 +1759,41 @@ def _veepn_prep_storage_js() -> str:
     }"""
 
 
+async def _veepn_popup_shows_connected(page) -> bool:
+    """VeepN popup: «Подключено 00:03:28» / Connected + таймер или IP сервера."""
+    try:
+        return bool(await page.evaluate("""() => {
+            const body = (document.body?.innerText || '');
+            const low = body.toLowerCase();
+            const hasTimer = /\\d{1,2}:\\d{2}(:\\d{2})?/.test(body);
+            const hasStatus = /подключен|connected|protected|защищ|you are protected/i.test(low);
+            const hasLocation = /amsterdam|netherlands|nether|нидер|india|mumbai|delhi|bangalore|chennai|локац|location|server|сервер|ip:\\s*\\d/i.test(body);
+            if (hasStatus && (hasTimer || hasLocation)) return true;
+            if (hasTimer && hasLocation) return true;
+            const btn = document.querySelector('button[class*="connect"], [class*="power"], [class*="toggle"]');
+            if (btn) {
+                const cls = (btn.className || '').toLowerCase();
+                const aria = (btn.getAttribute('aria-pressed') || btn.getAttribute('aria-checked') || '').toLowerCase();
+                if ((cls.includes('connected') || cls.includes('active') || aria === 'true') && hasTimer) return true;
+            }
+            return false;
+        }"""))
+    except Exception:
+        return False
+
+
+async def _veepn_finalize_connected(context, eid: str, *, via: str = "popup") -> None:
+    """VPN включён — закрыть popup/расширение и оставить рабочую вкладку для Flipkart."""
+    await _veepn_set_autoconnect(context, eid)
+    await _dismiss_all_veepn_welcome(context)
+    await _close_vpn_extension_tabs(context, eid)
+    with contextlib.suppress(Exception):
+        wp = await _main_work_page(context)
+        await _close_extra_blank_tabs(context, keep=wp)
+        await wp.bring_to_front()
+    print(f"  {G}✔ VeepN подключён ({via}){RST}")
+
+
 async def _veepn_dismiss_onboarding(page) -> None:
     """Закрыть welcome/onboarding VeepN («Продолжить») автоматически."""
     _js = """async () => {
@@ -1535,7 +1807,9 @@ async def _veepn_dismiss_onboarding(page) -> None:
                       'продолжить →', 'weiter', 'continuer'];
         const isWelcome = () => {
             const b = (document.body?.innerText || '').toLowerCase();
-            return b.includes('добро пожаловать') || b.includes('welcome to')
+            const t = (document.title || '').toLowerCase();
+            return b.includes('thank you for installing') || t.includes('thank you for installing')
+                || b.includes('добро пожаловать') || b.includes('welcome to')
                 || b.includes('welcome to veepn') || b.includes('что вы получите');
         };
         for (let round = 0; round < 5; round++) {
@@ -1543,7 +1817,9 @@ async def _veepn_dismiss_onboarding(page) -> None:
             for (const el of document.querySelectorAll(
                 'button, a, .base-button, [role="button"]')) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                if (!want.some(w => t === w || t.startsWith(w))) continue;
+                if (!['продолжить','continue','continue limited','continue without',
+                      'продолжить →','weiter','continuer','get started','start','ok',
+                      'got it','начать'].some(w => t === w || t.startsWith(w))) continue;
                 const r = el.getBoundingClientRect();
                 if (r.width < 30 || el.offsetParent === null) continue;
                 el.click();
@@ -1560,6 +1836,7 @@ async def _veepn_dismiss_onboarding(page) -> None:
         pass
     for _label in (
         "Продолжить", "Continue", "Continue limited", "Continue without a plan",
+        "Get started", "Get Started", "Start", "OK", "Got it",
     ):
         try:
             _loc = page.get_by_role("button", name=_label).first
@@ -1596,89 +1873,271 @@ async def _veepn_set_autoconnect(context, eid: str) -> None:
                 await page.close()
 
 
-async def _ensure_veepn_connected(context) -> bool:
-    """VeepN: включить Auto-Connect и подключиться через API расширения."""
+def _veepn_india_pick_js() -> str:
+    """JS-фрагмент: выбрать сервер India из storage/API VeepN."""
+    return """
+        const pickIndiaId = (node, depth = 0) => {
+            if (!node || depth > 14) return null;
+            if (typeof node === 'string') {
+                const s = node.toLowerCase();
+                if (s === 'in' || /india|mumbai|delhi|bangalore|chennai|kolkata|hyderabad/.test(s))
+                    return node;
+                return null;
+            }
+            if (Array.isArray(node)) {
+                for (const x of node) {
+                    const r = pickIndiaId(x, depth + 1);
+                    if (r) return r;
+                }
+                return null;
+            }
+            if (typeof node === 'object') {
+                const name = String(
+                    node.name || node.city || node.title || node.label || ''
+                ).toLowerCase();
+                const code = String(
+                    node.code || node.countryCode || node.country || ''
+                ).toUpperCase();
+                if (code === 'IN' || /india/.test(name)
+                    || /mumbai|delhi|bangalore|chennai|kolkata|hyderabad/.test(name)) {
+                    return node.id || node.uuid || node.locationId || null;
+                }
+                for (const v of Object.values(node)) {
+                    const r = pickIndiaId(v, depth + 1);
+                    if (r) return r;
+                }
+            }
+            return null;
+        };
+        let indiaId = null;
+        try {
+            const stored = await chrome.storage.local.get(null);
+            indiaId = pickIndiaId(stored);
+        } catch (e) {}
+        if (!indiaId) {
+            try {
+                const gl = await msg('get-locations', {});
+                indiaId = pickIndiaId(gl?.data ?? gl);
+            } catch (e) {}
+        }
+        await msg('set-active-location', indiaId || 'optimal');
+    """
+
+
+def _veepn_connect_js(*, loops: int = 14, sleep_ms: int = 2500) -> str:
+    india = _veepn_india_pick_js()
+    return f"""async () => {{
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+        const msg = async (type, data = {{}}) => {{
+            try {{ return await chrome.runtime.sendMessage({{ type, data }}); }}
+            catch (e) {{ return {{ success: false, error: String(e) }}; }}
+        }};
+        const proxyOk = async () => {{
+            const mode = await chrome.proxy.settings.get({{}});
+            const m = (mode?.value?.mode) || 'direct';
+            return m && m !== 'direct' && m !== 'system' && m !== 'auto_detect';
+        }};
+        await msg('close-onboarding', {{}});
+        let st = await msg('get-connection-state', {{}});
+        if (st?.data?.status === 'connected' || await proxyOk()) return {{ ok: true }};
+        await msg('update-locations-data', {{}});
+        await sleep({min(sleep_ms, 2500)});
+        {india}
+        await sleep(800);
+        for (let i = 0; i < {loops}; i++) {{
+            st = await msg('get-connection-state', {{}});
+            if (st?.data?.status === 'connected' || await proxyOk()) return {{ ok: true }};
+            await msg('connect', {{}});
+            await sleep({sleep_ms});
+            if (await proxyOk()) return {{ ok: true }};
+            st = await msg('get-connection-state', {{}});
+            if (st?.data?.status === 'connected') return {{ ok: true }};
+        }}
+        return {{ ok: false }};
+    }}"""
+
+
+def _is_extension_popup_url(url: str, eid: str) -> bool:
+    u = (url or "").lower()
+    prefix = f"chrome-extension://{eid.lower()}/"
+    if not u.startswith(prefix) or "chromewebdata" in u:
+        return False
+    if any(x in u for x in ("/welcome", "welcome/", "onboarding", "/install")):
+        return False
+    return "popup" in u or u.endswith("/popup.html")
+
+
+async def _open_extension_popup_page(context, eid: str, popup_paths: list[str]):
+    """Открывает popup расширения (CDP createTarget — надёжнее page.goto)."""
+    pop = None
+    prefix = f"chrome-extension://{eid}"
+    for p in list(context.pages):
+        try:
+            if _is_extension_popup_url(p.url or "", eid):
+                pop = p
+                break
+        except Exception:
+            pass
+
+    async def _open_via_cdp(url: str):
+        anchor = context.pages[0] if context.pages else await context.new_page()
+        cdp = await context.new_cdp_session(anchor)
+        try:
+            created = await cdp.send("Target.createTarget", {"url": url})
+            target_id = created.get("targetId")
+            if not target_id:
+                return None
+            for _ in range(40):
+                for pg in list(context.pages):
+                    try:
+                        if _is_extension_popup_url(pg.url or "", eid):
+                            return pg
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.25)
+        finally:
+            with contextlib.suppress(Exception):
+                await cdp.detach()
+        return None
+
+    if not pop:
+        for rel in popup_paths:
+            url = f"{prefix}/{rel.lstrip('/')}"
+            pop = await _open_via_cdp(url)
+            if pop:
+                break
+            page = await context.new_page()
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                if _is_extension_popup_url(page.url or "", eid):
+                    pop = page
+                    break
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await page.close()
+
+    if pop and not _is_extension_popup_url(pop.url or "", eid):
+        for rel in popup_paths:
+            with contextlib.suppress(Exception):
+                await pop.goto(
+                    f"{prefix}/{rel.lstrip('/')}",
+                    wait_until="domcontentloaded",
+                    timeout=15_000,
+                )
+                if _is_extension_popup_url(pop.url or "", eid):
+                    break
+
+    if pop:
+        with contextlib.suppress(Exception):
+            await pop.wait_for_load_state("domcontentloaded", timeout=12_000)
+    return pop
+
+
+async def _veepn_goto_popup(context, page, eid: str) -> bool:
+    """Открывает popup VeepN (legacy wrapper)."""
+    pop = await _open_extension_popup_page(
+        context, eid,
+        ["src/popup/popup.html", "popup.html"],
+    )
+    return pop is not None
+
+
+async def _ensure_veepn_connected(context, *, quick: bool = False) -> bool:
+    """VeepN: подключение через popup (CDP) с коротким fallback на SW."""
     eid = await _vpn_ext_id(context)
     if not eid:
         print(f"  {Y}⚠ VeepN: не найден ID расширения{RST}")
         return False
 
-    if await _vpn_is_proxy_active(context, eid):
-        print(f"  {G}✔ VeepN уже подключён{RST}")
+    prefix = f"chrome-extension://{eid}"
+
+    async def _connected(page=None) -> bool:
+        if page and await _veepn_popup_shows_connected(page):
+            return True
+        for p in list(context.pages):
+            u = p.url or ""
+            if u.startswith(prefix) and await _veepn_popup_shows_connected(p):
+                return True
+        return await _vpn_is_proxy_active(context, eid)
+
+    if await _connected():
+        await _veepn_finalize_connected(context, eid, via="уже")
         return True
 
     await _wake_vpn_extension(context, eid)
-    await asyncio.sleep(5.0)
+    await asyncio.sleep(1.5 if quick else 3.0)
     await _veepn_set_autoconnect(context, eid)
 
     _prep_js = _veepn_prep_storage_js()
-    _connect_js = """async () => {
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
-        const msg = async (type, data = {}) => {
-            try { return await chrome.runtime.sendMessage({ type, data }); }
-            catch (e) { return { success: false, error: String(e) }; }
-        };
-        const proxyOk = async () => {
-            const mode = await chrome.proxy.settings.get({});
-            const m = (mode?.value?.mode) || 'direct';
-            return m && m !== 'direct' && m !== 'system' && m !== 'auto_detect';
-        };
-        await msg('close-onboarding', {});
-        let st = await msg('get-connection-state', {});
-        if (st?.data?.status === 'connected' || await proxyOk()) return { ok: true };
-        await msg('update-locations-data', {});
-        await sleep(2500);
-        await msg('set-active-location', 'optimal');
-        await sleep(800);
-        for (let i = 0; i < 14; i++) {
-            st = await msg('get-connection-state', {});
-            if (st?.data?.status === 'connected' || await proxyOk()) return { ok: true };
-            await msg('connect', {});
-            await sleep(2500);
-            if (await proxyOk()) return { ok: true };
-            st = await msg('get-connection-state', {});
-            if (st?.data?.status === 'connected') return { ok: true };
-        }
-        return { ok: false };
-    }"""
+    _popup_connect = _veepn_connect_js(loops=6 if quick else 10, sleep_ms=1200 if quick else 1500)
+    _sw_connect = _veepn_connect_js(loops=4 if quick else 6, sleep_ms=1200)
+
+    sw = await _wait_vpn_service_worker(context, eid, timeout=12.0 if quick else 18.0)
+    if sw:
+        with contextlib.suppress(Exception):
+            await sw.evaluate(_prep_js)
 
     page = None
     try:
-        page = await context.new_page()
-        await page.goto(
-            f"chrome-extension://{eid}/src/popup/popup.html",
-            wait_until="domcontentloaded", timeout=20_000,
+        page = await _open_extension_popup_page(
+            context, eid, ["src/popup/popup.html", "popup.html"],
         )
-        await page.wait_for_timeout(2_500)
-        sw = await _wait_vpn_service_worker(context, eid, timeout=6.0)
-        if sw:
-            with contextlib.suppress(Exception):
-                await sw.evaluate(_prep_js)
-        await _veepn_dismiss_onboarding(page)
-        await page.wait_for_timeout(1_000)
-        result = await page.evaluate(_connect_js)
-        if result and result.get("ok"):
-            await _veepn_set_autoconnect(context, eid)
-            await _close_vpn_extension_tabs(context, eid)
-            print(f"  {G}✔ VeepN подключён (Auto-Connect включён){RST}")
-            return True
+        if page:
+            await page.wait_for_timeout(800)
+            if await _connected(page):
+                await _veepn_finalize_connected(context, eid, via="popup")
+                page = None
+                return True
+            await _veepn_dismiss_onboarding(page)
+            await page.wait_for_timeout(500)
+            if await _connected(page):
+                await _veepn_finalize_connected(context, eid, via="popup")
+                page = None
+                return True
+            result = await page.evaluate(_popup_connect)
+            if not (result and result.get("ok")) and not await _connected(page):
+                with contextlib.suppress(Exception):
+                    await page.evaluate("""async () => {
+                        const sleep = ms => new Promise(r => setTimeout(r, ms));
+                        const tryClick = () => {
+                            for (const el of document.querySelectorAll('button,[role=button],a')) {
+                                const t = (el.innerText || el.textContent || '').toLowerCase();
+                                if (/connect|quick|protect|подключ|защит/.test(t)) {
+                                    el.click(); return true;
+                                }
+                            }
+                            return false;
+                        };
+                        tryClick();
+                        await sleep(1500);
+                        tryClick();
+                    }""")
+            for _ in range(10 if quick else 15):
+                if await _connected(page):
+                    await _veepn_finalize_connected(context, eid, via="popup")
+                    page = None
+                    return True
+                await asyncio.sleep(0.8)
+        else:
+            print(f"  {DIM}VeepN: popup через CDP недоступен — пробую SW{RST}")
     except Exception as exc:
-        print(f"  {Y}⚠ VeepN: {str(exc)[:80]}{RST}")
+        print(f"  {Y}⚠ VeepN popup: {str(exc)[:80]}{RST}")
     finally:
         if page:
             with contextlib.suppress(Exception):
                 await page.close()
 
-    sw = await _wait_vpn_service_worker(context, eid, timeout=8.0)
+    sw = sw or await _wait_vpn_service_worker(context, eid, timeout=8.0)
     if sw:
         try:
-            result = await sw.evaluate(_connect_js)
-            if result and result.get("ok"):
-                await _veepn_set_autoconnect(context, eid)
-                print(f"  {G}✔ VeepN подключён (Auto-Connect включён){RST}")
+            await sw.evaluate(_prep_js)
+            result = await sw.evaluate(_sw_connect)
+            if (result and result.get("ok")) or await _connected():
+                await _veepn_finalize_connected(context, eid, via="service worker")
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"  {DIM}VeepN SW: {str(exc)[:70]}{RST}")
+
     return False
 
 
@@ -2130,14 +2589,110 @@ async def _close_junk_tabs(context) -> None:
             pass
 
 
+def _is_blank_tab_url(url: str) -> bool:
+    u = (url or "").lower().strip()
+    return u in ("", "about:blank", "chrome://newtab/")
+
+
+async def _close_extra_blank_tabs(context, keep=None) -> None:
+    """Закрывает лишние about:blank / new tab (оставляет одну вкладку keep)."""
+    blanks = [p for p in context.pages if _is_blank_tab_url(p.url or "")]
+    if len(blanks) <= 1:
+        return
+    keeper = keep if keep in blanks else blanks[0]
+    for p in blanks:
+        if p is keeper:
+            continue
+        if len(context.pages) <= 1:
+            break
+        with contextlib.suppress(Exception):
+            await p.close()
+
+
+async def _keep_only_flipkart_tabs(context, prefer_page=None):
+    """Закрывает about:blank, extension и прочее — только flipkart.com."""
+    flipkart_pages = [
+        p for p in context.pages if "flipkart.com" in (p.url or "").lower()
+    ]
+    if not flipkart_pages:
+        return prefer_page
+    keeper = prefer_page if prefer_page in flipkart_pages else flipkart_pages[0]
+    for p in list(context.pages):
+        if p is keeper:
+            continue
+        with contextlib.suppress(Exception):
+            await p.close()
+    with contextlib.suppress(Exception):
+        await keeper.bring_to_front()
+    return keeper
+
+
+def _is_extension_tab_url(url: str) -> bool:
+    u = (url or "").lower()
+    return u.startswith("chrome-extension://") or _is_vpn_junk_url(u)
+
+
+async def _dismiss_all_veepn_welcome(context) -> None:
+    """Закрывает onboarding VeepN («Thank you for installing» и welcome)."""
+    for p in list(context.pages):
+        try:
+            u = (p.url or "").lower()
+            title = ""
+            try:
+                title = (await p.title() or "").lower()
+            except Exception:
+                pass
+            if (
+                u.startswith("chrome-extension://")
+                or "veepn" in title
+                or "installing" in title
+                or "thank you" in title
+            ):
+                await _veepn_dismiss_onboarding(p)
+        except Exception:
+            pass
+
+
+async def _ensure_single_work_page(context):
+    """Одна рабочая вкладка без мусора extension/about:blank."""
+    keeper = None
+    for p in context.pages:
+        if "flipkart.com" in (p.url or "").lower():
+            keeper = p
+            break
+    if not keeper:
+        for p in context.pages:
+            u = p.url or ""
+            if not _is_extension_tab_url(u) and not _is_blank_tab_url(u):
+                keeper = p
+                break
+    if not keeper:
+        for p in context.pages:
+            u = p.url or ""
+            if not _is_extension_tab_url(u):
+                keeper = p
+                break
+    if not keeper:
+        keeper = await context.new_page()
+    for p in list(context.pages):
+        if p is keeper:
+            continue
+        try:
+            await p.close()
+        except Exception:
+            pass
+    return keeper
+
+
 async def _main_work_page(context):
     """Рабочая вкладка: убрать vpnlyprotect, взять нормальную или создать новую."""
     await _close_junk_tabs(context)
     for p in context.pages:
         url = (p.url or "").lower()
         if not _is_vpn_junk_url(url) and not url.startswith("chrome-extension://"):
-            return p
-    return await context.new_page()
+            if not _is_blank_tab_url(url) or len(context.pages) == 1:
+                return p
+    return await _ensure_single_work_page(context)
 
 
 async def _vpn_chrome_cooldown(extra: float = 0.0) -> None:
@@ -2163,16 +2718,142 @@ async def _require_vpn_connected(context) -> bool:
 
 async def _verify_flipkart_reachable(page, url: str = "https://www.flipkart.com/account/login?ret=/") -> bool:
     """Проверяет, что Flipkart открывается без Access Denied в текущем браузере."""
+    ok, _ = await _open_flipkart_page(page.context, url)
+    return ok
+
+
+async def _cdp_navigate(page, url: str, *, timeout: float = 90.0) -> tuple[bool, str]:
+    """Навигация через CDP — надёжнее при активном VPN-proxy."""
     try:
-        r = await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-        body = (await page.evaluate(
-            "() => document.body ? document.body.innerText.slice(0, 300) : ''"
-        )).lower()
-        if "access denied" in body or "permission to access" in body:
-            return False
-        return bool(r) and r.status < 400
+        cdp = await page.context.new_cdp_session(page)
+    except Exception as exc:
+        return False, f"CDP: {exc}"[:120]
+    try:
+        with contextlib.suppress(Exception):
+            await cdp.send("Page.enable")
+        result = await cdp.send("Page.navigate", {"url": url})
+        err = (result or {}).get("errorText") or ""
+        if err:
+            return False, err[:120]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            cur = (page.url or "").lower()
+            if "flipkart.com" in cur:
+                return True, ""
+            await asyncio.sleep(0.35)
+        return False, f"CDP timeout · {(page.url or '')[:60]}"
+    except Exception as exc:
+        return False, str(exc)[:120]
+    finally:
+        with contextlib.suppress(Exception):
+            await cdp.detach()
+
+
+async def _force_navigate_flipkart(page, url: str, *, label: str = "") -> tuple[bool, str]:
+    """Принудительно открывает Flipkart (CDP + goto + JS fallback)."""
+    try:
+        if page.is_closed():
+            return False, "вкладка закрыта"
     except Exception:
-        return False
+        return False, "вкладка недоступна"
+
+    targets: list[str] = []
+    for t in (
+        url,
+        "https://www.flipkart.com/flipkart-black-store",
+        "https://www.flipkart.com/",
+    ):
+        if t and t not in targets:
+            targets.append(t)
+
+    last_err = ""
+    for target in targets:
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(2.0)
+
+            print(f"  {DIM}→ {target[:88]}{'…' if len(target) > 88 else ''}{RST}")
+
+            ok, err = await _cdp_navigate(page, target, timeout=45.0)
+            if ok:
+                with contextlib.suppress(Exception):
+                    await page.bring_to_front()
+                return True, ""
+            if err:
+                last_err = err
+
+            for wait_until in ("domcontentloaded", "commit"):
+                try:
+                    await page.goto(target, wait_until=wait_until, timeout=90_000)
+                    await asyncio.sleep(1.5)
+                    cur = (page.url or "").lower()
+                    if "flipkart.com" not in cur:
+                        last_err = f"остался на {(page.url or '')[:70]}"
+                        continue
+                    body = ""
+                    try:
+                        body = (await page.evaluate(
+                            "() => (document.body?.innerText || '').slice(0, 300)"
+                        )).lower()
+                    except Exception:
+                        pass
+                    if "access denied" in body or "permission to access" in body:
+                        last_err = "Access Denied (VPN / индийский IP)"
+                        continue
+                    with contextlib.suppress(Exception):
+                        await page.bring_to_front()
+                    return True, ""
+                except Exception as exc:
+                    last_err = str(exc)[:150]
+
+            try:
+                await page.evaluate("(u) => { window.location.assign(u); }", target)
+                await page.wait_for_timeout(5_000)
+                if "flipkart.com" in (page.url or "").lower():
+                    with contextlib.suppress(Exception):
+                        await page.bring_to_front()
+                    return True, ""
+            except Exception as exc:
+                last_err = str(exc)[:150]
+
+            try:
+                safe = target.replace("'", "%27")
+                await page.set_content(
+                    f"<!DOCTYPE html><html><head>"
+                    f'<meta http-equiv="refresh" content="0;url={safe}">'
+                    f"</head><body><p>Opening Flipkart…</p></body></html>",
+                    wait_until="domcontentloaded",
+                    timeout=15_000,
+                )
+                await page.wait_for_timeout(4_000)
+                if "flipkart.com" in (page.url or "").lower():
+                    with contextlib.suppress(Exception):
+                        await page.bring_to_front()
+                    return True, ""
+            except Exception as exc:
+                last_err = str(exc)[:150]
+
+    suffix = f" (+91 {label})" if label else ""
+    print(f"  {Y}⚠ Flipkart не открылся{suffix}: {last_err}{RST}")
+    return False, last_err
+
+
+async def _open_flipkart_page(
+    ctx, url: str, *, label: str = "", work_page=None,
+) -> tuple[bool, object]:
+    """Открывает Flipkart на рабочей вкладке (после VPN)."""
+    await asyncio.sleep(2.0)
+    await _dismiss_all_veepn_welcome(ctx)
+    eid = await _vpn_ext_id(ctx)
+    await _close_vpn_extension_tabs(ctx, eid)
+    page = work_page or await _ensure_single_work_page(ctx)
+    with contextlib.suppress(Exception):
+        await _maximize_window(ctx, page)
+        await page.bring_to_front()
+    ok, _ = await _force_navigate_flipkart(page, url, label=label)
+    if ok:
+        page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
+    return ok, page
 
 
 async def _wait_vpn_service_worker(context, eid: str, timeout: float = 18.0):
@@ -2201,16 +2882,46 @@ async def _wait_vpn_service_worker(context, eid: str, timeout: float = 18.0):
     return None
 
 
+async def _wait_vpn_proxy_ready(
+    context, eid: str | None = None, *, timeout: float = 30.0,
+) -> bool:
+    """Ждёт, пока VeepN/VPNLY реально включит proxy (не только UI «connected»)."""
+    if not _vpn_extension_dir():
+        return True
+    if not eid:
+        eid = await _vpn_ext_id(context)
+    if not eid:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await _vpn_is_proxy_active(context, eid):
+            await asyncio.sleep(2.5)
+            return True
+        await asyncio.sleep(1.0)
+    return False
+
+
 async def _wake_vpn_extension(context, eid: str) -> None:
-    """Будит MV3 service worker расширения (about:blank + короткая пауза)."""
-    page = context.pages[0] if context.pages else await context.new_page()
+    """Будит MV3 service worker расширения (временная вкладка, не рабочая)."""
+    page = None
+    owned = False
     try:
+        for p in context.pages:
+            if _is_extension_tab_url(p.url or ""):
+                page = p
+                break
+        if not page:
+            page = await context.new_page()
+            owned = True
         if not (page.url or "").startswith("http"):
-            await page.goto("about:blank", wait_until="domcontentloaded", timeout=8_000)
-    except Exception:
-        pass
-    await _wait_vpn_service_worker(context, eid, timeout=6.0)
-    await asyncio.sleep(0.8)
+            with contextlib.suppress(Exception):
+                await page.goto("about:blank", wait_until="domcontentloaded", timeout=8_000)
+        await _wait_vpn_service_worker(context, eid, timeout=6.0)
+        await asyncio.sleep(0.8)
+    finally:
+        if owned and page:
+            with contextlib.suppress(Exception):
+                await page.close()
 
 
 async def _vpn_proxy_mode(context, eid: str) -> str | None:
@@ -2377,12 +3088,12 @@ async def _open_vpn_popup_page(context, eid: str):
     return pop
 
 
-async def _ensure_vpn_connected(context) -> bool:
+async def _ensure_vpn_connected(context, *, quick: bool = False) -> bool:
     """Подключение VPN: VeepN (по умолчанию) или VPNLY."""
     if not _vpn_extension_dir():
         return False
     if _vpn_is_veepn():
-        return await _ensure_veepn_connected(context)
+        return await _ensure_veepn_connected(context, quick=quick)
     return await _ensure_vpnly_connected(context)
 
 
@@ -2591,8 +3302,8 @@ def _browser_launch_kw(headless: bool = False, use_bundled_chromium: bool = Fals
         "extra_http_headers": {"Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7"},
         "ignore_https_errors": True,
     }
-    # ── VPN-расширение: только Playwright Chromium + --load-extension
-    # (Google Chrome 137+ блокирует --load-extension в branded builds).
+    # ── VPN: Playwright Chromium + --load-extension (VeepN API не работает в Google Chrome automation).
+    use_bundled_chromium = False
     try:
         _ext_dir = _vpn_extension_dir()
         if _ext_dir:
@@ -2919,6 +3630,7 @@ def _save_meta_field(profile_path: Path, **fields) -> bool:
             pass
         data.update(fields)
         _atomic_write_text(meta_file, json.dumps(data, ensure_ascii=False, indent=2))
+        _invalidate_done_profiles_cache()
         return True
     except Exception as exc:
         print(f"\n  {R}Ошибка записи метаданных: {exc}{RST}")
@@ -3045,6 +3757,7 @@ def _archive_profile(profile_path: Path, **extra_fields) -> bool:
     if Path(str(profile_path)).exists():
         print(f"\n  {R}Папка не удалена даже после завершения Chrome.{RST}")
         return False
+    _invalidate_done_profiles_cache()
     return True
 
 
@@ -3063,11 +3776,11 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
     ctx = None
     try:
         if _vpn_extension_dir():
-            ok, err = await _prepare_profile_vpn(profile_path, label=username)
-            if not ok:
+            if not await _ensure_extension_in_profile(profile_path):
                 result["status"] = "vpn_failed"
-                result["error"] = err
+                result["error"] = "VPN-расширение не установлено"
                 return result
+            await _vpn_chrome_cooldown(extra=0.5)
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
@@ -4529,9 +5242,9 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
     from playwright.async_api import async_playwright as _apw
     try:
         if _vpn_extension_dir():
-            ok, _ = await _prepare_profile_vpn(profile_path)
-            if not ok:
+            if not await _ensure_extension_in_profile(profile_path):
                 return False
+            await _vpn_chrome_cooldown(extra=0.5)
         async with _apw() as _pw2:
             _ctx2 = await _pw2.chromium.launch_persistent_context(
                 str(profile_path),
@@ -4540,6 +5253,8 @@ async def _flipkart_is_logged_in(profile_path: Path) -> bool:
                 ignore_https_errors=True,
             )
             _pg2 = _ctx2.pages[0] if _ctx2.pages else await _ctx2.new_page()
+            if _vpn_extension_dir() and not await _vpn_connect_on_use(_ctx2, profile_path):
+                return False
             try:
                 await _pg2.goto("https://www.flipkart.com",
                                 timeout=20_000, wait_until="domcontentloaded")
@@ -4668,9 +5383,9 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                            stop_at_payment: bool = False) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
     if _vpn_extension_dir():
-        ok, err = await _prepare_profile_vpn(profile_path)
-        if not ok:
-            return False, err
+        if not await _ensure_extension_in_profile(profile_path):
+            return False, "VPN-расширение не установлено в профиль"
+        await _vpn_chrome_cooldown(extra=1.0)
     else:
         print(f"  {DIM}Проверка доступности Flipkart...{RST}")
         if not await _check_flipkart_accessible():
@@ -4697,35 +5412,45 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             str(profile_path.resolve()),
             **_browser_launch_kw(phone=_phone_from_path(profile_path),
                                  profile_path=profile_path))
-        _stealth2 = _build_stealth_js_m()
-        if _stealth2:
-            await ctx.add_init_script(_stealth2)
+        await _close_extension_startup_tabs(ctx)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = await _main_work_page(ctx)
         await _maximize_window(ctx, page)
-        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
-            return False, "VPN не подключился — заполнение адреса отменено"
+        if _vpn_extension_dir():
+            if not await _vpn_connect_for_profile(ctx, profile_path):
+                return False, "VPN не подключился — заполнение адреса отменено"
+            page = await _main_work_page(ctx)
+            with contextlib.suppress(Exception):
+                await page.bring_to_front()
+        _stealth2 = _build_stealth_js_m()
+        if _stealth2:
+            await ctx.add_init_script(_stealth2)
 
-        # Начальная навигация с одним ретраем — бывает разовый таймаут загрузки
-        _nav_ok = False
-        for _nav_try in range(2):
-            try:
-                await page.goto("https://www.flipkart.com",
-                                wait_until="domcontentloaded", timeout=25_000)
-                _nav_ok = True
-                break
-            except Exception as _nav_e:
-                if _nav_try == 0:
-                    print(f"  {Y}⚠ Главная не загрузилась ({_nav_e}) — повтор...{RST}")
-                    await page.wait_for_timeout(2_000)
-                else:
-                    return False, f"Не удалось открыть Flipkart (таймаут навигации): {_nav_e}"
-        # Повторяем grant ПОСЛЕ навигации — в persistent context важен порядок
+        _phone_label = _phone_from_path(profile_path)
+
+        if not ctx.pages:
+            page = await ctx.new_page()
+
+        async def _open_home() -> tuple[bool, str]:
+            nonlocal page
+            ok, pg, err = await _navigate_flipkart_resilient(
+                ctx, page, "https://www.flipkart.com",
+                label=_phone_label, profile_path=profile_path,
+            )
+            page = pg
+            return ok, err
+
+        ok_nav, _nav_err = await _open_home()
+        if not ok_nav:
+            page = await _main_work_page(ctx)
+            ok_nav, _nav_err = await _open_home()
+        if not ok_nav:
+            return False, f"Не удалось открыть Flipkart после VPN: {_nav_err}"
+        page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
-        await page.wait_for_timeout(2_000)
+        await page.wait_for_timeout(1_500)
 
         # Проверяем — нет ли уже купленного Black Membership
-        _phone_label = _phone_from_path(profile_path)
         _recent_orders = await _check_recent_black_orders(page)
         if _recent_orders:
             _order_info = "; ".join(_recent_orders[:3])
@@ -4775,8 +5500,19 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                                 wait_until="domcontentloaded", timeout=15_000)
                 await page.wait_for_timeout(1_000)
 
+        product_url = _profile_url(profile_path)
+        if await _page_logged_out(page):
+            return False, _NOT_LOGGED_IN_MSG
+        ok_prod, _prod_err = await _force_navigate_flipkart(
+            page, product_url, label=_phone_label,
+        )
+        if not ok_prod:
+            return False, f"Не открылась страница товара: {_prod_err}"
+        if await _page_logged_out(page):
+            return False, _NOT_LOGGED_IN_MSG
+
         # Buy Now создаёт реальную сессию чекаута (прямой URL формы не работает)
-        err = await _click_buy_now(page, _BLACK_URLS[3])
+        err = await _click_buy_now(page, product_url, skip_goto=True)
         if err:
             return False, err
 
@@ -4916,6 +5652,11 @@ async def _do_fill_address(profile_path: Path, addr: dict,
 
         if stop_at_payment:
             import time as _t_sap
+            with contextlib.suppress(Exception):
+                page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
+                await _maximize_window(ctx, page)
+                await page.bring_to_front()
+            print(f"  {G}✔ Страница оплаты (+91 {_phone_label}){RST}")
             _save_meta_field(
                 profile_path,
                 prepared_ts=_t_sap.time(),
@@ -8099,9 +8840,9 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
     ctx = None
     try:
         if _vpn_extension_dir():
-            ok, err = await _prepare_profile_vpn(profile_path, label=phone_digits)
-            if not ok:
-                return False, err
+            if not await _ensure_extension_in_profile(profile_path):
+                return False, "VPN-расширение не установлено в профиль"
+            await _vpn_chrome_cooldown(extra=0.5)
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
@@ -9733,29 +10474,57 @@ async def _navigate_search_buy(page, months: int) -> str | None:
 
 
 async def _check_flipkart_accessible() -> bool:
-    """Фон: расширение + VPN + доступность Flipkart для тестового профиля."""
-    if _vpn_extension_dir():
+    """Проверка VPN + Flipkart на отдельном ping-профиле (не трогает рабочие профили)."""
+    if not _vpn_extension_dir():
         try:
-            _VPN_PING_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            with_ext = [p for p in _iter_profile_dirs() if _profile_has_vpn_extension(p)]
-            profile = with_ext[0] if with_ext else _VPN_PING_PROFILE_DIR
-            ok, _ = await _prepare_profile_vpn(profile)
-            return ok
+            _rd, _wr = await asyncio.wait_for(
+                asyncio.open_connection("www.flipkart.com", 443),
+                timeout=10.0,
+            )
+            _wr.close()
+            try:
+                await _wr.wait_closed()
+            except Exception:
+                pass
+            return True
         except Exception:
-            pass
+            return False
+
+    profile = _VPN_PING_PROFILE_DIR
+    profile.mkdir(parents=True, exist_ok=True)
+    if not _profile_has_vpn_extension(profile):
+        _install_extension_filesystem(profile)
+
+    from playwright.async_api import async_playwright
+    pw = None
+    ctx = None
     try:
-        _rd, _wr = await asyncio.wait_for(
-            asyncio.open_connection("www.flipkart.com", 443),
-            timeout=10.0,
+        await _vpn_chrome_cooldown(extra=0.5)
+        pw = await async_playwright().start()
+        _pre_inject_chrome_prefs(profile)
+        kw = _browser_launch_kw(
+            headless=True, profile_path=profile, background_install=True,
         )
-        _wr.close()
-        try:
-            await _wr.wait_closed()
-        except Exception:
-            pass
-        return True
+        kw["args"] = _hidden_chrome_args(kw.get("args", []))
+        ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
+        await _close_extension_startup_tabs(ctx)
+        if not await _vpn_connect_on_use(ctx, profile):
+            return False
+        page = await _main_work_page(ctx)
+        return await _verify_flipkart_reachable(page)
     except Exception:
         return False
+    finally:
+        if ctx:
+            try:
+                await ctx.close()
+            finally:
+                _note_chromium_closed()
+        if pw:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
 
 
 def _is_flipkart_accessible_sync() -> bool:
@@ -9771,10 +10540,9 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
     """Buy Now → адрес (если нужен) → viewcheckout → Continue → оплата."""
     if not _skip_ping:
         if _vpn_extension_dir():
-            ok, err = await _prepare_profile_vpn(profile_path)
-            if not ok:
-                print(f"\n  {R}⚠ {err}{RST}")
-                return False, err
+            if not await _ensure_extension_in_profile(profile_path):
+                return False, "VPN-расширение не установлено в профиль"
+            await _vpn_chrome_cooldown(extra=1.0)
         else:
             print(f"  {DIM}Проверка доступности Flipkart...{RST}")
             if not await _check_flipkart_accessible():
@@ -9801,14 +10569,22 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             str(profile_path.resolve()),
             **_browser_launch_kw(phone=_phone_from_path(profile_path),
                                  profile_path=profile_path))
+        await _close_extension_startup_tabs(ctx)
+        await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
+        page = await _main_work_page(ctx)
+        await _maximize_window(ctx, page)
+        if _vpn_extension_dir():
+            if not await _vpn_connect_for_profile(ctx, profile_path):
+                return False, "VPN не подключился — покупка отменена (Flipkart недоступен без VPN)"
+            fk_url = _profile_url(profile_path)
+            ok, page = await _open_flipkart_page(
+                ctx, fk_url, label=_phone_from_path(profile_path),
+            )
+            if not ok:
+                return False, "Flipkart недоступен после VPN — покупка отменена"
         _stealth = _build_stealth_js_m()
         if _stealth:
             await ctx.add_init_script(_stealth)
-        await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await _maximize_window(ctx, page)
-        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
-            return False, "VPN не подключился — покупка отменена (Flipkart недоступен без VPN)"
 
         # Проверяем — нет ли уже купленного Black Membership
         _bm_phone_label = _phone_from_path(profile_path)
@@ -10680,7 +11456,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             _sd = _jc.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
             _ss = _sd.get("settings", {})
             _nc = [int(c) for c in _sd.get("chats", [])
-                   if _ss.get(str(c), {}).get("buy_number", True)]
+                   if _ss.get(str(c), {}).get("buy_number", False)]
             if not _nc:
                 return
             try:
@@ -10745,7 +11521,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             _sd = _jlo.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
             _ss = _sd.get("settings", {})
             _nc = [int(c) for c in _sd.get("chats", [])
-                   if _ss.get(str(c), {}).get("buy_number", True)]
+                   if _ss.get(str(c), {}).get("buy_number", False)]
             if not _nc:
                 return
             async with _hx_lo.AsyncClient(timeout=8, trust_env=False) as _client:
@@ -10771,7 +11547,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             _sd = _jb.loads(TG_SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
             _ss = _sd.get("settings", {})
             _nc = [int(c) for c in _sd.get("chats", [])
-                   if _ss.get(str(c), {}).get("buy_number", True)]
+                   if _ss.get(str(c), {}).get("buy_number", False)]
             if not _nc:
                 return
             async with _hx_b.AsyncClient(timeout=8, trust_env=False) as _client:
@@ -10825,6 +11601,8 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
             print(f"  {G}Flipkart доступен.{RST}")
 
         attempt = 0
+        _vpn_fail_streak = 0
+        _MAX_VPN_FAIL_STREAK = 5
         while True:
             attempt += 1
             pw           = await async_playwright().start()
@@ -10905,33 +11683,44 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 await _close_extension_startup_tabs(ctx)
                 _grizzly_module.update_rental_browser(phone_id, ctx=ctx)
 
-                stealth = _build_stealth_js_m()
-                if stealth:
-                    await ctx.add_init_script(stealth)
                 await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
                 page = await _main_work_page(ctx)
                 _grizzly_module.update_rental_browser(phone_id, page=page)
                 if not headless:
                     await _maximize_window(ctx, page)
                 if _vpn_extension_dir():
-                    if not await _vpn_connect_on_use(ctx, profile_path):
+                    if not await _vpn_connect_for_profile(ctx, profile_path):
                         print(f"  {R}VPN не подключился — вход отменён (Flipkart заблокирован без VPN){RST}")
+                        _vpn_fail_streak += 1
+                        if _vpn_fail_streak >= _MAX_VPN_FAIL_STREAK:
+                            return False, (
+                                f"VPN не подключается {_MAX_VPN_FAIL_STREAK} раз подряд — "
+                                "проверьте veepn_extension/ и интернет"
+                            )
                         _try_next = True
                         _grizzly_module.mark_failed(phone_id)
                         continue
-                    if not await _verify_flipkart_reachable(page, login_url):
+                    ok, page = await _open_flipkart_page(ctx, login_url, label=phone_10)
+                    if not ok:
                         print(f"  {R}Flipkart Access Denied — VPN не работает, вход отменён{RST}")
+                        _vpn_fail_streak += 1
+                        if _vpn_fail_streak >= _MAX_VPN_FAIL_STREAK:
+                            return False, (
+                                f"Flipkart недоступен {_MAX_VPN_FAIL_STREAK} раз подряд — "
+                                "проверьте VPN (индийский IP)"
+                            )
                         _try_next = True
                         _grizzly_module.mark_failed(phone_id)
                         continue
+                    _vpn_fail_streak = 0
+                    _grizzly_module.update_rental_browser(phone_id, page=page)
                     print(f"  {G}Flipkart доступен через VPN.{RST}")
                     await _close_vpn_extension_tabs(ctx, await _vpn_ext_id(ctx))
                     await _close_junk_tabs(ctx)
-                    try:
-                        await page.goto(login_url, wait_until="domcontentloaded", timeout=45_000)
-                    except Exception:
-                        pass
-                    await page.bring_to_front()
+
+                stealth = _build_stealth_js_m()
+                if stealth:
+                    await ctx.add_init_script(stealth)
 
                 def _on_new_page(p):
                     async def _check():
@@ -11029,11 +11818,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         _grizzly_module.update_rental_browser(nid, profile_path=n_profile_path)
 
                         if _vpn_extension_dir():
-                            ok, err = await _prepare_profile_vpn(n_profile_path, label=nph10)
-                            if not ok:
-                                print(f"  {R}VPN фон: {err}{RST}")
-                                _grizzly_module.mark_failed(nid)
-                                return
+                            if not _profile_has_vpn_extension(n_profile_path):
+                                _install_extension_filesystem(n_profile_path)
+                            await _vpn_chrome_cooldown(extra=1.0)
 
                         n_ctx = await pw.chromium.launch_persistent_context(
                             str(n_profile_path.resolve()),
@@ -11042,11 +11829,32 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         )
                         _grizzly_module.update_rental_browser(nid, ctx=n_ctx)
 
-                        if stealth:
-                            await n_ctx.add_init_script(stealth)
                         await n_ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
                         npage = n_ctx.pages[0] if n_ctx.pages else await n_ctx.new_page()
                         _grizzly_module.update_rental_browser(nid, page=npage)
+
+                        if _vpn_extension_dir():
+                            await _close_extension_startup_tabs(n_ctx)
+                            if not await _vpn_connect_for_profile(n_ctx, n_profile_path):
+                                print(f"  {R}VPN не подключился — номер #{n} отменён{RST}")
+                                _grizzly_module.mark_failed(nid)
+                                try:
+                                    await n_ctx.close()
+                                except Exception:
+                                    pass
+                                return
+                            ok, npage = await _open_flipkart_page(n_ctx, login_url, label=nph10)
+                            if not ok:
+                                print(f"  {R}Flipkart недоступен — номер #{n} отменён{RST}")
+                                _grizzly_module.mark_failed(nid)
+                                try:
+                                    await n_ctx.close()
+                                except Exception:
+                                    pass
+                                return
+                            _grizzly_module.update_rental_browser(nid, page=npage)
+                        if stealth:
+                            await n_ctx.add_init_script(stealth)
 
                         def _on_n_page(p):
                             async def _check():
@@ -13428,7 +14236,66 @@ if __name__ == "__main__":
     _exit_code[0] = 0
 
     try:
-        if "--full-cycle" in _cli or "--login-only" in _cli:
+        if "--fill-to-payment" in _cli:
+            _init_secrets()
+            _migrate_config()
+            _start_log_tee()
+
+            def _get_cli_fill(flag: str, default: str = "") -> str:
+                try:
+                    return _cli[_cli.index(flag) + 1]
+                except (ValueError, IndexError):
+                    return default
+
+            _phone_arg = _get_cli_fill("--phone", "").strip()
+            _profiles = _load_done_profiles(force=True)
+            if not _profiles:
+                print(f"{R}Нет профилей с входом.{RST}")
+                _exit_code[0] = 1
+            else:
+                _target = None
+                if _phone_arg:
+                    _digits = "".join(c for c in _phone_arg if c.isdigit())[-10:]
+                    for _p in _profiles:
+                        if _digits and _digits in str(_p.get("username", "")):
+                            _target = _p
+                            break
+                        if _digits and _digits in _p["path"].name:
+                            _target = _p
+                            break
+                    if not _target:
+                        print(f"{R}Профиль +91 {_digits} не найден.{RST}")
+                        _exit_code[0] = 1
+                        _target = None
+                else:
+                    for _p in _profiles:
+                        if _p.get("issued_ts") or _p.get("prepared_ts"):
+                            continue
+                        if _p.get("status") in ("activated", "explore_now", "activate_now"):
+                            continue
+                        if _p.get("login_ts"):
+                            _target = _p
+                            break
+                if _target is None and _exit_code[0] == 1:
+                    pass
+                elif not _target:
+                    _target = _profiles[0]
+                if _target:
+                    _path = Path(_target["path"])
+                    print(f"\n  {C}▶ До оплаты: {_target.get('username') or _path.name}{RST}\n")
+                    _addr = _gen_indian_address()
+                    async def _run_fill_to_pay():
+                        asyncio.get_running_loop().set_exception_handler(_quiet_exc_handler)
+                        return await _do_fill_address(_path, _addr, stop_at_payment=True)
+                    try:
+                        _ok, _msg = asyncio.run(_run_fill_to_pay())
+                        print(f"\n  {'✅' if _ok else '❌'} {_msg}\n")
+                        _exit_code[0] = 0 if _ok else 1
+                    except KeyboardInterrupt:
+                        print(f"\n{Y}  Остановлено.{RST}")
+                        _exit_code[0] = 130
+
+        elif "--full-cycle" in _cli or "--login-only" in _cli:
             _mode_lc   = "full" if "--full-cycle" in _cli else "login"
             _init_secrets()
             _migrate_config()

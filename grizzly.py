@@ -383,8 +383,10 @@ def _monitor_watchdog():
             pass
 
 def start_global_monitor():
-    """Запускает фоновый монитор при старте консоли — сканирует GrizzlySMS API
-    на наличие активных номеров даже если _RENTALS пуст."""
+    """Запускает фоновый монитор аренд. Пока номеров нет, цикл простаивает и
+    не обращается к API GrizzlySMS — опрос включается только когда автоматизация
+    арендует номер (register_rental). Забытые с прошлого запуска номера
+    отменяются один раз через startup_cleanup_active_rentals()."""
     _start_monitor_if_needed()
     import threading
     _wd = threading.Thread(target=_monitor_watchdog, daemon=True, name="grizzly-watchdog")
@@ -575,9 +577,12 @@ async def _rental_monitor_loop():
                 _mon_client = None
                 _mon_key = None
 
-            # 0. Каждые 10 сек сканируем GrizzlySMS API на активные номера,
-            #    которых нет в _RENTALS — подхватываем «чужие» и забытые.
-            if api_key and now - _api_scan_at >= 10.0:
+            # 0. Пока в этом процессе есть свои аренды (идёт автоматизация),
+            #    каждые 10 сек сканируем GrizzlySMS API на активные номера,
+            #    которых нет в _RENTALS — страховка от потерянной регистрации.
+            #    Без автоматизации API не опрашиваем: забытые с прошлого запуска
+            #    номера убирает разовый startup_cleanup_active_rentals().
+            if api_key and _RENTALS and now - _api_scan_at >= 10.0:
                 _api_scan_at = now
                 try:
                     _active_list = await _mon_client.get_active_activations()

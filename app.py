@@ -6,6 +6,7 @@ YouTube · GGSELL · DeepSeek · Kling AI
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import queue
@@ -24,7 +25,7 @@ os.chdir(_HERE)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-ctk.set_widget_scaling(1.18)
+ctk.set_widget_scaling(1.0)
 ctk.set_window_scaling(1.0)
 
 # ── Design system (Pinterest-inspired dark) ───────────────────────────────────
@@ -67,8 +68,8 @@ FONT_SECTION = 18
 FONT_BODY = 15
 FONT_CAPTION = 13
 FONT_SMALL = 12
-_SIDEBAR_LOG_LINES = 56
-_MAIN_LOG_LINES = 3000
+_SIDEBAR_LOG_LINES = 48
+_MAIN_LOG_LINES = 800
 
 SVC_YOUTUBE = "#ff0033"
 SVC_GGSELL = "#ff6a00"
@@ -413,6 +414,12 @@ class SubHubApp(ctk.CTk):
         self._ggs_templates_win = None
         self._profile_filter = "all"
         self._prof_busy: set[str] = set()
+        self._profiles_sig: tuple | None = None
+        self._profiles_filter_sig: str | None = None
+        self._refresh_jobs: dict[str, str | None] = {}
+        self._run_preset_key = "full"
+        self._run_log_active = False
+        self._vpn_last_check = ""
         self._notif_cards: list[ctk.CTkFrame] = []
         self._notif_unread = 0
 
@@ -707,6 +714,7 @@ class SubHubApp(ctk.CTk):
                 ("profiles", "👤  Профили"),
                 ("archive", "📦  Архив"),
                 ("vpn", "🔒  VPN"),
+                ("tools", "🛠  Инструменты"),
             ]
         elif service == "ggsell":
             items = [
@@ -907,6 +915,9 @@ class SubHubApp(ctk.CTk):
         return frame
 
     def show_page(self, name: str) -> None:
+        if name not in self._pages:
+            self._log(f"Неизвестная страница: {name}")
+            return
         youtube_pages = {"run", "profiles", "archive", "vpn", "tools", "youtube_hub"}
         home_pages = {"home", "cards"}
         if name in home_pages:
@@ -922,16 +933,12 @@ class SubHubApp(ctk.CTk):
         elif name in ("deepseek", "kling"):
             self._current_service = name
             self._render_sidebar(name)
-        elif name == "home":
-            self._current_service = None
-            self._render_sidebar(None)
 
         for f in self._pages.values():
             f.grid_forget()
         self._pages[name].grid(row=0, column=0, sticky="nsew")
         self._current_page = name
 
-        accent = SERVICE_META.get(self._current_service or "", {}).get("accent", ACCENT)
         for k, btn in self._nav_btns.items():
             active = k == name or (
                 k == "youtube_hub"
@@ -947,10 +954,13 @@ class SubHubApp(ctk.CTk):
             "home": lambda: (self._refresh_home_ggsell(), self._refresh_update_badge()),
             "youtube_hub": lambda: (self._refresh_youtube_hub(), self._refresh_update_badge()),
             "ggsell": self._refresh_ggsell,
+            "run": lambda: (self._refresh_run_page(), self._sync_run_page_status),
             "profiles": self._refresh_profiles,
             "cards": self._refresh_cards,
             "archive": self._refresh_archive,
             "vpn": self._refresh_vpn_page,
+            "tools": lambda: None,
+            "logs": lambda: None,
             "deepseek": self._refresh_deepseek,
             "settings": lambda: (
                 self._refresh_settings_keys(), self._refresh_update_badge(), self._sync_settings_switches(),
@@ -995,7 +1005,7 @@ class SubHubApp(ctk.CTk):
                 self._handle_ggs_notify(item)
         except Exception:
             pass
-        self.after(700, self._poll_ggs_notify)
+        self.after(1200, self._poll_ggs_notify)
 
     def _handle_ggs_notify(self, item: dict) -> None:
         kind = item.get("type") or ""
@@ -1313,15 +1323,19 @@ class SubHubApp(ctk.CTk):
         ])
 
     def _build_ggsell(self) -> None:
-        p = self._page("ggsell")
+        p = self._page_fill("ggsell")
+        p.grid_rowconfigure(3, weight=1)
+
+        hdr = ctk.CTkFrame(p, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew")
         self._page_header(
-            p, "GGSELL",
+            hdr, "GGSELL",
             "Заказы · мониторинг · доставка ссылок",
             SVC_GGSELL,
         )
 
         stats = ctk.CTkFrame(p, fg_color="transparent")
-        stats.pack(fill="x", pady=(0, _GAP_CARD))
+        stats.grid(row=1, column=0, sticky="ew", pady=(0, _GAP_CARD))
         stats.grid_columnconfigure((0, 1, 2, 3), weight=1)
         self.ggs_stat_orders = self._stat_box(
             stats, 0, "Выдано заказов", "—", SVC_GGSELL, sub="за всё время")
@@ -1332,7 +1346,10 @@ class SubHubApp(ctk.CTk):
         self.ggs_stat_api = self._stat_box(
             stats, 3, "API", "—", SVC_GGSELL, sub="ключи продавца")
 
-        actions = self._card(p, "Управление", accent=SVC_GGSELL)
+        actions_container = ctk.CTkFrame(p, fg_color="transparent")
+        actions_container.grid(row=2, column=0, sticky="ew", pady=(0, _GAP_CARD))
+        actions = self._card(actions_container, "Управление", accent=SVC_GGSELL)
+        actions.pack(fill="x")
         self._action_grid(actions, [
             ("🔄  Обновить", self._refresh_ggsell, SVC_GGSELL),
             ("🔑  API-ключи", self._open_secrets, BTN_SECONDARY),
@@ -1340,7 +1357,28 @@ class SubHubApp(ctk.CTk):
             ("📋  Шаблоны", self._open_ggsell_templates, BTN_SECONDARY),
         ])
 
-        orders_card = self._card(p, "Заказы", accent=SVC_GGSELL)
+        orders_wrap = ctk.CTkFrame(p, fg_color="transparent")
+        orders_wrap.grid(row=3, column=0, sticky="nsew")
+        orders_wrap.grid_rowconfigure(0, weight=1)
+        orders_wrap.grid_columnconfigure(0, weight=1)
+
+        orders_outer = ctk.CTkFrame(
+            orders_wrap, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+        )
+        orders_outer.grid(row=0, column=0, sticky="nsew")
+        orders_outer.grid_rowconfigure(3, weight=1)
+        orders_outer.grid_columnconfigure(0, weight=1)
+
+        orders_hdr = ctk.CTkFrame(orders_outer, fg_color="transparent")
+        orders_hdr.grid(row=0, column=0, sticky="ew", padx=_PAD_CARD, pady=(12, 4))
+        dot = ctk.CTkFrame(orders_hdr, width=8, height=8, corner_radius=4, fg_color=SVC_GGSELL)
+        dot.pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            orders_hdr, text="Заказы", font=_ui_font(FONT_SECTION, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(side="left")
+
+        orders_card = ctk.CTkFrame(orders_outer, fg_color="transparent")
+        orders_card.grid(row=1, column=0, sticky="ew", padx=_PAD_CARD)
         filt_row = ctk.CTkFrame(orders_card, fg_color="transparent")
         filt_row.pack(fill="x", pady=(0, 4))
         self._ggs_filter_btns: dict[str, ctk.CTkButton] = {}
@@ -1358,17 +1396,19 @@ class SubHubApp(ctk.CTk):
             self._ggs_filter_btns[key] = btn
 
         self.ggs_orders_status = ctk.CTkLabel(
-            orders_card, text="Загрузка…", text_color=TEXT_DIM, anchor="w",
+            orders_outer, text="Загрузка…", text_color=TEXT_DIM, anchor="w",
         )
-        self.ggs_orders_status.pack(fill="x", pady=(0, 6))
+        self.ggs_orders_status.grid(row=2, column=0, sticky="ew", padx=_PAD_CARD, pady=(0, 6))
 
-        body = ctk.CTkFrame(orders_card, fg_color="transparent")
-        body.pack(fill="both", expand=True)
+        body = ctk.CTkFrame(orders_outer, fg_color="transparent")
+        body.grid(row=3, column=0, sticky="nsew", padx=_PAD_CARD, pady=(0, 12))
         body.grid_columnconfigure(0, weight=3)
         body.grid_columnconfigure(1, weight=4)
         body.grid_rowconfigure(0, weight=1)
 
-        self.ggs_orders_list = self._list_panel(body, height=400)
+        self.ggs_orders_list = ctk.CTkScrollableFrame(
+            body, fg_color=BG_SURFACE, corner_radius=RADIUS_CARD,
+        )
         self.ggs_orders_list.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         self.ggs_order_detail = ctk.CTkFrame(
@@ -1388,13 +1428,13 @@ class SubHubApp(ctk.CTk):
         )
         self.ggs_detail_title.grid(row=0, column=0, sticky="w")
         self.ggs_btn_chat_refresh = ctk.CTkButton(
-            hdr, text="🔄", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            hdr, text="🔄  Чат", height=BTN_H, corner_radius=RADIUS_BTN,
             fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
             state="disabled", command=self._ggsell_refresh_chat,
         )
         self.ggs_btn_chat_refresh.grid(row=0, column=1, padx=(8, 0))
         self.ggs_btn_seller = ctk.CTkButton(
-            hdr, text="🌐", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            hdr, text="🌐  GGSell", height=BTN_H, corner_radius=RADIUS_BTN,
             fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
             state="disabled", command=self._ggsell_open_seller,
         )
@@ -1428,7 +1468,7 @@ class SubHubApp(ctk.CTk):
         chat_input.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
         chat_input.grid_columnconfigure(1, weight=1)
         self.ggs_btn_templates = ctk.CTkButton(
-            chat_input, text="📝", width=BTN_ICON, height=BTN_H_MD, corner_radius=RADIUS_BTN,
+            chat_input, text="📝  Шаблоны", height=BTN_H_MD, corner_radius=RADIUS_BTN,
             fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
             state="disabled", command=self._ggsell_open_templates_modal,
         )
@@ -1443,7 +1483,7 @@ class SubHubApp(ctk.CTk):
         self.ggs_chat_input.bind("<Return>", self._ggsell_chat_return)
         self.ggs_chat_input.bind("<Shift-Return>", lambda _e: None)
         self.ggs_btn_chat_send = ctk.CTkButton(
-            chat_input, text="➤", width=BTN_ICON, height=BTN_H_MD, corner_radius=RADIUS_BTN,
+            chat_input, text="➤  Отправить", height=BTN_H_MD, corner_radius=RADIUS_BTN,
             fg_color=SVC_GGSELL, hover_color="#e67e00",
             state="disabled", command=self._ggsell_send_chat,
         )
@@ -1660,52 +1700,207 @@ class SubHubApp(ctk.CTk):
         return lbl
 
     def _build_run(self) -> None:
-        p = self._page("run")
-        self._page_header(p, "Запуск", "Автоматизация YouTube Premium", SVC_YOUTUBE)
+        p = self._page_fill("run")
+        p.grid_rowconfigure(2, weight=1)
 
-        inner = self._card(p, "Параметры", accent=SVC_YOUTUBE)
-        ctk.CTkLabel(inner, text="Режим", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=0, column=0, sticky="w", pady=6)
-        self.run_mode = ctk.CTkComboBox(inner, width=480, height=BTN_H, font=_ui_font(FONT_BODY), state="readonly", values=[
-            "Полный цикл (вход + покупка)",
-            "Только вход на ПК",
-            "Вход + Telegram (перехват)",
-            "Вход с данными (до email)",
-        ])
-        self.run_mode.grid(row=0, column=1, sticky="ew", pady=6, padx=(12, 0))
+        hdr = ctk.CTkFrame(p, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew")
+        self._page_header(
+            hdr, "Запуск",
+            "Тот же сценарий, что menu.py в консоли — вход GrizzlySMS и покупка BLACK",
+            SVC_YOUTUBE,
+        )
+
+        stats = ctk.CTkFrame(p, fg_color="transparent")
+        stats.grid(row=1, column=0, sticky="ew", pady=(0, _GAP_CARD))
+        stats.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self.run_stat_profiles = self._stat_box(stats, 0, "Профили", "—", SVC_YOUTUBE)
+        self.run_stat_vpn = self._stat_box(stats, 1, "VPN", "—", SVC_YOUTUBE)
+        self.run_stat_balance = self._stat_box(stats, 2, "GrizzlySMS", "—", SVC_YOUTUBE)
+        self.run_stat_state = self._stat_box(
+            stats, 3, "Статус", "Готов", SVC_YOUTUBE, sub="ожидание",
+        )
+
+        body = ctk.CTkFrame(p, fg_color="transparent")
+        body.grid(row=2, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=0, minsize=400)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        left = ctk.CTkFrame(body, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        presets_inner = self._card(left, "Быстрый режим", accent=SVC_YOUTUBE)
+        preset_row = ctk.CTkFrame(presets_inner, fg_color="transparent")
+        preset_row.pack(fill="x")
+        self._run_preset_btns: dict[str, ctk.CTkButton] = {}
+        for key, label in (
+            ("full", "Полный цикл"),
+            ("payment", "До оплаты"),
+            ("login_pc", "Вход ПК"),
+            ("tg_intercept", "Telegram"),
+            ("email", "До email"),
+        ):
+            btn = self._chip_btn(
+                preset_row, label, key == "full", SVC_YOUTUBE,
+                lambda k=key: self._select_run_preset(k),
+            )
+            btn.pack(side="left", padx=(0, 6), pady=(0, 4))
+            self._run_preset_btns[key] = btn
+
+        params_inner = self._card(left, "Параметры", accent=SVC_YOUTUBE)
+        form = ctk.CTkFrame(params_inner, fg_color="transparent")
+        form.pack(fill="x")
+        form.grid_columnconfigure(0, minsize=96)
+        form.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            form, text="Режим", text_color=TEXT_DIM, font=_ui_font(FONT_BODY),
+        ).grid(row=0, column=0, sticky="w", pady=5)
+        self.run_mode = ctk.CTkComboBox(
+            form, height=BTN_H, font=_ui_font(FONT_BODY), state="readonly",
+            values=[
+                "Полный цикл (вход + покупка)",
+                "До оплаты (существующий профиль)",
+                "Только вход на ПК",
+                "Вход + Telegram (перехват)",
+                "Вход с данными (до email)",
+            ],
+            command=lambda _v: self._on_run_param_change(),
+        )
+        self.run_mode.grid(row=0, column=1, sticky="ew", pady=5, padx=(10, 0))
         self.run_mode.set("Полный цикл (вход + покупка)")
 
-        ctk.CTkLabel(inner, text="Аккаунтов", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=1, column=0, sticky="w", pady=6)
-        self.run_accounts = ctk.CTkEntry(inner, width=140, height=BTN_H, font=_ui_font(FONT_BODY), placeholder_text="из config")
-        self.run_accounts.grid(row=1, column=1, sticky="w", pady=6, padx=(12, 0))
+        ctk.CTkLabel(
+            form, text="Аккаунтов", text_color=TEXT_DIM, font=_ui_font(FONT_BODY),
+        ).grid(row=1, column=0, sticky="w", pady=5)
+        self.run_accounts = ctk.CTkEntry(
+            form, height=BTN_H, font=_ui_font(FONT_BODY),
+            placeholder_text="из config.yaml (auto_accounts)",
+        )
+        self.run_accounts.grid(row=1, column=1, sticky="ew", pady=5, padx=(10, 0))
+        self.run_accounts.bind("<KeyRelease>", lambda _e: self._on_run_param_change())
 
-        ctk.CTkLabel(inner, text="Тариф", text_color=TEXT_DIM, font=_ui_font(FONT_BODY)).grid(row=2, column=0, sticky="w", pady=6)
-        self.run_tariff = ctk.CTkComboBox(inner, width=260, height=BTN_H, font=_ui_font(FONT_BODY), state="readonly", values=["3 месяца (₹343)", "12 месяцев (₹1,499)"])
-        self.run_tariff.grid(row=2, column=1, sticky="w", pady=6, padx=(12, 0))
+        ctk.CTkLabel(
+            form, text="Тариф", text_color=TEXT_DIM, font=_ui_font(FONT_BODY),
+        ).grid(row=2, column=0, sticky="w", pady=5)
+        self.run_tariff = ctk.CTkComboBox(
+            form, height=BTN_H, font=_ui_font(FONT_BODY), state="readonly",
+            values=["3 месяца (₹343)", "12 месяцев (₹1,499)"],
+            command=lambda _v: self._on_run_param_change(),
+        )
+        self.run_tariff.grid(row=2, column=1, sticky="ew", pady=5, padx=(10, 0))
         self.run_tariff.set("3 месяца (₹343)")
 
-        self.run_headless = ctk.CTkCheckBox(inner, text="Фоновый браузер", font=_ui_font(FONT_BODY))
-        self.run_headless.grid(row=3, column=1, sticky="w", pady=8, padx=(12, 0))
-        inner.grid_columnconfigure(1, weight=1)
+        self.run_headless = ctk.CTkCheckBox(
+            form, text="Фоновый браузер (headless)", font=_ui_font(FONT_BODY),
+            command=self._on_run_param_change,
+        )
+        self.run_headless.grid(row=3, column=1, sticky="w", pady=(8, 2), padx=(10, 0))
 
-        btns = self._toolbar(p)
+        cmd_box = ctk.CTkFrame(params_inner, fg_color=BG_ELEVATED, corner_radius=RADIUS_SM)
+        cmd_box.pack(fill="x", pady=(10, 0))
+        ctk.CTkLabel(
+            cmd_box, text="Команда", text_color=TEXT_MUTED, font=_ui_font(FONT_SMALL),
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 2))
+        self.run_cmd_preview = ctk.CTkLabel(
+            cmd_box, text="", justify="left", anchor="w",
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO - 1),
+            text_color=TEXT_DIM, wraplength=360,
+        )
+        self.run_cmd_preview.pack(fill="x", padx=10, pady=(0, 10))
+
+        right = ctk.CTkFrame(body, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+
+        console_hdr = ctk.CTkFrame(right, fg_color="transparent")
+        console_hdr.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ctk.CTkLabel(
+            console_hdr, text="Консоль запуска", font=_ui_font(FONT_SECTION, "bold"),
+            text_color=TEXT_PRIMARY,
+        ).pack(side="left")
+        ctk.CTkButton(
+            console_hdr, text="Очистить", width=90, height=32, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_SMALL), fg_color=BTN_SECONDARY,
+            hover_color=BTN_SECONDARY_HOVER, command=self._clear_run_log,
+        ).pack(side="right")
+        ctk.CTkButton(
+            console_hdr, text="Все логи →", width=100, height=32, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_SMALL), fg_color=BTN_SECONDARY,
+            hover_color=BTN_SECONDARY_HOVER, command=lambda: self.show_page("logs"),
+        ).pack(side="right", padx=(0, 6))
+
+        console_card = ctk.CTkFrame(
+            right, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+        )
+        console_card.grid(row=1, column=0, sticky="nsew")
+        console_card.grid_rowconfigure(0, weight=1)
+        console_card.grid_columnconfigure(0, weight=1)
+        self.run_log_text = ctk.CTkTextbox(
+            console_card,
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+            fg_color=BG_ELEVATED, corner_radius=RADIUS_SM,
+            wrap="word", activate_scrollbars=True,
+        )
+        self.run_log_text.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        self.run_log_text.configure(state="disabled")
+        self._append_run_log(
+            "Готов к запуску.\n"
+            "Нажмите «Запустить» — вывод menu.py / main.py появится здесь в реальном времени.\n",
+        )
+
+        foot = ctk.CTkFrame(p, fg_color="transparent")
+        foot.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        foot.grid_columnconfigure(0, weight=1)
+
+        status_row = ctk.CTkFrame(foot, fg_color="transparent")
+        status_row.grid(row=0, column=0, sticky="ew")
+        status_row.grid_columnconfigure(1, weight=1)
+
+        self.run_status_dot = ctk.CTkFrame(
+            status_row, width=10, height=10, corner_radius=5, fg_color=TEXT_DIM,
+        )
+        self.run_status_dot.grid(row=0, column=0, padx=(0, 8), pady=6)
+        self.run_status = ctk.CTkLabel(
+            status_row, text="Готов к запуску", text_color=TEXT_DIM,
+            font=_ui_font(FONT_BODY, "bold"), anchor="w",
+        )
+        self.run_status.grid(row=0, column=1, sticky="w")
+
+        self.run_progress = ctk.CTkProgressBar(
+            status_row, height=6, corner_radius=3, mode="indeterminate",
+            progress_color=SVC_YOUTUBE,
+        )
+        self.run_progress.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.run_progress.grid_remove()
+
+        btns = ctk.CTkFrame(foot, fg_color="transparent")
+        btns.grid(row=1, column=0, sticky="ew")
         self.run_start_btn = self._action_btn(
-            btns, "▶  Старт", self._start_run, color=SUCCESS, width=140,
+            btns, "▶  Запустить", self._start_run, color=SUCCESS, width=160,
         )
         self.run_start_btn.pack(side="left", padx=(0, 8))
         self.run_stop_btn = ctk.CTkButton(
-            btns, text="■  Стоп", width=120, height=BTN_H, corner_radius=RADIUS_BTN,
+            btns, text="■  Остановить", width=150, height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY, "bold"),
             fg_color=ERROR, hover_color="#da3633", state="disabled", command=self._stop_run,
         )
         self.run_stop_btn.pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            btns, text="🔒 VPN", width=110, height=BTN_H, corner_radius=RADIUS_BTN,
+            btns, text="🔒  VPN", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY), fg_color=BTN_SECONDARY,
             hover_color=BTN_SECONDARY_HOVER, command=self._check_vpn,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btns, text="👤  Профили", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY), fg_color=BTN_SECONDARY,
+            hover_color=BTN_SECONDARY_HOVER, command=lambda: self.show_page("profiles"),
         ).pack(side="left")
 
-        self.run_status = ctk.CTkLabel(p, text="Готов к запуску", text_color=TEXT_DIM)
-        self.run_status.pack(anchor="w")
+        self._update_run_cmd_preview()
 
     def _build_profiles(self) -> None:
         p = self._page_fill("profiles")
@@ -1718,7 +1913,7 @@ class SubHubApp(ctk.CTk):
         toolbar = ctk.CTkFrame(p, fg_color="transparent")
         toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         ctk.CTkButton(
-            toolbar, text="↻", width=BTN_ICON, height=BTN_H, corner_radius=RADIUS_BTN,
+            toolbar, text="🔄  Обновить", height=BTN_H, corner_radius=RADIUS_BTN,
             fg_color=BG_SURFACE, hover_color=BG_NAV_ACTIVE,
             command=self._refresh_profiles,
         ).pack(side="left", padx=(0, 8))
@@ -1790,7 +1985,7 @@ class SubHubApp(ctk.CTk):
         bar = ctk.CTkFrame(p, fg_color="transparent")
         bar.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         ctk.CTkButton(
-            bar, text="🔄 Обновить", height=BTN_H, corner_radius=RADIUS_BTN,
+            bar, text="🔄  Обновить", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY),
             fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
             command=self._refresh_archive,
@@ -1839,6 +2034,7 @@ class SubHubApp(ctk.CTk):
 
     def _build_cards(self) -> None:
         p = self._page_fill("cards")
+        p.grid_rowconfigure(3, weight=1)
         self._cards_tab = "bank"
         self._sel_bank_idx: int | None = None
         self._sel_gift_idx: int | None = None
@@ -1961,10 +2157,17 @@ class SubHubApp(ctk.CTk):
         self._selected_gift: dict | None = None
 
     def _build_vpn(self) -> None:
-        p = self._page("vpn")
-        self._page_header(p, "VPN", "Расширение VeepN для Flipkart", SVC_YOUTUBE)
+        p = self._page_fill("vpn")
+        p.grid_rowconfigure(2, weight=1)
 
-        inner = self._card(p, "Статус", accent=SVC_YOUTUBE)
+        hdr = ctk.CTkFrame(p, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew")
+        self._page_header(hdr, "VPN", "Расширение VeepN для Flipkart", SVC_YOUTUBE)
+
+        inner_wrap = ctk.CTkFrame(p, fg_color="transparent")
+        inner_wrap.grid(row=1, column=0, sticky="ew", pady=(0, _GAP_CARD))
+        inner = self._card(inner_wrap, "Статус", accent=SVC_YOUTUBE)
+        inner.pack(fill="x")
         self.vpn_page_status = ctk.CTkLabel(
             inner, text="Загрузка…", justify="left", anchor="w", font=_ui_font(FONT_SECTION),
         )
@@ -1974,35 +2177,47 @@ class SubHubApp(ctk.CTk):
         )
         self.vpn_page_ext.pack(fill="x", pady=(4, 0))
 
-        btns = self._toolbar(p)
+        btns = ctk.CTkFrame(p, fg_color="transparent")
+        btns.grid(row=2, column=0, sticky="ew")
         ctk.CTkButton(
-            btns, text="🔒 Проверить VPN", height=BTN_H, corner_radius=RADIUS_BTN,
+            btns, text="🔒  Проверить VPN", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY, "bold"),
             fg_color=SVC_YOUTUBE, hover_color="#cc0029", command=self._check_vpn,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            btns, text="📦 Установить расширения", height=BTN_H, corner_radius=RADIUS_BTN,
+            btns, text="📦  Установить расширения", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY),
             fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
             command=self._install_extensions_bg,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            btns, text="📁 veepn_extension/", height=BTN_H, corner_radius=RADIUS_BTN,
+            btns, text="📁  Папка veepn_extension", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY),
             fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
             command=self._open_vpn_folder,
         ).pack(side="left")
 
     def _build_tools(self) -> None:
-        p = self._page("tools")
-        self._page_header(p, "Инструменты", "Дополнительные действия", SVC_YOUTUBE)
-        grid_wrap = self._card(p, "Действия", accent=SVC_YOUTUBE)
-        self._action_grid(grid_wrap, [
-            ("✅ Проверить активацию", self._tool_check_activation, BTN_SECONDARY),
-            ("🍪 Восстановить cookies", self._tool_restore_cookies, BTN_SECONDARY),
-            ("🗑 Очистить профили", self._tool_purge, ERROR),
-            ("📂 cookies_backup/", lambda: self._open_folder("cookies_backup"), BTN_SECONDARY),
-            ("📂 chrome_profiles/", lambda: self._open_folder("chrome_profiles"), BTN_SECONDARY),
+        p = self._page_fill("tools")
+
+        hdr = ctk.CTkFrame(p, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew")
+        self._page_header(
+            hdr, "Инструменты",
+            "Проверка активации · cookies · обслуживание профилей",
+            SVC_YOUTUBE,
+        )
+        grid_wrap = ctk.CTkFrame(p, fg_color="transparent")
+        grid_wrap.grid(row=1, column=0, sticky="nsew")
+        grid_card = self._card(grid_wrap, "Действия", accent=SVC_YOUTUBE)
+        grid_card.pack(fill="both", expand=True)
+        self._action_grid(grid_card, [
+            ("✅  Проверить активацию", self._tool_check_activation, BTN_SECONDARY),
+            ("🍪  Восстановить cookies", self._tool_restore_cookies, BTN_SECONDARY),
+            ("🔄  Проверить обновления", self._tool_check_updates_now, BTN_SECONDARY),
+            ("🗑  Очистить папки архива", self._tool_purge, ERROR),
+            ("📂  cookies_backup/", lambda: self._open_folder("cookies_backup"), BTN_SECONDARY),
+            ("📂  chrome_profiles/", lambda: self._open_folder("chrome_profiles"), BTN_SECONDARY),
         ], cols=2)
 
     def _build_logs(self) -> None:
@@ -2283,6 +2498,13 @@ class SubHubApp(ctk.CTk):
         import grizzly as gz
         import threading as _thr
         try:
+            m._start_log_tee()
+            log_path = _HERE / "automation.log"
+            if log_path.exists():
+                self._log_file_pos = log_path.stat().st_size
+        except Exception:
+            pass
+        try:
             cleanup_box: dict = {}
 
             def _startup_cancel() -> None:
@@ -2327,6 +2549,35 @@ class SubHubApp(ctk.CTk):
         except Exception as e:
             self._log(f"⚠ Ошибка инициализации: {e}")
 
+    def _schedule_refresh(self, key: str, fn: Callable[[], None], delay: int = 280) -> None:
+        """Откладывает тяжёлое обновление UI — несколько вызовов сливаются в один."""
+        job = self._refresh_jobs.get(key)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._refresh_jobs[key] = self.after(delay, lambda k=key, f=fn: self._run_scheduled_refresh(k, f))
+
+    def _run_scheduled_refresh(self, key: str, fn: Callable[[], None]) -> None:
+        self._refresh_jobs[key] = None
+        try:
+            fn()
+        except Exception as e:
+            self._log(f"⚠ Обновление UI ({key}): {e}")
+
+    def _profiles_list_signature(self, rows: list) -> tuple:
+        return tuple(
+            (
+                str(p.get("username", "")),
+                int(p.get("issued_ts") or 0),
+                int(p.get("link_received_ts") or 0),
+                bool(p.get("black_activation_link") or p.get("black_short_link")),
+                int(p.get("subscription_months") or 0),
+            )
+            for p in rows
+        )
+
     def _log(self, msg: str) -> None:
         self._log_sink.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
 
@@ -2360,11 +2611,15 @@ class SubHubApp(ctk.CTk):
             pass
 
     def _tick_logs(self) -> None:
-        for chunk in self._log_sink.drain():
-            self._append_log_widget(self.log_text, chunk, _MAIN_LOG_LINES)
+        chunks = self._log_sink.drain()
+        if chunks:
+            text = "".join(chunks)
+            self._append_log_widget(self.log_text, text, _MAIN_LOG_LINES)
             self._append_log_widget(
-                getattr(self, "sidebar_log", None), chunk, _SIDEBAR_LOG_LINES,
+                getattr(self, "sidebar_log", None), text, _SIDEBAR_LOG_LINES,
             )
+            if getattr(self, "_run_log_active", False):
+                self._append_run_log(text)
         log_path = _HERE / "automation.log"
         try:
             if log_path.exists():
@@ -2379,9 +2634,11 @@ class SubHubApp(ctk.CTk):
                             self._append_log_widget(
                                 getattr(self, "sidebar_log", None), new, _SIDEBAR_LOG_LINES,
                             )
+                            if getattr(self, "_run_log_active", False):
+                                self._append_run_log(new)
         except Exception:
             pass
-        self.after(400, self._tick_logs)
+        self.after(750, self._tick_logs)
 
     def _tick_status(self) -> None:
         # Скан профилей на диске — в фоне, чтобы UI-поток не подтормаживал
@@ -2390,7 +2647,7 @@ class SubHubApp(ctk.CTk):
             threading.Thread(
                 target=self._collect_status_bg, daemon=True, name="status-tick",
             ).start()
-        self.after(2500, self._tick_status)
+        self.after(4000, self._tick_status)
 
     def _collect_status_bg(self) -> None:
         data = None
@@ -2455,7 +2712,9 @@ class SubHubApp(ctk.CTk):
                 self._vpn_status_lbl.configure(text=text, text_color=color)
             if hasattr(self, "dash_vpn_chip"):
                 self.dash_vpn_chip.configure(text=text.replace("🔒 ", ""), text_color=color)
-            self._refresh_update_badge()
+            self._status_tick_count += 1
+            if self._status_tick_count % 6 == 0 or self._current_page == "settings":
+                self._refresh_update_badge()
             self._sync_from_runtime()
         except Exception:
             pass
@@ -2473,7 +2732,11 @@ class SubHubApp(ctk.CTk):
                 else:
                     self._refresh_youtube_hub()
             elif ev in ("automation_started", "automation_finished"):
-                pass
+                self._schedule_refresh("run_status", self._sync_run_page_status)
+                if ev == "automation_finished":
+                    self._schedule_refresh("profiles", self._refresh_profiles)
+                    self._schedule_refresh("youtube_hub", self._refresh_youtube_hub)
+                    self._schedule_refresh("run_status", self._sync_run_page_status)
 
         ext, ast = m.shared_automation_running()
         local = self._proc and self._proc.poll() is None
@@ -2483,13 +2746,14 @@ class SubHubApp(ctk.CTk):
             mode = ast.get("automation_mode") or ""
             self.run_start_btn.configure(state="disabled")
             self.run_stop_btn.configure(state="normal")
-            self.run_status.configure(
-                text=f"▶ Telegram: {mode or 'автоматизация'}", text_color=WARNING)
+            self._set_run_status_ui(f"▶  Telegram: {mode or 'автоматизация'}", WARNING)
+            self._set_run_form_enabled(False)
         elif not local and hasattr(self, "run_start_btn"):
-            if str(self.run_status.cget("text")).startswith("▶ Telegram"):
+            if str(self.run_status.cget("text")).startswith("▶  Telegram"):
                 self.run_start_btn.configure(state="normal")
                 self.run_stop_btn.configure(state="disabled")
-                self.run_status.configure(text="Готов к запуску", text_color=TEXT_DIM)
+                self._set_run_status_ui("Готов к запуску", TEXT_DIM)
+                self._set_run_form_enabled(True)
 
     def _get_update_state(self) -> tuple[int, list[str], bool, float]:
         try:
@@ -3394,18 +3658,37 @@ class SubHubApp(ctk.CTk):
             parts.append(f"🔗 {short}{'…' if len(link) > 36 else ''}")
         return icon, phone, " · ".join(parts)
 
-    def _refresh_profiles(self) -> None:
+    def _refresh_profiles(self, *, force: bool = False) -> None:
         import menu as m
         prev_phone = str((self._selected_profile or {}).get("username", ""))
+        self._profile_rows = m._load_done_profiles()
+        flt = self._profile_filter
+        sig = self._profiles_list_signature(self._profile_rows)
+
+        if (
+            not force
+            and sig == self._profiles_sig
+            and flt == self._profiles_filter_sig
+            and self._selected_profile
+        ):
+            updated = next(
+                (p for p in self._profile_rows if str(p.get("username", "")) == prev_phone),
+                None,
+            )
+            if updated:
+                self._selected_profile = updated
+                self._render_profile_detail(updated)
+            return
+
+        self._profiles_sig = sig
+        self._profiles_filter_sig = flt
         for w in self.profile_list.winfo_children():
             w.destroy()
-        self._profile_rows = m._load_done_profiles()
         if not self._profile_rows:
             self._selected_profile = None
             self._render_profile_detail(None)
             ctk.CTkLabel(self.profile_list, text="Нет профилей", text_color=TEXT_DIM).pack(pady=10)
             return
-        flt = self._profile_filter
         shown = [
             p for p in self._profile_rows
             if flt == "all" or self._profile_category(p) == flt
@@ -3516,21 +3799,21 @@ class SubHubApp(ctk.CTk):
                 command=cmd,
             ).pack(fill="x", pady=3)
 
-        _btn("🌐 Открыть Chrome", lambda: self._prof_chrome(path), BTN_SECONDARY)
-        _btn("🌑 Проверить активацию (фон)", lambda: self._prof_activate(phone, path), SUCCESS)
+        _btn("🌐  Открыть Chrome", lambda: self._prof_chrome(phone, path), BTN_SECONDARY)
+        _btn("🌑  Проверить активацию (фон)", lambda: self._prof_activate(phone, path), SUCCESS)
 
         if cat in ("noaddr", "hasaddr"):
-            _btn("🥈 Купить 3 мес · ₹343", lambda: self._profile_buy_for(prof, 3), SVC_YOUTUBE)
-            _btn("🥇 Купить 12 мес · ₹1499", lambda: self._profile_buy_for(prof, 12), SVC_YOUTUBE)
-            _btn("📍 Заполнить адрес", lambda: self._profile_fill_address_for(prof), BTN_SECONDARY)
-            _btn("⚡ Заполнить данные (до оплаты)", lambda: self._prof_fill_data(phone, path), WARNING)
+            _btn("🥈  Купить 3 мес · ₹343", lambda: self._profile_buy_for(prof, 3), SVC_YOUTUBE)
+            _btn("🥇  Купить 12 мес · ₹1499", lambda: self._profile_buy_for(prof, 12), SVC_YOUTUBE)
+            _btn("📍  Заполнить адрес", lambda: self._profile_fill_address_for(prof), BTN_SECONDARY)
+            _btn("⚡  Заполнить данные (до оплаты)", lambda: self._prof_fill_data(phone, path), WARNING)
             if not is_issued:
-                _btn("🗑 Удалить профиль", lambda: self._prof_delete(phone, path), ERROR)
+                _btn("🗑  Удалить профиль", lambda: self._prof_delete(phone, path), ERROR)
 
         if cat == "paid":
-            _btn("🔵 Поставить статус «выдан»", lambda: self._prof_set_issued(path), BTN_SECONDARY)
+            _btn("🔵  Поставить статус «выдан»", lambda: self._prof_set_issued(phone, path), BTN_SECONDARY)
             if has_link:
-                _btn("🔄 Заменить ссылку", lambda: self._prof_activate(phone, path), WARNING)
+                _btn("🔄  Заменить ссылку", lambda: self._prof_activate(phone, path), WARNING)
 
         if cat == "active":
             if prof.get("issued_invoice_id"):
@@ -3542,8 +3825,8 @@ class SubHubApp(ctk.CTk):
                     self.show_page("ggsell")
                     self.after(400, self._refresh_ggsell)
 
-                _btn(f"📋 Заказ GGSell #{inv}", _go_order, SVC_GGSELL)
-            _btn("📦 Перенести в архив", lambda: self._prof_archive(phone, path), BTN_SECONDARY)
+                _btn(f"📋  Заказ GGSell #{inv}", _go_order, SVC_GGSELL)
+            _btn("📦  Перенести в архив", lambda: self._prof_archive(phone, path), BTN_SECONDARY)
 
     def _refresh_archive(self) -> None:
         import menu as m
@@ -3726,28 +4009,28 @@ class SubHubApp(ctk.CTk):
             ).pack(fill="x", pady=3)
 
         _btn(
-            "♻ Восстановить профиль",
+            "♻  Восстановить профиль",
             lambda: self._archive_restore(rec),
             SUCCESS,
             enabled=not done_exists,
         )
         if has_ck:
             _btn(
-                "🍪 Восстановить из куков",
+                "🍪  Восстановить из куков",
                 lambda: self._archive_restore_cookies(rec, ck_file),
                 SVC_YOUTUBE,
             )
             _btn(
-                "📄 Открыть файл куков",
+                "📄  Открыть файл куков",
                 lambda: self._open_path(ck_file),
                 BTN_SECONDARY,
             )
         _btn(
-            "📁 Папка cookies_backup",
+            "📁  Папка cookies_backup",
             lambda: self._open_folder("cookies_backup"),
             BTN_SECONDARY,
         )
-        _btn("🗑 Удалить запись", lambda: self._archive_delete(rec), ERROR)
+        _btn("🗑  Удалить запись", lambda: self._archive_delete(rec), ERROR)
 
     def _archive_restore(self, rec: dict) -> None:
         phone = str(rec.get("username", ""))
@@ -3838,8 +4121,8 @@ class SubHubApp(ctk.CTk):
                 ("➕ Добавить", self._show_add_card_dialog, SUCCESS),
                 ("✎ Изменить", self._edit_selected_bank_card, BTN_SECONDARY),
                 ("🗑 Удалить", self._delete_card, ERROR),
-                ("↑", lambda: self._move_bank_card(-1), BTN_SECONDARY),
-                ("↓", lambda: self._move_bank_card(1), BTN_SECONDARY),
+                ("↑  Вверх", lambda: self._move_bank_card(-1), BTN_SECONDARY),
+                ("↓  Вниз", lambda: self._move_bank_card(1), BTN_SECONDARY),
                 ("↺ Порядок", self._reset_bank_order, BTN_SECONDARY),
             ]
         elif tab == "gift":
@@ -3848,16 +4131,15 @@ class SubHubApp(ctk.CTk):
                 ("📁 Файл", self._upload_gift_file, BTN_SECONDARY),
                 ("✎ Изменить", self._edit_selected_gift_card, BTN_SECONDARY),
                 ("🗑 Удалить", self._delete_gift_card, ERROR),
-                ("↑", lambda: self._move_gift_card(-1), BTN_SECONDARY),
-                ("↓", lambda: self._move_gift_card(1), BTN_SECONDARY),
-                ("💳/🎁", self._toggle_pay_method, WARNING),
+                ("↑  Вверх", lambda: self._move_gift_card(-1), BTN_SECONDARY),
+                ("↓  Вниз", lambda: self._move_gift_card(1), BTN_SECONDARY),
+                ("💳  Способ оплаты", self._toggle_pay_method, WARNING),
             ]
         else:
             specs = [("🔄 Обновить", self._refresh_cards, BTN_SECONDARY)]
         for i, (txt, cmd, color) in enumerate(specs):
-            w = 44 if txt in ("↑", "↓") else None
             ctk.CTkButton(
-                self.cards_toolbar, text=txt, width=w, height=BTN_H,
+                self.cards_toolbar, text=txt, height=BTN_H,
                 corner_radius=RADIUS_BTN, font=_ui_font(FONT_BODY, "bold"),
                 fg_color=color, hover_color=self._btn_hover(color), command=cmd,
             ).pack(side="left", padx=(0, 4))
@@ -4088,17 +4370,187 @@ class SubHubApp(ctk.CTk):
             + (f" · без: {scan['missing']}" if scan["missing"] else "")
         )
         self.vpn_page_status.configure(
-            text=f"{icons.get(state, '•')}  {state.upper()}\n{msg}\n{prof_line}")
+            text=f"{icons.get(state, '•')}  {state.upper()}\n{msg}\n{prof_line}"
+            + (f"\n\nПроверка: {self._vpn_last_check}" if self._vpn_last_check else ""),
+        )
         self.vpn_page_ext.configure(
             text=f"Расширение: {ext or 'не найдено (положите в veepn_extension/)'}")
+
+    def _sync_run_page_status(self) -> None:
+        import menu as m
+        ext, ast = m.shared_automation_running()
+        local = self._proc and self._proc.poll() is None
+        if ext and not local:
+            mode = ast.get("automation_mode") or "автоматизация"
+            self.run_start_btn.configure(state="disabled")
+            self.run_stop_btn.configure(state="normal")
+            self._set_run_status_ui(f"▶  Telegram: {mode}", WARNING)
+            self._set_run_form_enabled(False)
+        elif local:
+            self.run_start_btn.configure(state="disabled")
+            self.run_stop_btn.configure(state="normal")
+            if not str(self.run_status.cget("text")).startswith("▶"):
+                self._set_run_status_ui("Выполняется…", WARNING)
+            self._set_run_form_enabled(False)
+        elif not str(self.run_status.cget("text")).startswith("▶  Telegram"):
+            self.run_start_btn.configure(state="normal")
+            self.run_stop_btn.configure(state="disabled")
+            if self.run_status.cget("text") in ("Выполняется…", "Проверка VPN…"):
+                self._set_run_status_ui("Готов к запуску", TEXT_DIM)
+            self._set_run_form_enabled(True)
+
+    def _apply_vpn_check_result(self, ok: bool, msg: str) -> None:
+        color = SUCCESS if ok else ERROR
+        self._vpn_last_check = msg
+        if hasattr(self, "run_status"):
+            self._set_run_status_ui(msg, color)
+        self._refresh_vpn_page()
+
+    def _append_run_log(self, text: str, max_lines: int = 200) -> None:
+        if not hasattr(self, "run_log_text"):
+            return
+        try:
+            self.run_log_text.configure(state="normal")
+            self.run_log_text.insert("end", text)
+            if max_lines > 0:
+                lines = self.run_log_text.get("1.0", "end").splitlines()
+                if len(lines) > max_lines:
+                    self.run_log_text.delete("1.0", f"{len(lines) - max_lines + 1}.0")
+            self.run_log_text.see("end")
+            self.run_log_text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _clear_run_log(self) -> None:
+        if not hasattr(self, "run_log_text"):
+            return
+        try:
+            self.run_log_text.configure(state="normal")
+            self.run_log_text.delete("1.0", "end")
+            self.run_log_text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _set_run_status_ui(self, text: str, color: str = TEXT_DIM) -> None:
+        if hasattr(self, "run_status"):
+            self.run_status.configure(text=text, text_color=color)
+        if hasattr(self, "run_status_dot"):
+            self.run_status_dot.configure(fg_color=color)
+        if hasattr(self, "run_stat_state"):
+            short = text.replace("▶  ", "").strip()[:24]
+            self.run_stat_state.configure(text=short or "—")
+            if hasattr(self.run_stat_state, "sub_label"):
+                self.run_stat_state.sub_label.configure(
+                    text="выполняется" if color == WARNING else (
+                        "готово" if color == SUCCESS else "ожидание"
+                    ),
+                )
+
+    def _set_run_form_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        ro = "readonly" if enabled else "disabled"
+        for w in (getattr(self, "run_mode", None), getattr(self, "run_tariff", None)):
+            if w:
+                try:
+                    w.configure(state=ro)
+                except Exception:
+                    pass
+        if getattr(self, "run_accounts", None):
+            try:
+                self.run_accounts.configure(state=state)
+            except Exception:
+                pass
+        if getattr(self, "run_headless", None):
+            try:
+                self.run_headless.configure(state=state)
+            except Exception:
+                pass
+        for btn in getattr(self, "_run_preset_btns", {}).values():
+            try:
+                btn.configure(state=state)
+            except Exception:
+                pass
+
+    def _run_mode_key(self) -> str:
+        mapping = {
+            "Полный цикл (вход + покупка)": "full",
+            "До оплаты (существующий профиль)": "payment",
+            "Только вход на ПК": "login_pc",
+            "Вход + Telegram (перехват)": "tg_intercept",
+            "Вход с данными (до email)": "email",
+        }
+        return mapping.get(self.run_mode.get(), "full")
+
+    def _select_run_preset(self, key: str) -> None:
+        self._run_preset_key = key
+        self._preset_run(key)
+        for k, btn in getattr(self, "_run_preset_btns", {}).items():
+            active = k == key
+            btn.configure(
+                fg_color=SVC_YOUTUBE if active else BG_SURFACE,
+                hover_color=self._btn_hover(SVC_YOUTUBE) if active else BG_NAV_ACTIVE,
+            )
+        self._on_run_param_change()
+
+    def _on_run_param_change(self, *_args) -> None:
+        key = self._run_mode_key()
+        self._run_preset_key = key
+        for k, btn in getattr(self, "_run_preset_btns", {}).items():
+            active = k == key
+            btn.configure(
+                fg_color=SVC_YOUTUBE if active else BG_SURFACE,
+                hover_color=self._btn_hover(SVC_YOUTUBE) if active else BG_NAV_ACTIVE,
+            )
+        self._update_run_cmd_preview()
+
+    def _update_run_cmd_preview(self) -> None:
+        if not hasattr(self, "run_cmd_preview"):
+            return
+        try:
+            cmd = self._build_run_cmd()
+            rel = cmd[2:] if len(cmd) > 2 else cmd
+            self.run_cmd_preview.configure(text=" ".join(rel))
+        except Exception:
+            pass
+
+    def _refresh_run_page(self) -> None:
+        import menu as m
+        try:
+            self.run_stat_profiles.configure(text=str(len(m._load_done_profiles())))
+            vs = m.get_vpn_bg_status()
+            state = vs.get("state", "idle")
+            vpn_labels = {
+                "ready": ("✓ OK", SUCCESS),
+                "warming": ("…", WARNING),
+                "installing": ("…", WARNING),
+                "error": ("✗", ERROR),
+                "no_ext": ("—", TEXT_DIM),
+                "idle": ("—", TEXT_DIM),
+            }
+            vpn_txt, vpn_col = vpn_labels.get(state, ("—", TEXT_DIM))
+            self.run_stat_vpn.configure(text=vpn_txt, text_color=vpn_col)
+        except Exception:
+            pass
+        self._update_run_cmd_preview()
+        threading.Thread(target=self._fetch_run_balance, daemon=True, name="run-bal").start()
+
+    def _fetch_run_balance(self) -> None:
+        try:
+            import grizzly as gz
+            bal = gz.get_balance()
+            self.after(0, lambda: self.run_stat_balance.configure(text=f"${bal:.2f}"))
+        except Exception:
+            self.after(0, lambda: self.run_stat_balance.configure(text="—"))
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
     def _preset_run(self, mode: str) -> None:
         mapping = {
             "full": "Полный цикл (вход + покупка)",
+            "payment": "До оплаты (существующий профиль)",
             "login_pc": "Только вход на ПК",
             "tg_intercept": "Вход + Telegram (перехват)",
+            "email": "Вход с данными (до email)",
         }
         self.run_mode.set(mapping.get(mode, mapping["full"]))
 
@@ -4109,6 +4561,8 @@ class SubHubApp(ctk.CTk):
         headless = self.run_headless.get()
         if mode == "Полный цикл (вход + покупка)":
             cmd = [sys.executable, str(_HERE / "menu.py"), "--full-cycle", "--tariffs", str(months)]
+        elif mode == "До оплаты (существующий профиль)":
+            cmd = [sys.executable, str(_HERE / "menu.py"), "--fill-to-payment"]
         elif mode == "Вход с данными (до email)":
             cmd = [sys.executable, str(_HERE / "menu.py"), "--full-cycle",
                    "--stop-at-email", "--tariffs", str(months)]
@@ -4133,7 +4587,17 @@ class SubHubApp(ctk.CTk):
             return
         cmd = self._build_run_cmd()
         self._log(f"▶ {' '.join(cmd)}")
-        self.run_status.configure(text="Выполняется…", text_color=WARNING)
+        self._run_log_active = True
+        self._clear_run_log()
+        self._append_run_log(f"▶ {' '.join(cmd)}\n\n")
+        self._set_run_status_ui("Выполняется…", WARNING)
+        self._set_run_form_enabled(False)
+        if hasattr(self, "run_progress"):
+            self.run_progress.grid()
+            try:
+                self.run_progress.start()
+            except Exception:
+                pass
         self.run_start_btn.configure(state="disabled")
         self.run_stop_btn.configure(state="normal")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -4148,6 +4612,8 @@ class SubHubApp(ctk.CTk):
                 assert self._proc.stdout
                 for line in self._proc.stdout:
                     self._log_sink.write(line)
+                    with contextlib.suppress(Exception):
+                        sys.stdout.write(line)
                 code = self._proc.wait() if self._proc else -1
                 m.clear_automation_proc()
                 self.after(0, lambda: self._run_finished(code))
@@ -4158,15 +4624,27 @@ class SubHubApp(ctk.CTk):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _run_finished(self, code: int, err: str = "") -> None:
+        self._run_log_active = False
+        if hasattr(self, "run_progress"):
+            try:
+                self.run_progress.stop()
+            except Exception:
+                pass
+            self.run_progress.grid_remove()
         self.run_start_btn.configure(state="normal")
         self.run_stop_btn.configure(state="disabled")
+        self._set_run_form_enabled(True)
         if err:
-            self.run_status.configure(text=f"Ошибка: {err}", text_color=ERROR)
+            self._set_run_status_ui(f"Ошибка: {err}", ERROR)
+            self._append_run_log(f"\n■ Ошибка: {err}\n")
         elif code == 0:
-            self.run_status.configure(text="✓ Завершено", text_color=SUCCESS)
+            self._set_run_status_ui("✓ Завершено", SUCCESS)
+            self._append_run_log(f"\n■ Завершено успешно (код 0)\n")
         else:
-            self.run_status.configure(text=f"Код {code}", text_color=WARNING)
+            self._set_run_status_ui(f"Код выхода {code}", WARNING)
+            self._append_run_log(f"\n■ Завершено с кодом {code}\n")
         self._log(f"■ Завершено (код {code})")
+        self._refresh_run_page()
         self._refresh_youtube_hub()
         self._ensure_window_visible()
 
@@ -4202,24 +4680,36 @@ class SubHubApp(ctk.CTk):
             self._external_auto = False
             self.run_start_btn.configure(state="normal")
             self.run_stop_btn.configure(state="disabled")
-            self.run_status.configure(text="Остановлено", text_color=WARNING)
+            self._set_run_status_ui("Остановлено", WARNING)
+            self._set_run_form_enabled(True)
+            self._run_log_active = False
+            if hasattr(self, "run_progress"):
+                try:
+                    self.run_progress.stop()
+                except Exception:
+                    pass
+                self.run_progress.grid_remove()
 
     def _check_vpn(self) -> None:
-        self._log("Проверка VPN…")
-        self.run_status.configure(text="Проверка VPN…", text_color=WARNING)
+        self._log("Проверка VPN и доступности Flipkart…")
+        self._set_run_status_ui("Проверка VPN…", WARNING)
+        if hasattr(self, "vpn_page_status"):
+            self.vpn_page_status.configure(text="⏳  Проверка VPN и Flipkart…")
 
         def _worker():
             import menu as m
             try:
                 ok = asyncio.run(m._check_flipkart_accessible())
-                msg = "✓ VPN OK · Flipkart доступен" if ok else "✗ Flipkart недоступен"
+                msg = "✓ VPN OK · Flipkart доступен" if ok else "✗ Flipkart недоступен (проверьте VPN)"
                 self._log(msg)
-                color = SUCCESS if ok else ERROR
-                self.after(0, lambda: self.run_status.configure(text=msg, text_color=color))
                 if ok:
                     m._set_vpn_bg_status("ready", "Flipkart доступен")
+                else:
+                    m._set_vpn_bg_status("error", "Flipkart недоступен")
+                self.after(0, lambda: self._apply_vpn_check_result(ok, msg))
             except Exception as e:
                 self._log(f"Ошибка: {e}")
+                self.after(0, lambda: self._apply_vpn_check_result(False, f"✗ {e}"))
             finally:
                 self.after(0, self._ensure_window_visible)
 
@@ -4245,6 +4735,7 @@ class SubHubApp(ctk.CTk):
                 + (f" · установлено {n}" if n else " · на месте"),
             )
             self._log(f"✓ Готово ({n} профилей обновлено)")
+            self.after(0, self._refresh_vpn_page)
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -4300,17 +4791,28 @@ class SubHubApp(ctk.CTk):
                 self._prof_busy.discard(phone)
 
                 def _ui():
-                    self._refresh_profiles()
-                    self._refresh_archive()
+                    if self._selected_profile and str(self._selected_profile.get("username", "")) == phone:
+                        self._render_profile_detail(self._selected_profile)
+                    if self._selected_archive and str(self._selected_archive.get("username", "")) == phone:
+                        self._render_archive_detail(self._selected_archive)
+                    if self._current_page in ("profiles", "youtube_hub", "run"):
+                        self._schedule_refresh("profiles", lambda: self._refresh_profiles(force=True))
+                    if self._current_page == "archive":
+                        self._schedule_refresh("archive", self._refresh_archive)
 
                 self.after(0, _ui)
 
         threading.Thread(target=_w, daemon=True, name=f"prof-{phone}").start()
 
-    def _prof_chrome(self, path) -> None:
-        import menu as m
-        ok = m.open_chrome(path)
-        self._log("Chrome: VPN → Flipkart" if ok else "Ошибка Chrome")
+    def _prof_chrome(self, phone: str, path) -> None:
+        def _w():
+            import menu as m
+            ok = m.open_chrome(path)
+            self._log(
+                f"{'✓' if ok else '✗'} Chrome +91 {phone}"
+                + (" — открываю VPN и Flipkart…" if ok else "")
+            )
+        self._prof_run(phone, f"Открытие Chrome +91 {phone}…", _w)
 
     def _prof_activate(self, phone: str, path) -> None:
         def _w():
@@ -4330,16 +4832,19 @@ class SubHubApp(ctk.CTk):
             addr = m._gen_indian_address()
             ok, msg = asyncio.run(m._do_fill_address(path, addr, stop_at_payment=True))
             self._log(f"{'✓' if ok else '✗'} {phone}: {msg}")
-        self._prof_run(phone, f"Заполнение данных {phone}…", _w)
+            if ok:
+                self.after(0, self._schedule_refresh)
+        self._prof_run(phone, f"До оплаты · +91 {phone}…", _w)
 
-    def _prof_set_issued(self, path) -> None:
-        import menu as m
-        import time as _t
-        if m._save_meta_field(path, issued_ts=_t.time()):
-            self._log("✓ Статус «выдан» установлен")
-            self._refresh_profiles()
-        else:
-            self._log("✗ Не удалось обновить статус")
+    def _prof_set_issued(self, phone: str, path) -> None:
+        def _w():
+            import menu as m
+            import time as _t
+            if m._save_meta_field(path, issued_ts=_t.time()):
+                self._log(f"✓ +91 {phone}: статус «выдан» установлен")
+            else:
+                self._log(f"✗ +91 {phone}: не удалось обновить статус")
+        self._prof_run(phone, f"Статус «выдан» +91 {phone}…", _w)
 
     def _prof_archive(self, phone: str, path) -> None:
         if not messagebox.askyesno("Архив", f"Перенести профиль {phone} в архив?"):
@@ -4374,27 +4879,23 @@ class SubHubApp(ctk.CTk):
 
     def _profile_open_chrome(self) -> None:
         if not self._selected_profile:
-            self._log("Выберите профиль (или двойной клик)")
+            self._log("Выберите профиль")
             return
-        self._prof_chrome(self._selected_profile["path"])
+        phone = str(self._selected_profile.get("username", ""))
+        self._prof_chrome(phone, self._selected_profile["path"])
 
     def _profile_buy(self, months: int) -> None:
         if not self._selected_profile:
             self._log("Выберите профиль")
             return
         path = self._selected_profile["path"]
-        self._log(f"Покупка {months} мес.")
+        phone = str(self._selected_profile.get("username", ""))
 
         def _w():
             import menu as m
-            try:
-                ok, msg = asyncio.run(m._do_buy_membership(path, months, card=None))
-                self._log(f"{'✓' if ok else '✗'} {msg}")
-            except Exception as e:
-                self._log(f"Ошибка: {e}")
-            self.after(0, self._refresh_profiles)
-
-        threading.Thread(target=_w, daemon=True).start()
+            ok, msg = asyncio.run(m._do_buy_membership(path, months, card=None))
+            self._log(f"{'✓' if ok else '✗'} {msg}")
+        self._prof_run(phone, f"Покупка {months} мес. · +91 {phone}…", _w)
 
     def _profile_fill_address(self) -> None:
         if not self._selected_profile:
@@ -4805,7 +5306,11 @@ class SubHubApp(ctk.CTk):
         threading.Thread(target=_w, daemon=True).start()
 
     def _tool_purge(self) -> None:
-        if not messagebox.askyesno("Подтверждение", "Удалить устаревшие профили из архива?"):
+        if not messagebox.askyesno(
+            "Подтверждение",
+            "Удалить ВСЕ папки из chrome_profiles_used и chrome_profiles_backup?\n"
+            "(JSON-записи архива и бэкапы профилей)",
+        ):
             return
 
         def _w():

@@ -275,7 +275,9 @@ def _menu_tg_bot_thread() -> None:
         _gift_add_waiting: dict = {}    # {cid: denom|"auto"} — ждём номера+PIN гифт-карт
 
         # ── Вспомогательные ──────────────────────────────────────────────────
-        def _get(cid, key):    return cfg.get(cid, {}).get(key, True)
+        _NOTIFY_DEFAULT_OFF = {"buy_number"}  # шумные — по умолчанию выкл
+        def _get(cid, key):
+            return cfg.get(cid, {}).get(key, key not in _NOTIFY_DEFAULT_OFF)
         def _set(cid, key, v):
             cfg.setdefault(cid, {})[key] = v
             _save_subs(subs, cfg)

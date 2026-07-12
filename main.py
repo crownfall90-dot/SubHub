@@ -120,8 +120,12 @@ class TelegramBotManager:
         except Exception as exc:
             logger.warning(f"[Telegram] Не удалось сохранить подписчиков: {exc}")
 
+    # Уведомления, выключенные по умолчанию (шумные, включаются вручную в боте)
+    _NOTIFY_DEFAULT_OFF = {"buy_number"}
+
     def _get_setting(self, chat_id: int, key: str) -> bool:
-        return self.chat_settings.get(chat_id, {}).get(key, True)
+        default = key not in self._NOTIFY_DEFAULT_OFF
+        return self.chat_settings.get(chat_id, {}).get(key, default)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
