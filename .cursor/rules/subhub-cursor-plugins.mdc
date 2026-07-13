@@ -33,7 +33,8 @@ alwaysApply: true
 | Прод-мониторинг | `datadog` | Только при деплое и алертах в Datadog |
 | GitHub (issues, PR) | Встроенный `gh` / GitHub MCP | Работа с репо `flipkart-automation` |
 | System prompts (справочник) | Локальный submodule `vendor/system_prompts_leaks` + skill `/system-prompts-leaks` | Сравнение инструкций Cursor, Codex, Claude Code |
-| UI / анимации / лендинги | `vendor/motionsites_prompts` + skill `/motionsites` | Hero, motion, Framer — промпты с motionsites.ai |
+| UI / анимации / лендинги | `vendor/motionsites_prompts` + `/motionsites` | Hero, motion, Framer — промпты с motionsites.ai |
+| UI/UX design system | `vendor/ui-ux-pro-max-skill` + `.cursor/skills/ui-ux-pro-max` | Палитры, типографика, UX-гайдлайны (`search.py --design-system`) |
 
 **Не рекомендовать** Prisma, Notion, Figma, Datadog «на всякий случай» — у SubHub их нет в `requirements.txt`.
 

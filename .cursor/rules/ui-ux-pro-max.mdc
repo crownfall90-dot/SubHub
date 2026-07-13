@@ -1,0 +1,56 @@
+---
+description: UI/UX Pro Max — design system, палитры, типографика, UX-гайдлайны (авто при UI-задачах)
+alwaysApply: true
+---
+
+# UI/UX Pro Max — design intelligence (авто)
+
+Skill: `.cursor/skills/ui-ux-pro-max/` (upstream: `vendor/ui-ux-pro-max-skill`).
+
+## Когда **обязательно** запускать search.py (до верстки)
+
+- новый экран, редизайн, улучшить UI/UX, «сделай красивее»
+- выбор стиля, цветов, шрифтов, паттерна лендинга
+- accessibility, contrast, hover, responsive, dark mode
+- dashboard, sidebar, карточки, формы в SubHub (`app.py`)
+- слова: design system, UI/UX Pro Max, uipro, палитра, типографика
+
+**Шаг 1 — design system (обязательно):**
+
+```powershell
+python .cursor/skills/ui-ux-pro-max/scripts/search.py "<тип продукта> <ключевые слова>" --design-system -p "SubHub"
+```
+
+Опционально: `--persist`, `--page "settings"`, `--variance 5 --motion 6 --density 7`
+
+**Шаг 2 — домен/stack:**
+
+```powershell
+python .cursor/skills/ui-ux-pro-max/scripts/search.py "<запрос>" --domain ux
+python .cursor/skills/ui-ux-pro-max/scripts/search.py "<запрос>" --stack html-tailwind
+```
+
+SubHub GUI = CustomTkinter → переводи токены (цвета, spacing, контраст) в `app.py`; для веб/Canvas — `html-tailwind` / `react`.
+
+## Связка с MotionSites
+
+| Этап | Инструмент |
+|------|------------|
+| Палитра, паттерн, UX-чеклист | **UI/UX Pro Max** (`search.py --design-system`) |
+| Готовый animated hero / landing prompt | **MotionSites** (`vendor/motionsites_prompts/`) |
+
+Сначала Pro Max → потом MotionSites prompt → потом код.
+
+## Обновление
+
+```powershell
+git submodule update --init --remote vendor/ui-ux-pro-max-skill
+npx -y ui-ux-pro-max-cli init --ai cursor
+```
+
+или `scripts/update_vendor_refs.ps1`
+
+## Ограничения
+
+- Python 3 уже есть в проекте — не ставить пакеты для skill.
+- Не править CSV в submodule; обновлять через CLI/submodule.

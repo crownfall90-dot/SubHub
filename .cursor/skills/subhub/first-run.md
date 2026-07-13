@@ -19,7 +19,8 @@ cd flipkart-automation
 git submodule update --init --recursive
 pip install -r requirements.txt
 python -m playwright install chromium
-# опционально: скачать free-промпты MotionSites для UI/анимаций
+# UI/UX Pro Max (design system) + MotionSites prompts
+npx -y ui-ux-pro-max-cli init --ai cursor
 python scripts/fetch_motionsites_prompts.py --free
 ```
 

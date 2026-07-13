@@ -38,6 +38,11 @@ alwaysApply: true
 
 Промпты с `tier: premium` — только если файл есть в vendor (команда с `--visible --wait-login` после Unlimited) или ручной импорт.
 
+## Связка с UI/UX Pro Max
+
+Палитра / паттерн / UX-чеклист → сначала `python .cursor/skills/ui-ux-pro-max/scripts/search.py ... --design-system`.  
+Затем промпт MotionSites → код.
+
 ## Ограничения
 
 - Промпты — с motionsites.ai; не выдавать за собственные.

@@ -1,3 +1,6 @@
 [submodule "vendor/system_prompts_leaks"]
 	path = vendor/system_prompts_leaks
 	url = https://github.com/asgeirtj/system_prompts_leaks.git
+[submodule "vendor/ui-ux-pro-max-skill"]
+	path = vendor/ui-ux-pro-max-skill
+	url = https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git
