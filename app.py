@@ -438,6 +438,8 @@ class SubHubApp(ctk.CTk):
         self._ggs_filter = "new"
         self._ggs_selected_id: int | None = None
         self._ggs_loading = False
+        self._ggs_refresh_pending = False
+        self._ggs_pending_select: int | None = None
         self._ggs_chat_loading = False
         self._ggs_templates_win = None
         self._profile_filter = "all"
@@ -1076,8 +1078,7 @@ class SubHubApp(ctk.CTk):
                 title, body, SVC_GGSELL,
                 lambda i=inv: self._open_ggs_order(i),
             )
-            if self._current_page != "ggsell":
-                self.after(400, self._refresh_ggsell)
+            self._schedule_refresh("ggsell", self._refresh_ggsell)
         elif kind == "new_message":
             if not self._app_settings.get("notify_ggs_messages", True):
                 return
@@ -1192,6 +1193,7 @@ class SubHubApp(ctk.CTk):
 
     def _open_ggs_order(self, inv_id: int) -> None:
         self._ggs_selected_id = inv_id
+        self._ggs_pending_select = inv_id
         self._ggs_filter = "all"
         for key, btn in getattr(self, "_ggs_filter_btns", {}).items():
             active = key == "all"
@@ -1203,6 +1205,7 @@ class SubHubApp(ctk.CTk):
         self.show_page("ggsell")
         self._notif_unread = 0
         self._update_notif_badge()
+        self._schedule_refresh("ggsell", self._refresh_ggsell)
 
     def _card(self, parent, title: str, accent: str | None = None) -> ctk.CTkFrame:
         f = ctk.CTkFrame(
@@ -2538,6 +2541,8 @@ class SubHubApp(ctk.CTk):
     def _grizzly_status_text(self, r: dict) -> str:
         if r.get("error") == "no_api_key":
             return "API-ключ GrizzlySMS не настроен"
+        if r.get("error") == "timeout":
+            return "Таймаут API Grizzly — повтор позже"
         if r.get("error"):
             return f"Ошибка: {r['error']}"
         total = int(r.get("total") or 0)
@@ -2613,6 +2618,13 @@ class SubHubApp(ctk.CTk):
             self.grizzly_cancel_btn.configure(state="disabled")
 
     def _apply_grizzly_result(self, r: dict) -> None:
+        err = r.get("error")
+        if err in ("timeout",) and getattr(self, "_grizzly_active_total", 0) > 0:
+            self._set_grizzly_cancel_status(
+                f"Не удалось обновить ({err}) · активных: {self._grizzly_active_total}",
+                active_total=self._grizzly_active_total,
+            )
+            return
         total = int(r.get("total") or 0)
         cancelled = int(r.get("cancelled") or 0)
         if cancelled:
@@ -2698,8 +2710,8 @@ class SubHubApp(ctk.CTk):
                 gs = (m._read_secrets().get("ggsel") or {})
                 if gs.get("api_key") and gs.get("seller_id"):
                     start_monitor(gs["api_key"], int(gs["seller_id"]))
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"⚠ GGSell monitor: {e}")
             import bot as bot_mod
             r = bot_mod.ensure_tg_bot("app")
             if r == "started":
@@ -2859,6 +2871,9 @@ class SubHubApp(ctk.CTk):
         with_ext = int(scan.get("with_ext") or 0)
 
         if state in ("installing", "warming"):
+            if any(x in msg for x in ("VPN", "Flipkart", "Проверка")):
+                short = msg[:34] + ("…" if len(msg) > 34 else "")
+                return f"⏳ {short}", WARNING
             if total:
                 return f"📦 Расширения {with_ext}/{total}…", WARNING
             return "📦 Расширения в профили…", WARNING
@@ -2911,7 +2926,7 @@ class SubHubApp(ctk.CTk):
                 self.dash_vpn_chip.configure(text=text.replace("🔒 ", "").replace("📦 ", ""), text_color=color)
             if self._current_page == "vpn" and hasattr(self, "vpn_page_status"):
                 self._refresh_vpn_page()
-            if self._current_page == "settings" and self._status_tick_count % 8 == 0:
+            if self._status_tick_count % 6 == 0:
                 self._refresh_grizzly_status()
             self._status_tick_count += 1
             if self._status_tick_count % 6 == 0 or self._current_page == "settings":
@@ -3183,18 +3198,21 @@ class SubHubApp(ctk.CTk):
             return
 
         if self._ggs_loading:
+            self._ggs_refresh_pending = True
             return
         self._ggs_loading = True
         if hasattr(self, "ggs_orders_status"):
             self.ggs_orders_status.configure(text="⏳ Загрузка заказов…")
 
         def _w():
+            err: str | None = None
             try:
                 asyncio.run(self._load_ggsell_orders())
             except Exception as e:
-                self._run_on_main( lambda: self._log(f"GGSell заказы: {e}"))
+                err = str(e)
+                self._run_on_main(lambda: self._log(f"GGSell заказы: {e}"))
             finally:
-                self._run_on_main( self._ggsell_orders_loaded)
+                self._run_on_main(lambda: self._ggsell_orders_loaded(err))
 
         threading.Thread(target=_w, daemon=True, name="ggs-orders").start()
         threading.Thread(target=self._fetch_ggsell_balance, daemon=True).start()
@@ -3214,11 +3232,24 @@ class SubHubApp(ctk.CTk):
         finally:
             await client.close()
 
-    def _ggsell_orders_loaded(self) -> None:
+    def _ggsell_orders_loaded(self, err: str | None = None) -> None:
         self._ggs_loading = False
         self._render_ggsell_orders()
         n = len(self._ggs_orders)
-        self._log(f"✓ GGSell: загружено {n} заказов")
+        if err:
+            if hasattr(self, "ggs_orders_status"):
+                self.ggs_orders_status.configure(text=f"✗ {err[:80]}")
+        else:
+            self._log(f"✓ GGSell: загружено {n} заказов")
+        pending = self._ggs_pending_select
+        if pending:
+            self._ggs_pending_select = None
+            self._ggs_selected_id = pending
+            self._render_ggsell_orders()
+            self._ggsell_load_chat(pending)
+        if self._ggs_refresh_pending:
+            self._ggs_refresh_pending = False
+            self.after(400, self._refresh_ggsell)
 
     def _render_ggsell_orders(self) -> None:
         from ggsell.gui_orders import (
@@ -4565,8 +4596,8 @@ class SubHubApp(ctk.CTk):
         import menu as m
         if hasattr(self, "vpn_page_status"):
             self._refresh_vpn_page()
-        state = m.get_vpn_bg_status().get("state", "idle")
-        if state in self._VPN_BOOTSTRAP_TERMINAL or attempt >= 90:
+        state = m.sync_vpn_extension_status().get("state", "idle")
+        if state in self._VPN_BOOTSTRAP_TERMINAL or attempt >= 120:
             return
         self.after(2000, lambda: self._poll_vpn_bootstrap(attempt + 1))
 
@@ -4635,9 +4666,12 @@ class SubHubApp(ctk.CTk):
     def _apply_vpn_check_result(self, ok: bool, msg: str) -> None:
         color = SUCCESS if ok else ERROR
         self._vpn_last_check = msg
-        if hasattr(self, "run_status"):
+        if hasattr(self, "run_status") and getattr(self, "_vpn_check_for_run", False):
             self._set_run_status_ui(msg, color)
+        elif hasattr(self, "run_status"):
+            self._sync_run_page_status()
         self._refresh_vpn_page()
+        self._vpn_check_for_run = False
 
     def _append_run_log(self, text: str, max_lines: int = 200) -> None:
         if not hasattr(self, "run_log_text"):
@@ -4927,8 +4961,10 @@ class SubHubApp(ctk.CTk):
         if getattr(self, "_vpn_check_busy", False):
             return
         self._vpn_check_busy = True
+        self._vpn_check_for_run = self._current_page == "run"
         self._log("Проверка VPN и доступности Flipkart…")
-        self._set_run_status_ui("Проверка VPN…", WARNING)
+        if self._vpn_check_for_run:
+            self._set_run_status_ui("Проверка VPN…", WARNING)
         import menu as m
         m._set_vpn_bg_status("warming", "Проверка VPN и Flipkart…")
         self._refresh_vpn_page()
@@ -5044,9 +5080,8 @@ class SubHubApp(ctk.CTk):
             except Exception as e:
                 self._log(f"Ошибка: {e}")
             finally:
-                self._prof_busy.discard(phone)
-
                 def _ui():
+                    self._prof_busy.discard(phone)
                     if self._selected_profile and str(self._selected_profile.get("username", "")) == phone:
                         self._render_profile_detail(self._selected_profile)
                     if self._selected_archive and str(self._selected_archive.get("username", "")) == phone:
@@ -5056,7 +5091,7 @@ class SubHubApp(ctk.CTk):
                     if self._current_page == "archive":
                         self._schedule_refresh("archive", self._refresh_archive)
 
-                self._run_on_main( _ui)
+                self._run_on_main(_ui)
 
         threading.Thread(target=_w, daemon=True, name=f"prof-{phone}").start()
 

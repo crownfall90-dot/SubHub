@@ -2280,7 +2280,9 @@ def sync_vpn_extension_status() -> dict:
     cur = get_vpn_bg_status()
     msg = str(cur.get("message") or "")
     state = cur.get("state", "idle")
-    if state == "warming" and ("Проверка VPN" in msg or "Flipkart" in msg):
+    if state == "warming" and any(
+        x in msg for x in ("Проверка VPN", "Flipkart", "VPN фон", "VPN OK")
+    ):
         return cur
     if state not in ("installing", "warming", "idle"):
         return cur
@@ -2308,6 +2310,11 @@ def sync_vpn_extension_status() -> dict:
         _set_vpn_bg_status(
             "ready",
             f"Расширение {with_ext}/{total} · без: {names}",
+        )
+    else:
+        _set_vpn_bg_status(
+            "error",
+            f"Расширение не установлено ни в один из {total} профилей",
         )
     return get_vpn_bg_status()
 
@@ -2533,9 +2540,11 @@ async def _prepare_profile_vpn(profile_path: Path | str, *, label: str = "") -> 
             str(profile_path.resolve()), **kw)
         await _close_extension_startup_tabs(ctx)
         if not await _vpn_connect_on_use(ctx, profile_path):
+            _set_vpn_bg_status("error", "VPN не подключился")
             return False, "VPN не подключился (фон)"
         page = await _main_work_page(ctx)
         if not await _verify_flipkart_reachable(page, "https://www.flipkart.com/"):
+            _set_vpn_bg_status("error", "Flipkart недоступен после VPN")
             return False, "Flipkart недоступен после VPN"
         print(f"  {G}✔ [{tag}] VPN готов — можно открывать Flipkart{RST}")
         _set_vpn_bg_status("ready", f"VPN OK · {profile_path.name}")
@@ -2626,6 +2635,9 @@ def start_background_bootstrap(
                 print(f"  {G}✔ Расширение установлено в {n} профил(ей) без Chrome{RST}")
         except Exception as exc:
             _set_vpn_bg_status("error", str(exc)[:120])
+            global _bg_bootstrap_started
+            with _bg_bootstrap_lock:
+                _bg_bootstrap_started = False
         finally:
             sync_vpn_extension_status()
             if on_complete:
