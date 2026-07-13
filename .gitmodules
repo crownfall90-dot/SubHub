@@ -4,3 +4,6 @@
 [submodule "vendor/ui-ux-pro-max-skill"]
 	path = vendor/ui-ux-pro-max-skill
 	url = https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git
+[submodule "vendor/magic-mcp"]
+	path = vendor/magic-mcp
+	url = https://github.com/21st-dev/magic-mcp.git

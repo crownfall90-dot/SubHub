@@ -38,10 +38,12 @@ alwaysApply: true
 
 Промпты с `tier: premium` — только если файл есть в vendor (команда с `--visible --wait-login` после Unlimited) или ручной импорт.
 
-## Связка с UI/UX Pro Max
+## Связка с UI/UX Pro Max и Magic MCP
 
-Палитра / паттерн / UX-чеклист → сначала `python .cursor/skills/ui-ux-pro-max/scripts/search.py ... --design-system`.  
-Затем промпт MotionSites → код.
+1. Палитра / паттерн / UX → `search.py ... --design-system` (UI/UX Pro Max)
+2. Hero / motion → промпт MotionSites
+3. **Веб/React** → Magic MCP `/ui` (см. `.cursor/rules/magic-mcp.mdc`)
+4. **SubHub Tkinter** → токены + layout в `app.py` без Magic
 
 ## Ограничения
 

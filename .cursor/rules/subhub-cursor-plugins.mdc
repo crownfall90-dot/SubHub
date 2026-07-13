@@ -35,6 +35,7 @@ alwaysApply: true
 | System prompts (справочник) | Локальный submodule `vendor/system_prompts_leaks` + skill `/system-prompts-leaks` | Сравнение инструкций Cursor, Codex, Claude Code |
 | UI / анимации / лендинги | `vendor/motionsites_prompts` + `/motionsites` | Hero, motion, Framer — промпты с motionsites.ai |
 | UI/UX design system | `vendor/ui-ux-pro-max-skill` + `.cursor/skills/ui-ux-pro-max` | Палитры, типографика, UX-гайдлайны (`search.py --design-system`) |
+| React / веб-компоненты (v0-like) | `vendor/magic-mcp` + MCP `@21st-dev/magic` | `/ui` в чате; ключ с [21st.dev/magic](https://21st.dev/magic), `scripts/setup_magic_mcp.ps1` |
 
 **Не рекомендовать** Prisma, Notion, Figma, Datadog «на всякий случай» — у SubHub их нет в `requirements.txt`.
 

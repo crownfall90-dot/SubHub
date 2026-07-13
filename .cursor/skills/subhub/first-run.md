@@ -22,6 +22,8 @@ python -m playwright install chromium
 # UI/UX Pro Max (design system) + MotionSites prompts
 npx -y ui-ux-pro-max-cli init --ai cursor
 python scripts/fetch_motionsites_prompts.py --free
+# Magic MCP (React UI) — нужен API key с https://21st.dev/magic
+# .\scripts\setup_magic_mcp.ps1
 ```
 
 ### Вариант B — ZIP

@@ -38,8 +38,9 @@ SubHub GUI = CustomTkinter → переводи токены (цвета, spacin
 |------|------------|
 | Палитра, паттерн, UX-чеклист | **UI/UX Pro Max** (`search.py --design-system`) |
 | Готовый animated hero / landing prompt | **MotionSites** (`vendor/motionsites_prompts/`) |
+| React/Tailwind компонент (веб) | **Magic MCP** (`/ui`, `.cursor/rules/magic-mcp.mdc`) |
 
-Сначала Pro Max → потом MotionSites prompt → потом код.
+Сначала Pro Max → MotionSites prompt → Magic `/ui` (веб) или код в `app.py` (Tkinter).
 
 ## Обновление
 
