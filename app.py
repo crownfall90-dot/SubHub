@@ -2842,7 +2842,7 @@ class SubHubApp(ctk.CTk):
                 "profiles": len(m._load_done_profiles()),
                 "tg": getattr(bot_mod, "_tg_status", "?"),
                 "host": m.active_host() or "—",
-                "vpn": m.get_vpn_bg_status(),
+                "vpn": m.sync_vpn_extension_status(),
             }
         except Exception:
             data = None
@@ -2850,6 +2850,32 @@ class SubHubApp(ctk.CTk):
             self._run_on_main( self._apply_status_tick, data)
         except Exception:
             self._status_tick_busy = False
+
+    def _sidebar_vpn_text(self, state: str, msg: str) -> tuple[str, str]:
+        """Короткий статус VPN для боковой панели."""
+        import menu as m
+        scan = m.scan_profiles_extension_status()
+        total = int(scan.get("total") or 0)
+        with_ext = int(scan.get("with_ext") or 0)
+
+        if state in ("installing", "warming"):
+            if total:
+                return f"📦 Расширения {with_ext}/{total}…", WARNING
+            return "📦 Расширения в профили…", WARNING
+        if state == "ready":
+            if msg:
+                return f"🔒 {msg}", SUCCESS
+            if total:
+                return f"🔒 Расширение {with_ext}/{total}", SUCCESS
+            return "🔒 VPN готов", SUCCESS
+        if state == "error":
+            short = (msg or "ошибка")[:36]
+            return f"🔒 {short}", ERROR
+        if state == "no_ext":
+            return "🔒 Нет veepn_extension/", TEXT_DIM
+        if total and with_ext == total:
+            return f"🔒 Расширение {with_ext}/{total}", SUCCESS
+        return "🔒 VPN: ожидание", TEXT_DIM
 
     def _apply_status_tick(self, data: dict | None) -> None:
         self._status_tick_busy = False
@@ -2878,24 +2904,11 @@ class SubHubApp(ctk.CTk):
             vs = data["vpn"]
             state = vs.get("state", "idle")
             msg = vs.get("message", "")
-            colors = {
-                "ready": SUCCESS, "warming": WARNING, "installing": WARNING,
-                "error": ERROR, "no_ext": TEXT_DIM, "idle": TEXT_DIM,
-            }
-            labels = {
-                "ready": f"🔒 VPN: {msg or 'готов'}",
-                "warming": f"🔒 VPN: {msg or 'подготовка…'}",
-                "installing": f"🔒 VPN: {msg or 'установка…'}",
-                "error": f"🔒 VPN: {msg[:40]}",
-                "no_ext": "🔒 VPN: нет расширения",
-                "idle": "🔒 VPN: ожидание",
-            }
-            color = colors.get(state, TEXT_DIM)
-            text = labels.get(state, "🔒 VPN: …")
+            text, color = self._sidebar_vpn_text(state, msg)
             if self._vpn_status_lbl:
                 self._vpn_status_lbl.configure(text=text, text_color=color)
             if hasattr(self, "dash_vpn_chip"):
-                self.dash_vpn_chip.configure(text=text.replace("🔒 ", ""), text_color=color)
+                self.dash_vpn_chip.configure(text=text.replace("🔒 ", "").replace("📦 ", ""), text_color=color)
             if self._current_page == "vpn" and hasattr(self, "vpn_page_status"):
                 self._refresh_vpn_page()
             if self._current_page == "settings" and self._status_tick_count % 8 == 0:
@@ -4975,6 +4988,8 @@ class SubHubApp(ctk.CTk):
                 + (f" · установлено {n}" if n else " · на месте"),
             )
             self._log(f"✓ Готово ({n} профилей обновлено)")
+            import menu as m
+            m.sync_vpn_extension_status()
             self._run_on_main(self._refresh_vpn_page)
             self._run_on_main(lambda: self.after(2000, self._poll_vpn_bootstrap))
 

@@ -2275,6 +2275,43 @@ def scan_profiles_extension_status() -> dict:
     }
 
 
+def sync_vpn_extension_status() -> dict:
+    """Синхронизирует vpn_bg_status с фактическим состоянием расширений."""
+    cur = get_vpn_bg_status()
+    msg = str(cur.get("message") or "")
+    state = cur.get("state", "idle")
+    if state == "warming" and ("Проверка VPN" in msg or "Flipkart" in msg):
+        return cur
+    if state not in ("installing", "warming", "idle"):
+        return cur
+
+    if not _vpn_extension_dir():
+        _set_vpn_bg_status("no_ext", "veepn_extension/ не найдено")
+        return get_vpn_bg_status()
+
+    scan = scan_profiles_extension_status()
+    total = int(scan.get("total") or 0)
+    with_ext = int(scan.get("with_ext") or 0)
+    missing = int(scan.get("missing") or 0)
+
+    if total == 0:
+        _set_vpn_bg_status("idle", "Профили не найдены")
+    elif missing == 0:
+        _set_vpn_bg_status(
+            "ready",
+            f"Расширение {with_ext}/{total} · VPN при сценарии",
+        )
+    elif with_ext > 0:
+        names = ", ".join(scan["missing_names"][:2])
+        if missing > 2:
+            names += "…"
+        _set_vpn_bg_status(
+            "ready",
+            f"Расширение {with_ext}/{total} · без: {names}",
+        )
+    return get_vpn_bg_status()
+
+
 def _offscreen_chrome_args(args: list[str]) -> list[str]:
     """Окно Chrome за пределами экрана без headless (popup VPN-расширения)."""
     out = [
@@ -2555,49 +2592,42 @@ def start_background_bootstrap(
 
     def _worker():
         try:
-            time.sleep(1.5)
+            time.sleep(0.5)
 
             if not _vpn_extension_dir():
                 _set_vpn_bg_status("no_ext", "vpn_extension/ не найдено")
                 return
 
-            _set_vpn_bg_status("installing", "Проверка зависимостей…")
-            screen_install(auto=True)
+            if not _deps_ok_full():
+                _set_vpn_bg_status("installing", "Зависимости…")
+                try:
+                    ensure_dependencies()
+                except Exception:
+                    pass
 
             scan = scan_profiles_extension_status()
             _set_vpn_bg_status(
                 "warming",
-                f"Установка расширения: {scan['with_ext']}/{scan['total']} проф.…",
+                f"Расширения в профили: {scan['with_ext']}/{scan['total']}…",
             )
 
             n = install_extensions_filesystem_all()
             scan = scan_profiles_extension_status()
+            sync_vpn_extension_status()
 
             if scan["missing"]:
-                names = ", ".join(scan["missing_names"][:3])
-                if scan["missing"] > 3:
-                    names += "…"
-                _set_vpn_bg_status(
-                    "ready",
-                    f"Расширение {scan['with_ext']}/{scan['total']} · "
-                    f"без: {names} (поставится при запуске)",
-                )
                 if n:
                     print(f"  {G}✔ Расширение скопировано в {n} профил(ей) без Chrome{RST}")
                 print(
                     f"  {DIM}Профили без расширения: {', '.join(scan['missing_names'][:5])}"
                     f"{'…' if scan['missing'] > 5 else ''}{RST}"
                 )
-            else:
-                _set_vpn_bg_status(
-                    "ready",
-                    f"Все {scan['total']} профилей с расширением · VPN при использовании",
-                )
-                if n:
-                    print(f"  {G}✔ Расширение установлено в {n} профил(ей) без Chrome{RST}")
+            elif n:
+                print(f"  {G}✔ Расширение установлено в {n} профил(ей) без Chrome{RST}")
         except Exception as exc:
             _set_vpn_bg_status("error", str(exc)[:120])
         finally:
+            sync_vpn_extension_status()
             if on_complete:
                 try:
                     on_complete()
