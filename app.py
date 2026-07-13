@@ -5830,41 +5830,85 @@ class SubHubApp(ctk.CTk):
         self._log("Окно скрыто — приложение работает в фоне (иконка в трее)")
         return True
 
+    def _ask_close_action(self) -> str | None:
+        """Спросить при закрытии окна: quit | tray | None (нет)."""
+        result: dict[str, str | None] = {"v": None}
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("SubHub")
+        dlg.geometry("440x240")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.configure(fg_color=BG_MAIN)
+        try:
+            dlg.update_idletasks()
+            x = self.winfo_x() + (self.winfo_width() - 440) // 2
+            y = self.winfo_y() + (self.winfo_height() - 240) // 2
+            dlg.geometry(f"440x240+{x}+{y}")
+        except Exception:
+            pass
+
+        ctk.CTkLabel(
+            dlg, text="Закрыть SubHub?",
+            font=_ui_font(FONT_SECTION, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(pady=(22, 8), padx=24, anchor="w")
+        ctk.CTkLabel(
+            dlg,
+            text=(
+                "Telegram-бот и автоматизация могут продолжать работу в фоне.\n"
+                "Выберите действие:"
+            ),
+            justify="left", anchor="w", wraplength=392,
+            text_color=TEXT_DIM, font=_ui_font(FONT_SMALL),
+        ).pack(fill="x", padx=24, pady=(0, 16))
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(fill="x", padx=24, pady=(0, 22))
+
+        def _pick(v: str | None) -> None:
+            result["v"] = v
+            with contextlib.suppress(Exception):
+                dlg.grab_release()
+            dlg.destroy()
+
+        ctk.CTkButton(
+            btns, text="Да, закрыть полностью", height=BTN_H,
+            corner_radius=RADIUS_BTN, font=_ui_font(FONT_BODY, "bold"),
+            fg_color=ERROR, hover_color="#da3633",
+            command=lambda: _pick("quit"),
+        ).pack(fill="x", pady=(0, 6))
+        ctk.CTkButton(
+            btns, text="В трей", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY),
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=lambda: _pick("tray"),
+        ).pack(fill="x", pady=(0, 6))
+        ctk.CTkButton(
+            btns, text="Нет", height=BTN_H, corner_radius=RADIUS_BTN,
+            font=_ui_font(FONT_BODY),
+            fg_color=BG_SURFACE, hover_color=BG_NAV_ACTIVE,
+            command=lambda: _pick(None),
+        ).pack(fill="x")
+
+        dlg.protocol("WM_DELETE_WINDOW", lambda: _pick(None))
+        dlg.wait_window()
+        return result["v"]
+
     def _on_close(self) -> None:
         if self._quitting:
             return
-        bg = self._app_settings.get("background_mode", True)
-        if not bg:
+        if not self._app_settings.get("background_mode", True):
             if messagebox.askyesno("Выход", "Закрыть SubHub?"):
                 self._quit_app()
             return
 
-        tray = self._app_settings.get("minimize_to_tray", False)
-        if tray:
-            hint = (
-                "• Да — свернуть в трей\n"
-                "• Нет — оставить окно открытым\n"
-                "• Отмена"
-            )
-            title = "SubHub — свернуть в трей?"
-        else:
-            hint = (
-                "• Да — скрыть окно (фон продолжит работу)\n"
-                "• Нет — оставить окно открытым\n"
-                "• Отмена"
-            )
-            title = "SubHub — скрыть окно?"
-        r = messagebox.askyesnocancel(
-            title,
-            "Telegram-бот и автоматизация продолжат работу.\n"
-            "Полный выход — через иконку в трее → «Выход».\n\n" + hint,
-        )
-        if r is True:
+        action = self._ask_close_action()
+        if action == "quit":
+            self._quit_app()
+        elif action == "tray":
             if not self._hide_to_background():
                 if messagebox.askyesno("Выход", "Скрыть не удалось. Закрыть SubHub полностью?"):
                     self._quit_app()
-        elif r is False:
-            self._ensure_window_visible()
 
     def _shutdown_services(self) -> None:
         # Всегда останавливаем автоматизацию: и из UI (self._proc), и из Telegram
