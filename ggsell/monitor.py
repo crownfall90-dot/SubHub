@@ -690,3 +690,9 @@ def start_monitor(
     t = threading.Thread(target=_thread_main, daemon=True, name="ggsel-monitor")
     t.start()
     logger.info(f"GGSell монитор запущен в фоне (seller_id={seller_id})")
+
+
+def is_monitor_running() -> bool:
+    """True, если поток ggsel-monitor жив."""
+    import threading
+    return any(t.name == "ggsel-monitor" and t.is_alive() for t in threading.enumerate())

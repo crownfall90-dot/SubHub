@@ -2493,9 +2493,15 @@ class SubHubApp(ctk.CTk):
             self._app_settings["start_minimized"] = False
             if hasattr(self, "sw_start_min"):
                 self.sw_start_min.deselect()
+            self._sync_ggs_monitor()
         else:
             self._startup_tray()
+            self._sync_ggs_monitor()
         self._persist_app_settings()
+        if hasattr(self, "home_ggs_monitor"):
+            self._refresh_home_ggsell()
+        if hasattr(self, "ggs_stat_monitor"):
+            self._refresh_ggsell()
 
     def _on_setting_tray(self) -> None:
         self.after_idle(self._apply_tray_setting)
@@ -2733,13 +2739,7 @@ class SubHubApp(ctk.CTk):
             )
             self.after(2000, self._poll_vpn_bootstrap)
             gz.start_global_monitor()
-            try:
-                from ggsell.monitor import start_monitor
-                gs = (m._read_secrets().get("ggsel") or {})
-                if gs.get("api_key") and gs.get("seller_id"):
-                    start_monitor(gs["api_key"], int(gs["seller_id"]))
-            except Exception as e:
-                self._log(f"⚠ GGSell monitor: {e}")
+            self._sync_ggs_monitor()
             import bot as bot_mod
             r = bot_mod.ensure_tg_bot("app")
             if r == "started":
@@ -3156,11 +3156,46 @@ class SubHubApp(ctk.CTk):
             pass
         return out
 
+    def _ggs_monitor_wanted(self) -> bool:
+        if not self._app_settings.get("background_mode", True):
+            return False
+        import menu as m
+        gs = m._read_secrets().get("ggsel") or {}
+        key = str(gs.get("api_key") or "")
+        return bool(gs.get("seller_id") and key and "YOUR_" not in key)
+
+    def _sync_ggs_monitor(self) -> None:
+        from ggsell.monitor import is_monitor_running, start_monitor, stop_monitor
+        import menu as m
+        want = self._ggs_monitor_wanted()
+        running = is_monitor_running()
+        if want and not running:
+            gs = m._read_secrets().get("ggsel") or {}
+            try:
+                start_monitor(gs["api_key"], int(gs["seller_id"]))
+            except Exception as e:
+                self._log(f"⚠ GGSell monitor: {e}")
+        elif not want and running:
+            stop_monitor()
+
+    def _ggs_monitor_active(self) -> bool:
+        from ggsell.monitor import is_monitor_running
+        return self._ggs_monitor_wanted() and is_monitor_running()
+
     def _set_monitor_stat(self, lbl: ctk.CTkLabel, monitor_on: bool) -> None:
-        lbl.configure(
-            text="Активен" if monitor_on else "Выключен",
-            text_color=SUCCESS if monitor_on else TEXT_DIM,
-        )
+        bg_off = not self._app_settings.get("background_mode", True)
+        if monitor_on:
+            text, color = "Активен", SUCCESS
+            sub = "следит за заказами"
+        elif bg_off:
+            text, color = "Выключен", TEXT_DIM
+            sub = "фоновый режим выкл."
+        else:
+            text, color = "Выключен", TEXT_DIM
+            sub = "следит за заказами"
+        lbl.configure(text=text, text_color=color)
+        if hasattr(lbl, "sub_label"):
+            lbl.sub_label.configure(text=sub)
 
     def _refresh_home_ggsell(self) -> None:
         if not hasattr(self, "home_ggs_orders"):
@@ -3168,7 +3203,7 @@ class SubHubApp(ctk.CTk):
         import menu as m
         gs = m._read_secrets().get("ggsel") or {}
         api_ok = bool(gs.get("api_key") and gs.get("seller_id") and "YOUR_" not in str(gs.get("api_key", "")))
-        monitor_on = any(t.name == "ggsel-monitor" and t.is_alive() for t in threading.enumerate())
+        monitor_on = self._ggs_monitor_active()
         self._set_monitor_stat(self.home_ggs_monitor, monitor_on)
         st = self._ggs_home_stats()
         self.home_ggs_orders.configure(text=str(st["done"]))
@@ -3204,7 +3239,7 @@ class SubHubApp(ctk.CTk):
         api_ok = bool(gs.get("api_key") and gs.get("seller_id") and "YOUR_" not in str(gs.get("api_key", "")))
         self.ggs_stat_api.configure(text="✓" if api_ok else "✗")
 
-        monitor_on = any(t.name == "ggsel-monitor" and t.is_alive() for t in threading.enumerate())
+        monitor_on = self._ggs_monitor_active()
         self._set_monitor_stat(self.ggs_stat_monitor, monitor_on)
 
         from ggsell.gui_orders import load_local_state
