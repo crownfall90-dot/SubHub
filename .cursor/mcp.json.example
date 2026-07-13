@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "codebase-memory-mcp": {
+      "command": "D:\\tools\\codebase-memory-mcp\\codebase-memory-mcp.exe",
+      "args": [],
+      "env": {
+        "CBM_ALLOWED_ROOT": "${workspaceFolder}",
+        "CBM_CACHE_DIR": "D:\\tools\\codebase-memory-mcp\\cache"
+      }
+    },
+    "stitch": {
+      "command": "npx",
+      "args": ["-y", "@_davideast/stitch-mcp", "proxy"]
+    }
+  }
+}

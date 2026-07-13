@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import re
+import secrets
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -3052,6 +3053,41 @@ class GGSellBotHandler:
 
     # ── Webhook handler ───────────────────────────────────────────────────────
 
+    async def _verify_ggsell_webhook(
+        self, invoice_id: int, product_id: int, sha256_recv: str
+    ) -> tuple[bool, str]:
+        """Проверка SHA256 от GGSell (fail-closed, по образцу Stripe webhooks).
+
+        Stripe: не обрабатывать webhook без проверки подписи; при ошибке — 403,
+        не «тихий» pass. Сравнение хеша — constant-time (secrets.compare_digest).
+        """
+        if not sha256_recv:
+            return False, "missing sha256 signature"
+
+        from ggsell.client import GGSellClient as _GSC
+
+        _ggs2 = (self._m("_read_secrets")().get("ggsel") or {})
+        _gsc = _GSC(
+            api_key=_ggs2.get("api_key", ""),
+            seller_id=int(_ggs2.get("seller_id") or 0),
+        )
+        try:
+            _v2ord = await _gsc.get_order_info_v2(invoice_id)
+            _u_code = (_v2ord.get("unique_code") or "").strip()
+            if not _u_code:
+                return False, f"order {invoice_id}: no unique_code for verification"
+            _exp = hashlib.sha256(
+                f"{_u_code};{invoice_id};{product_id}".encode()
+            ).hexdigest()
+            if not secrets.compare_digest(_exp.lower(), sha256_recv.lower()):
+                return False, f"order {invoice_id}: sha256 mismatch"
+            return True, ""
+        except Exception as exc:
+            logger.warning("GGSell webhook verification failed: {}", exc)
+            return False, f"verification error: {exc}"
+        finally:
+            await _gsc.close()
+
     def make_webhook_handler(self, webhook_queue: asyncio.Queue, aio_web):
         """Вернуть aiohttp handler для приёма POST/GET уведомлений от GGSell."""
         handler = self
@@ -3088,27 +3124,12 @@ class GGSellBotHandler:
                 if not invoice_id:
                     return aio_web.Response(text="OK")
 
-                # SHA256 верификация через unique_code заказа (per-order)
-                if sha256_recv:
-                    try:
-                        from ggsell.client import GGSellClient as _GSC
-                        _ggs2 = (handler._m("_read_secrets")().get("ggsel") or {})
-                        _gsc = _GSC(
-                            api_key=_ggs2.get("api_key", ""),
-                            seller_id=int(_ggs2.get("seller_id") or 0),
-                        )
-                        _v2ord = await _gsc.get_order_info_v2(invoice_id)
-                        _u_code = (_v2ord.get("unique_code") or "").strip()
-                        if _u_code:
-                            _exp = hashlib.sha256(
-                                f"{_u_code};{invoice_id};{product_id}".encode()
-                            ).hexdigest()
-                            if _exp.lower() != sha256_recv.lower():
-                                await _gsc.close()
-                                return aio_web.Response(text="Forbidden", status=403)
-                        await _gsc.close()
-                    except Exception:
-                        pass
+                _ok, _err = await handler._verify_ggsell_webhook(
+                    invoice_id, product_id, sha256_recv
+                )
+                if not _ok:
+                    logger.warning("GGSell webhook rejected: {}", _err)
+                    return aio_web.Response(text="Forbidden", status=403)
 
                 # Добавляем в processed чтобы монитор не продублировал
                 try:

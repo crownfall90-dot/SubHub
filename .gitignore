@@ -35,6 +35,6 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Editor
-.vscode/
+# Editor / IDE
+.cursor/mcp.json
 *.log

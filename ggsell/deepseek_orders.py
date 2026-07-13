@@ -342,6 +342,7 @@ async def _start_topup(client, invoice_id: int) -> None:
 
     card = _pick_card()
     if card is None:
+        ...
         st["status"] = "failed"
         st["result"] = "Нет сохранённых карт"
         state[str(invoice_id)] = st
@@ -361,7 +362,7 @@ async def _start_topup(client, invoice_id: int) -> None:
     except Exception:
         pass
     _notify(invoice_id, f"🧠 DeepSeek #{invoice_id}: начинаю пополнение ${amount:g} "
-                        f"для `{email}`")
+                        f"для `{email}` (при отказе — следующая карта)")
 
     import deepseek as ds
     async with _pay_lock:
@@ -369,6 +370,7 @@ async def _start_topup(client, invoice_id: int) -> None:
             ok, msg = await ds.topup(
                 email, password, amount, card,
                 headless=False, keep_open_on_fail=False,
+                retry_cards=True,
                 log=lambda s: logger.info(f"DeepSeek #{invoice_id}: {s}"),
             )
         except Exception as exc:

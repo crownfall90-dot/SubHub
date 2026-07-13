@@ -5,7 +5,7 @@ DeepSeek Platform — автоматизация пополнения API-бал
   1. Логин по email+паролю (сессия хранится в отдельном профиле на аккаунт).
   2. /usage — запоминаем «Topped-up balance» до оплаты.
   3. /top_up — валюта USD, сумма (пресет $2/$5/… или Custom), метод Visa/Mastercard.
-  4. Реквизиты карты → Pay (3DS у этих карт нет).
+  4. Оплата через Stripe Payment Element (iframe) → Pay; при 3DS — ждём ручного подтверждения.
   5. Успех = «Topped-up balance» на /usage вырос на сумму пополнения.
 
 Модуль самостоятельный (не тянет menu.py) — чтобы позже его могла вызывать
@@ -15,11 +15,16 @@ DeepSeek Platform — автоматизация пополнения API-бал
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from pathlib import Path
+from typing import Callable
 
 _HERE = Path(__file__).parent
+_DATA = _HERE / "data"
+_CARDS_FILE = _DATA / "cards.json"
+_CARD_ORDER_FILE = _DATA / "card_order.json"
 BASE_URL = "https://platform.deepseek.com"
 PROFILES_DIR = _HERE / "chrome_profiles_deepseek"
 DEBUG_DIR = _HERE / "debug" / "deepseek"
@@ -29,8 +34,12 @@ PRESET_AMOUNTS = (2, 5, 10, 20, 50, 100, 500)
 
 LOGIN_MANUAL_WAIT = 180      # сек ожидания ручного входа (капча и т.п.), если авто-логин не прошёл
 PAY_RESULT_WAIT = 120        # сек ожидания реакции формы после Pay
+STRIPE_3DS_WAIT = 180        # сек ожидания 3DS (Stripe confirmPayment)
 BALANCE_WAIT = 180           # сек ожидания роста баланса на /usage
 KEEP_OPEN_ON_FAIL = 600      # сек держать браузер открытым при ошибке (ручное завершение)
+
+# DeepSeek /top_up — Stripe Payment Element (js.stripe.com iframe)
+_STRIPE_FRAME_HINTS = ("js.stripe.com", "elements-inner-payment", "elements-inner-card")
 
 
 def _profile_dir(email: str) -> Path:
@@ -126,6 +135,156 @@ async def _type_into(page, locator, value: str, clear: bool = True) -> bool:
 async def _fill_by_placeholder(page, key: str, value: str, clear: bool = True) -> bool:
     loc = page.locator(f"input[placeholder*='{key}' i]").first
     return await _type_into(page, loc, value, clear=clear)
+
+
+# ── Stripe Payment Element (DeepSeek /top_up) ─────────────────────────────────
+
+def _is_stripe_frame_url(url: str) -> bool:
+    u = url or ""
+    return any(h in u for h in _STRIPE_FRAME_HINTS)
+
+
+async def _stripe_frames(page):
+    return [fr for fr in page.frames if _is_stripe_frame_url(fr.url)]
+
+
+async def _has_stripe_checkout(page) -> bool:
+    if await _stripe_frames(page):
+        return True
+    try:
+        return await page.locator('iframe[src*="stripe"]').count() > 0
+    except Exception:
+        return False
+
+
+async def _card_form_visible(page) -> bool:
+    """Форма карты: Stripe iframe или прямые поля на странице."""
+    for fr in await _stripe_frames(page):
+        for sel in (
+            'input[name="number"]',
+            'input[autocomplete="cc-number"]',
+            'input[placeholder*="Card number" i]',
+            'input[placeholder*="1234" i]',
+        ):
+            try:
+                if await fr.locator(sel).first.is_visible(timeout=1000):
+                    return True
+            except Exception:
+                pass
+    try:
+        await page.locator("input[placeholder*='Card number' i]").first.wait_for(
+            state="visible", timeout=2000)
+        return True
+    except Exception:
+        return False
+
+
+async def _type_into_frame(fr, selector: str, value: str) -> bool:
+    try:
+        loc = fr.locator(selector).first
+        await loc.wait_for(state="visible", timeout=5000)
+        await loc.click(timeout=5000)
+        try:
+            await loc.fill("")
+        except Exception:
+            pass
+        await loc.press_sequentially(value, delay=40)
+        return True
+    except Exception:
+        return False
+
+
+async def _fill_stripe_field(page, selectors: tuple[str, ...], value: str) -> bool:
+    """Ищет поле в любом Stripe-iframe (Payment Element / Card Element)."""
+    for fr in await _stripe_frames(page):
+        for sel in selectors:
+            if await _type_into_frame(fr, sel, value):
+                return True
+    return False
+
+
+async def _fill_stripe_card_form(page, card: dict, log) -> bool:
+    number = (card.get("number") or "").replace(" ", "").replace("-", "")
+    cvv = (card.get("cvv") or "").strip()
+    expiry = (card.get("expiry") or "").strip()
+    holder = (card.get("name") or "").strip()
+    digits = expiry.replace("/", "").replace(" ", "")
+
+    if holder and holder not in ("-", "NA", "N/A"):
+        await _fill_by_placeholder(page, "Cardholder", holder)
+
+    if not await _fill_stripe_field(page, (
+        'input[name="number"]',
+        'input[autocomplete="cc-number"]',
+        'input[placeholder*="Card number" i]',
+        'input[placeholder*="1234" i]',
+    ), number):
+        return False
+
+    exp_val = f"{digits[:2]}/{digits[2:]}" if len(digits) == 4 else digits
+    if not await _fill_stripe_field(page, (
+        'input[name="expiry"]',
+        'input[autocomplete="cc-exp"]',
+        'input[placeholder*="MM" i]',
+    ), exp_val):
+        if not await _fill_stripe_field(page, (
+            'input[name="expiry"]',
+            'input[autocomplete="cc-exp"]',
+            'input[placeholder*="MM" i]',
+        ), digits):
+            return False
+
+    if not await _fill_stripe_field(page, (
+        'input[name="cvc"]',
+        'input[autocomplete="cc-csc"]',
+        'input[placeholder*="CVC" i]',
+        'input[placeholder*="CVV" i]',
+    ), cvv):
+        return False
+
+    log(f"Stripe: реквизиты введены в iframe (**** {number[-4:]}, exp {expiry})")
+    return True
+
+
+async def _stripe_payment_redirect_ok(page) -> bool:
+    u = (page.url or "").lower()
+    if "redirect_status=succeeded" in u:
+        return True
+    if "payment_intent" in u and "succeeded" in u:
+        return True
+    return False
+
+
+async def _stripe_3ds_active(page) -> bool:
+    u = (page.url or "").lower()
+    if any(x in u for x in ("hooks.stripe.com", "authenticate", "3ds")):
+        return True
+    for fr in page.frames:
+        fu = (fr.url or "").lower()
+        if "stripe.com" in fu and any(x in fu for x in ("challenge", "3ds", "authenticate")):
+            return True
+    return False
+
+
+async def _collect_stripe_error_text(page) -> str:
+    """Текст страницы + Stripe iframe + [role=alert] (типичные ошибки Payment Element)."""
+    parts: list[str] = []
+    try:
+        parts.append(await _page_text(page))
+    except Exception:
+        pass
+    for fr in await _stripe_frames(page):
+        try:
+            parts.append(await fr.evaluate(
+                "() => document.body ? document.body.innerText : ''"))
+        except Exception:
+            pass
+    try:
+        alerts = await page.locator("[role='alert'], .StripeElement--invalid").all_inner_texts()
+        parts.extend(alerts or [])
+    except Exception:
+        pass
+    return "\n".join(parts)
 
 
 # ── Шаги флоу ────────────────────────────────────────────────────────────────
@@ -405,15 +564,9 @@ async def _select_amount(page, amount: float, log) -> bool:
 async def _select_card_method(page, log) -> bool:
     """Кликает метод оплаты Visa/Mastercard (второй блок) и ждёт форму карты."""
 
-    async def _card_form_visible() -> bool:
-        try:
-            await page.locator("input[placeholder*='Card number' i]").first.wait_for(
-                state="visible", timeout=4000)
-            return True
-        except Exception:
-            return False
-
-    if await _card_form_visible():
+    if await _card_form_visible(page):
+        if await _has_stripe_checkout(page):
+            log("Форма Stripe Payment Element уже открыта")
         return True
 
     strategies = [
@@ -423,7 +576,7 @@ async def _select_card_method(page, log) -> bool:
     for name, sel in strategies:
         try:
             await page.locator(sel).first.click(timeout=3000)
-            if await _card_form_visible():
+            if await _card_form_visible(page):
                 log(f"Метод оплаты выбран ({name})")
                 return True
         except Exception:
@@ -432,7 +585,7 @@ async def _select_card_method(page, log) -> bool:
     # Текстовый вариант (если логотипы — не <img>)
     try:
         await page.get_by_text(re.compile("mastercard", re.I)).last.click(timeout=3000)
-        if await _card_form_visible():
+        if await _card_form_visible(page):
             log("Метод оплаты выбран (текст mastercard)")
             return True
     except Exception:
@@ -454,7 +607,7 @@ async def _select_card_method(page, log) -> bool:
                 return false;
             }"""
         )
-        if ok and await _card_form_visible():
+        if ok and await _card_form_visible(page):
             log("Метод оплаты выбран (по соседнему блоку)")
             return True
     except Exception:
@@ -474,6 +627,12 @@ async def _fill_card_form(page, card: dict, log) -> bool:
     if not number or not cvv or not expiry:
         log("❌ У карты не хватает данных (номер/CVV/срок)")
         return False
+
+    if await _has_stripe_checkout(page):
+        log("Оплата через Stripe — заполняю iframe…")
+        if await _fill_stripe_card_form(page, card, log):
+            return True
+        log("⚠ Stripe iframe не заполнился — пробую поля на странице…")
 
     if holder and holder not in ("-", "NA", "N/A"):
         await _fill_by_placeholder(page, "Cardholder", holder)
@@ -523,35 +682,145 @@ async def _click_pay(page, log) -> bool:
 
 
 _ERROR_RE = re.compile(
-    r"(payment failed|transaction failed|declined|insufficient funds|"
+    r"(your card(?:'s|’s)? security code is incorrect|"
+    r"your card number is incorrect|"
+    r"an error occurred while processing your card|"
+    r"payment failed|transaction failed|"
     r"invalid card|card number is invalid|expired card|try again later)", re.I)
-_SUCCESS_RE = re.compile(r"(payment success|top[- ]?up success|successful)", re.I)
+_DECLINED_RE = re.compile(
+    r"(your card was declined|your card has insufficient funds|"
+    r"card was declined|declined|insufficient funds)", re.I)
+_SUCCESS_RE = re.compile(
+    r"(payment success|top[- ]?up success|successful|payment succeeded)", re.I)
 
 
-async def _wait_payment_result(page, log) -> str:
-    """Ждёт реакцию формы после Pay: 'error' | 'maybe_ok'."""
+def _card_last4(card: dict) -> str:
+    return (card.get("number") or "").replace(" ", "").replace("-", "")[-4:]
+
+
+def _card_label(card: dict, idx: int = 0, total: int = 0) -> str:
+    nick = (card.get("nickname") or card.get("name") or "").strip()
+    last4 = _card_last4(card)
+    base = nick or (f"**** {last4}" if last4 else "карта")
+    if total > 1 and idx:
+        return f"{base} ({idx}/{total})"
+    return base
+
+
+def _load_ordered_cards() -> list[dict]:
+    """Карты в порядке data/card_order.json (без import menu.py)."""
+    try:
+        cards = json.loads(_CARDS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        cards = []
+    if not isinstance(cards, list) or not cards:
+        return []
+    try:
+        order = json.loads(_CARD_ORDER_FILE.read_text(encoding="utf-8"))
+        idx = [i for i in order if isinstance(i, int) and 0 <= i < len(cards)]
+        idx += [i for i in range(len(cards)) if i not in idx]
+        return [cards[i] for i in idx]
+    except Exception:
+        return cards
+
+
+def _build_card_queue(primary: dict | None, retry_cards: bool) -> list[dict]:
+    if not retry_cards:
+        return [primary] if primary else []
+    ordered = _load_ordered_cards()
+    if not ordered:
+        return [primary] if primary else []
+    if not primary:
+        return ordered
+    out: list[dict] = []
+    seen: set[str] = set()
+    for c in [primary] + ordered:
+        key = _card_last4(c)
+        if key:
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(c)
+    return out
+
+
+async def _wait_payment_result(page, log, *, headless: bool = False) -> str:
+    """Ждёт реакцию после Pay: 'declined' | 'error' | 'maybe_ok'."""
     deadline = time.monotonic() + PAY_RESULT_WAIT
     while time.monotonic() < deadline:
         await page.wait_for_timeout(3000)
-        txt = await _page_text(page)
+
+        if await _stripe_payment_redirect_ok(page):
+            log("Stripe: redirect_status=succeeded — проверяю баланс…")
+            return "maybe_ok"
+
+        txt = await _collect_stripe_error_text(page)
+        if _DECLINED_RE.search(txt):
+            m = _DECLINED_RE.search(txt)
+            log(f"⚠ Карта отклонена Stripe: {m.group(0) if m else 'declined'}")
+            await _shot(page, "pay_declined", log)
+            return "declined"
         m = _ERROR_RE.search(txt)
         if m:
-            log(f"❌ Ошибка оплаты: {m.group(0)}")
+            log(f"❌ Ошибка оплаты (Stripe): {m.group(0)}")
             await _shot(page, "pay_error", log)
             return "error"
         if _SUCCESS_RE.search(txt):
             log("Похоже на успех — проверяю баланс…")
             return "maybe_ok"
-        try:
-            form_visible = await page.locator(
-                "input[placeholder*='Card number' i]").first.is_visible()
-        except Exception:
-            form_visible = False
-        if not form_visible:
+
+        if await _stripe_3ds_active(page):
+            if headless:
+                log("❌ Требуется 3DS (Stripe) — в headless не поддерживается")
+                await _shot(page, "stripe_3ds", log)
+                return "error"
+            log(f"Stripe 3DS — подтвердите оплату в браузере (до {STRIPE_3DS_WAIT // 60} мин)…")
+            deadline = max(deadline, time.monotonic() + STRIPE_3DS_WAIT)
+            continue
+
+        if not await _card_form_visible(page):
             log("Форма оплаты закрылась — проверяю баланс…")
             return "maybe_ok"
+
     log("⚠ Форма не отреагировала за отведённое время — проверяю баланс…")
     return "maybe_ok"
+
+
+async def _charge_topup(
+    page, ctx, amount: float, card: dict, balance_before: float | None,
+    log: Callable[[str], None], *, headless: bool,
+) -> tuple[str, str | float]:
+    """Одна попытка оплаты на /top_up. Возвращает ('ok', balance) | ('declined', msg) | ('failed', msg)."""
+    log(f"Открываю Top up, сумма ${amount:g}…")
+    await page.goto(f"{BASE_URL}/top_up", wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(2500)
+    await _dismiss_notices(page)
+
+    if not await _select_amount(page, amount, log):
+        return "failed", "Не удалось выбрать сумму пополнения"
+    if not await _select_card_method(page, log):
+        return "failed", "Не удалось открыть форму оплаты картой"
+    if not await _fill_card_form(page, card, log):
+        return "failed", "Не удалось заполнить реквизиты карты"
+    if not await _click_pay(page, log):
+        return "failed", "Не удалось нажать Pay"
+
+    res = await _wait_payment_result(page, log, headless=headless)
+    if res == "declined":
+        return "declined", "Карта отклонена Stripe"
+    if res == "error":
+        return "failed", "Ошибка оплаты — см. скриншот в debug/deepseek"
+
+    ok, bal = await _wait_balance_growth(ctx, balance_before, amount, log)
+    if ok:
+        return "ok", bal if bal is not None else 0.0
+
+    cur = f"${bal:.2f}" if bal is not None else "неизвестен"
+    msg = (f"Баланс не вырос за {BALANCE_WAIT // 60} мин (сейчас {cur}) — "
+           f"проверьте оплату вручную")
+    log(f"⚠ {msg}")
+    await _shot(page, "balance_not_grown", log)
+    return "failed", msg
 
 
 async def _wait_balance_growth(ctx, balance_before: float | None,
@@ -591,14 +860,12 @@ async def _wait_balance_growth(ctx, balance_before: float | None,
 async def topup(email: str, password: str, amount: float, card: dict,
                 headless: bool = False, log=None,
                 keep_open_on_fail: bool = True,
-                login_method: str = "password") -> tuple[bool, str]:
-    """Пополняет API-баланс DeepSeek на `amount` USD картой `card`.
+                login_method: str = "password",
+                retry_cards: bool = True) -> tuple[bool, str]:
+    """Пополняет API-баланс DeepSeek на `amount` USD.
 
-    card — dict формата data/cards.json (number/expiry/cvv/name/…).
-    login_method: "password" (email+пароль DeepSeek) или "google"
-    (кнопка «Log in with Google»; password — пароль Google, можно пустой,
-    тогда окно Google заполняется вручную).
-    Возвращает (успех, сообщение для пользователя).
+    card — первая карта; при retry_cards=True при отказе Stripe перебирает остальные
+    по порядку из data/card_order.json.
     """
     log = _safe_log(log or print)
     email = (email or "").strip()
@@ -607,6 +874,10 @@ async def topup(email: str, password: str, amount: float, card: dict,
         return False, "Не указаны email или пароль DeepSeek"
     if amount <= 0:
         return False, "Сумма должна быть больше нуля"
+
+    cards = _build_card_queue(card, retry_cards)
+    if not cards:
+        return False, "Нет сохранённых карт — добавьте карту в разделе «Карты»"
 
     from playwright.async_api import async_playwright
 
@@ -667,44 +938,35 @@ async def topup(email: str, password: str, amount: float, card: dict,
         else:
             log(f"Баланс до пополнения: ${balance_before:.2f}")
 
-        # 2. Страница пополнения
-        log(f"Открываю Top up, сумма ${amount:g}…")
-        await page.goto(f"{BASE_URL}/top_up", wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(2500)
-        await _dismiss_notices(page)
-
-        if not await _select_amount(page, amount, log):
+        total = len(cards)
+        last_decline = ""
+        for i, pay_card in enumerate(cards, 1):
+            label = _card_label(pay_card, i, total)
+            if total > 1:
+                log(f"💳 Карта {i}/{total}: {label}")
+            status, detail = await _charge_topup(
+                page, ctx, amount, pay_card, balance_before, log, headless=headless,
+            )
+            if status == "ok":
+                bal = float(detail)
+                msg = f"✅ Пополнено ${amount:g}, баланс DeepSeek: ${bal:.2f}"
+                if total > 1:
+                    msg += f" (карта: {label})"
+                log(msg)
+                return True, msg
+            if status == "declined":
+                last_decline = str(detail)
+                if i < total:
+                    log(f"↪ Пробую следующую карту…")
+                    continue
+                failed_keep_open = True
+                return False, (f"Все {total} карт(ы) отклонены Stripe — "
+                               f"последняя: {label}")
             failed_keep_open = True
-            return False, "Не удалось выбрать сумму пополнения"
-        if not await _select_card_method(page, log):
-            failed_keep_open = True
-            return False, "Не удалось открыть форму оплаты картой"
-        if not await _fill_card_form(page, card, log):
-            failed_keep_open = True
-            return False, "Не удалось заполнить реквизиты карты"
-        if not await _click_pay(page, log):
-            failed_keep_open = True
-            return False, "Не удалось нажать Pay"
-
-        # 3. Результат
-        res = await _wait_payment_result(page, log)
-        if res == "error":
-            failed_keep_open = True
-            return False, "Оплата отклонена — см. скриншот в debug/deepseek"
-
-        ok, bal = await _wait_balance_growth(ctx, balance_before, amount, log)
-        if ok:
-            msg = f"✅ Пополнено ${amount:g}, баланс DeepSeek: ${bal:.2f}"
-            log(msg)
-            return True, msg
+            return False, str(detail)
 
         failed_keep_open = True
-        cur = f"${bal:.2f}" if bal is not None else "неизвестен"
-        msg = (f"Баланс не вырос за {BALANCE_WAIT // 60} мин (сейчас {cur}) — "
-               f"проверьте оплату вручную")
-        log(f"⚠ {msg}")
-        await _shot(page, "balance_not_grown", log)
-        return False, msg
+        return False, last_decline or "Оплата не удалась"
 
     except Exception as e:
         log(f"❌ Ошибка: {e}")

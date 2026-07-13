@@ -1668,7 +1668,8 @@ class SubHubApp(ctk.CTk):
             pass
         self._ds_log_line(
             f"Пополнение ${amount:g} → {email}"
-            + (" (вход через Google)" if method == "google" else ""))
+            + (" (вход через Google)" if method == "google" else "")
+            + " · при отказе Stripe — следующая карта")
 
         def _w():
             try:
@@ -1676,6 +1677,7 @@ class SubHubApp(ctk.CTk):
                 ok, msg = asyncio.run(ds.topup(
                     email, password, amount, card,
                     login_method=method,
+                    retry_cards=True,
                     log=lambda s: self._run_on_main( self._ds_log_line, str(s)),
                 ))
             except Exception as e:
