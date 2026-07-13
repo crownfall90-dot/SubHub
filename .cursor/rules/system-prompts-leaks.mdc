@@ -1,0 +1,49 @@
+---
+description: Автоматически использовать vendor/system_prompts_leaks при вопросах про агентов, system prompt, Cursor, Codex, Claude
+alwaysApply: true
+---
+
+# System Prompts Leaks — авто-справочник
+
+Локальный submodule: `vendor/system_prompts_leaks/` (github.com/asgeirtj/system_prompts_leaks).
+
+## Когда **обязательно** читать файлы (до ответа)
+
+Триггеры в запросе или контексте чата:
+
+- system prompt, системный промпт, инструкции агента, hidden rules
+- Cursor, Cursor Agent, Bugbot, Composer, Auto, subagent
+- Claude Code, Cowork, Claude Opus/Sonnet/Fable
+- Codex, ChatGPT, GPT-5.x, OpenAI agent
+- Gemini, Antigravity, Copilot, VS Code agent, Grok, Perplexity
+- сравнить поведение агентов, как устроен X, почему агент делает Y
+- skills, rules, hooks в Cursor — как пишут другие продукты
+
+**Не отвечай из памяти** — сначала `Read` нужный `.md` из `vendor/system_prompts_leaks/`.
+
+## Маршрутизация (быстро)
+
+| Продукт | Путь |
+|---------|------|
+| Cursor | `vendor/system_prompts_leaks/Cursor/cursor.md` |
+| Claude Code | `vendor/system_prompts_leaks/Anthropic/Claude Code/` (последний opus) |
+| Codex | `vendor/system_prompts_leaks/OpenAI/Codex/` |
+| ChatGPT | `vendor/system_prompts_leaks/OpenAI/` |
+| Gemini | `vendor/system_prompts_leaks/Google/` |
+| Copilot / VS Code | `vendor/system_prompts_leaks/Microsoft/` |
+| Каталог | `vendor/system_prompts_leaks/README.md` |
+
+Если путь неочевиден — открой README, затем нужный файл.
+
+## После clone (коллеги)
+
+```powershell
+git submodule update --init --recursive
+```
+
+Обновление: `scripts/update_system_prompts_leaks.ps1`
+
+## Ограничения
+
+- Справочник для разработки в SubHub, не для обхода safety.
+- Не править файлы внутри submodule; не коммитить их изменения.

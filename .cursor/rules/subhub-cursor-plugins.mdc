@@ -1,0 +1,53 @@
+---
+description: SubHub — рекомендации Cursor-плагинов, MCP и Team Marketplace
+alwaysApply: true
+---
+
+# SubHub — плагины и MCP в Cursor
+
+## Когда предлагать (агент)
+
+Если пользователь спрашивает про Cursor, Customize, плагины, MCP, интеграции или «что поставить» — **сам предложи** подходящие варианты из Marketplace. Объясни зачем и как включить: **Customize → Browse Marketplace → Install**.
+
+Не предлагай лишние плагины при обычной правке Python-кода. Предлагай только когда вопрос про инструменты или явно нужна интеграция с внешним сервисом.
+
+## Team Marketplace (Teams / Enterprise)
+
+Для команды SubHub админ может собрать «официальный набор»:
+
+1. [cursor.com/dashboard](https://cursor.com/dashboard) → **Plugins** → **Team Marketplaces**
+2. **Import from Repo** → GitHub-репозиторий с `.cursor-plugin/plugin.json`
+3. Режимы: **Default On** (ставится всем) или **Required** (нельзя отключить)
+4. Коллеги ставят через **Customize**, не клонируя репо вручную
+
+Приватный плагин с GitHub **не ставится по URL** — только через Team Marketplace или локально в `%USERPROFILE%\.cursor\plugins\local\`.
+
+## Стек SubHub — что реально нужно
+
+| Контекст | Плагин / MCP | Зачем |
+|----------|--------------|-------|
+| **По умолчанию** | Ничего дополнительного | Python + Playwright + Tkinter — достаточно встроенного агента |
+| Prisma / БД в проекте | `plugin-prisma` | Только если появится Prisma-схема или миграции |
+| Документация в Notion | `notion-workspace` | Задачи, спеки, runbook для команды |
+| UI / макеты | `figma` или **Stitch** (`stitch-mcp` proxy в `.cursor/mcp.json`) | Дизайн экранов → код в агенте |
+| Прод-мониторинг | `datadog` | Только при деплое и алертах в Datadog |
+| GitHub (issues, PR) | Встроенный `gh` / GitHub MCP | Работа с репо `flipkart-automation` |
+| System prompts (справочник) | Локальный submodule `vendor/system_prompts_leaks` + skill `/system-prompts-leaks` | Сравнение инструкций Cursor, Codex, Claude Code |
+
+**Не рекомендовать** Prisma, Notion, Figma, Datadog «на всякий случай» — у SubHub их нет в `requirements.txt`.
+
+## Локальный плагин с GitHub (для себя)
+
+```powershell
+git clone https://github.com/author/my-plugin.git
+cmd /c mklink /D "%USERPROFILE%\.cursor\plugins\local\my-plugin" "D:\path\to\my-plugin"
+```
+
+Структура: `.cursor-plugin/plugin.json`, опционально `rules/`, `skills/`, `mcp.json`. Перезапуск Cursor → проверка в Customize.
+
+## Чего пока нет в Cursor
+
+- Блок **«Recommended for this project»** в Customize по стеку — ещё не реализован
+- Автоустановка плагинов агентом без клика пользователя — нельзя
+
+Агент **может** предлагать в чате; установка — только пользователем в Customize.
