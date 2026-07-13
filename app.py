@@ -2388,12 +2388,9 @@ class SubHubApp(ctk.CTk):
             text_color=TEXT_DIM, font=_ui_font(FONT_SMALL),
         )
         self.grizzly_cancel_status.pack(fill="x", pady=(0, 4))
-        self.grizzly_btn_slot = ctk.CTkFrame(inner_gs, fg_color="transparent")
-        self.grizzly_cancel_btn = ctk.CTkButton(
-            self.grizzly_btn_slot, text="🛑 Отменить все активные номера", height=BTN_H,
-            corner_radius=RADIUS_BTN, fg_color=ERROR, hover_color="#da3633",
-            command=self._cancel_grizzly_numbers,
-        )
+        self._grizzly_cancel_parent = inner_gs
+        self.grizzly_btn_slot = None
+        self.grizzly_cancel_btn = None
         self._grizzly_active_total = 0
         self._grizzly_btn_shown = False
         self._set_grizzly_cancel_status("Сейчас активных номеров нет", active_total=0)
@@ -2587,6 +2584,8 @@ class SubHubApp(ctk.CTk):
             elif " · баланс" in msg:
                 bal_s = msg[msg.index(" · баланс"):]
             msg = f"Сейчас активных номеров нет{bal_s}"
+        elif msg.strip() == "Активных номеров нет":
+            msg = "Сейчас активных номеров нет"
         if msg.startswith("Сейчас активных номеров нет") or "активных номеров нет" in msg.lower():
             color = TEXT_DIM
         elif msg.startswith("Активных номеров:"):
@@ -2602,33 +2601,46 @@ class SubHubApp(ctk.CTk):
         )
         self._update_grizzly_cancel_btn(show_btn)
 
-    def _update_grizzly_cancel_btn(self, visible: bool) -> None:
-        if not hasattr(self, "grizzly_cancel_btn"):
+    def _ensure_grizzly_cancel_btn(self) -> None:
+        parent = getattr(self, "_grizzly_cancel_parent", None)
+        if parent is None or self.grizzly_cancel_btn is not None:
             return
-        slot = getattr(self, "grizzly_btn_slot", None)
+        self.grizzly_btn_slot = ctk.CTkFrame(parent, fg_color="transparent")
+        self.grizzly_cancel_btn = ctk.CTkButton(
+            self.grizzly_btn_slot, text="🛑 Отменить все активные номера", height=BTN_H,
+            corner_radius=RADIUS_BTN, fg_color=ERROR, hover_color="#da3633",
+            command=self._cancel_grizzly_numbers,
+        )
+
+    def _destroy_grizzly_cancel_btn(self) -> None:
+        for w in (getattr(self, "grizzly_cancel_btn", None), getattr(self, "grizzly_btn_slot", None)):
+            if w is not None:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+        self.grizzly_cancel_btn = None
+        self.grizzly_btn_slot = None
+        self._grizzly_btn_shown = False
+
+    def _update_grizzly_cancel_btn(self, visible: bool) -> None:
         show = bool(visible and self._grizzly_active_total > 0)
-        if show:
-            self.grizzly_cancel_btn.configure(
-                state="normal",
-                fg_color=ERROR,
-                hover_color="#da3633",
-                text_color=TEXT_PRIMARY,
-            )
-            if slot is not None:
-                self.grizzly_cancel_btn.pack(fill="x")
-                slot.pack(fill="x", pady=(2, 0))
-            else:
-                self.grizzly_cancel_btn.pack(fill="x", pady=(2, 0))
+        if not show:
+            self._destroy_grizzly_cancel_btn()
+            return
+        self._ensure_grizzly_cancel_btn()
+        if self.grizzly_cancel_btn is None:
+            return
+        self.grizzly_cancel_btn.configure(
+            state="normal",
+            fg_color=ERROR,
+            hover_color="#da3633",
+            text_color=TEXT_PRIMARY,
+        )
+        if not self._grizzly_btn_shown and self.grizzly_btn_slot is not None:
+            self.grizzly_cancel_btn.pack(fill="x")
+            self.grizzly_btn_slot.pack(fill="x", pady=(2, 0))
             self._grizzly_btn_shown = True
-        else:
-            for w in (slot, self.grizzly_cancel_btn):
-                if w is not None:
-                    try:
-                        w.pack_forget()
-                    except Exception:
-                        pass
-            self._grizzly_btn_shown = False
-            self.grizzly_cancel_btn.configure(state="disabled")
 
     def _apply_grizzly_result(self, r: dict) -> None:
         err = r.get("error")
@@ -2670,6 +2682,8 @@ class SubHubApp(ctk.CTk):
 
     def _cancel_grizzly_numbers(self) -> None:
         if getattr(self, "_grizzly_active_total", 0) <= 0:
+            return
+        if self.grizzly_cancel_btn is None:
             return
         self._run_bg(self._cancel_grizzly_numbers_worker, "Отмена активных номеров GrizzlySMS…")
 
