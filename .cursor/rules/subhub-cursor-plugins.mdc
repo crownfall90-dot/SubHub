@@ -33,6 +33,7 @@ alwaysApply: true
 | Прод-мониторинг | `datadog` | Только при деплое и алертах в Datadog |
 | GitHub (issues, PR) | Встроенный `gh` / GitHub MCP | Работа с репо `flipkart-automation` |
 | System prompts (справочник) | Локальный submodule `vendor/system_prompts_leaks` + skill `/system-prompts-leaks` | Сравнение инструкций Cursor, Codex, Claude Code |
+| UI / анимации / лендинги | `vendor/motionsites_prompts` + skill `/motionsites` | Hero, motion, Framer — промпты с motionsites.ai |
 
 **Не рекомендовать** Prisma, Notion, Figma, Datadog «на всякий случай» — у SubHub их нет в `requirements.txt`.
 
