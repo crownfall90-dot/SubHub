@@ -10554,11 +10554,9 @@ async def _check_flipkart_accessible() -> bool:
         await _vpn_chrome_cooldown(extra=0.5)
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile)
-        kw = _browser_launch_kw(
-            headless=True, profile_path=profile, background_install=True,
-        )
-        kw["args"] = _hidden_chrome_args(kw.get("args", []))
-        ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
+        kw = _vpn_browser_launch_kw(profile)
+        with _chrome_window_hider():
+            ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
         await _close_extension_startup_tabs(ctx)
         if not await _vpn_connect_on_use(ctx, profile, ping_check=True):
             return False
@@ -10567,7 +10565,7 @@ async def _check_flipkart_accessible() -> bool:
     except Exception:
         return False
     finally:
-        await _close_browser_session(ctx, pw, profile_path=profile, disconnect_vpn=True)
+        await _close_browser_session(ctx, pw, disconnect_vpn=True)
 
 
 def _is_flipkart_accessible_sync() -> bool:

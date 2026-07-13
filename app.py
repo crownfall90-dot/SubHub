@@ -450,6 +450,7 @@ class SubHubApp(ctk.CTk):
         self._vpn_last_check = ""
         self._notif_cards: list[ctk.CTkFrame] = []
         self._notif_unread = 0
+        self._main_queue: queue.Queue[tuple[Callable, tuple, dict]] = queue.Queue()
 
         _cleanup_legacy_branding()
         self._build_layout()
@@ -459,13 +460,11 @@ class SubHubApp(ctk.CTk):
         self.show_page("home")
         self.status_lbl.configure(text="⏳ Инициализация…")
         self._log("⏳ Запуск SubHub…")
-        if (
+        self._want_start_hidden = bool(
             self._app_settings.get("start_minimized")
             and self._app_settings.get("background_mode")
-        ):
-            self._hidden_to_tray = True
-            self.withdraw()
-        else:
+        )
+        if not self._want_start_hidden:
             self._ensure_window_visible()
         self.after(1500, self._maybe_show_loading)
         # Логи и статус — сразу, не дожидаясь preflight (иначе при зависшей
@@ -503,41 +502,42 @@ class SubHubApp(ctk.CTk):
         import menu as m
 
         def log(msg: str) -> None:
-            self.after(0, lambda m=msg: self._log(m))
+            self._run_on_main(self._log, msg)
 
         try:
             m._init_secrets()
             m._migrate_config()
             m._startup_cleanup()
         except Exception as e:
-            self.after(0, lambda: self._log(f"⚠ Инициализация: {e}"))
+            self._run_on_main( lambda: self._log(f"⚠ Инициализация: {e}"))
 
-        self.after(0, lambda: self._log("📦 Проверка зависимостей…"))
+        self._run_on_main( lambda: self._log("📦 Проверка зависимостей…"))
         try:
             ok, dep_msg = m.ensure_dependencies(log_fn=log)
-            self.after(0, lambda: self._log(f"{'✓' if ok else '⚠'} {dep_msg}"))
+            self._run_on_main( lambda: self._log(f"{'✓' if ok else '⚠'} {dep_msg}"))
         except Exception as e:
-            self.after(0, lambda: self._log(f"⚠ Зависимости: {e}"))
+            self._run_on_main( lambda: self._log(f"⚠ Зависимости: {e}"))
 
-        self.after(0, lambda: self._log("🔄 Проверка обновлений…"))
+        self._run_on_main( lambda: self._log("🔄 Проверка обновлений…"))
         try:
             m._check_updates_bg()
             n, commits, _, _ = self._get_update_state()
             if n:
-                self.after(0, lambda: self._log(f"⚡ Доступно обновлений: {n}"))
+                self._run_on_main( lambda: self._log(f"⚡ Доступно обновлений: {n}"))
                 for c in commits[:3]:
-                    self.after(0, lambda line=c: self._log(f"   • {line}"))
+                    self._run_on_main( lambda line=c: self._log(f"   • {line}"))
             else:
-                self.after(0, lambda: self._log("✓ Версия актуальна"))
+                self._run_on_main( lambda: self._log("✓ Версия актуальна"))
         except Exception as e:
-            self.after(0, lambda: self._log(f"⚠ Обновления: {e}"))
+            self._run_on_main( lambda: self._log(f"⚠ Обновления: {e}"))
 
-        self.after(0, self._finish_startup)
+        self._run_on_main( self._finish_startup)
 
     def _start_ticks(self) -> None:
         if getattr(self, "_ticks_started", False):
             return
         self._ticks_started = True
+        self._poll_main_queue()
         self._tick_logs()
         self._tick_status()
 
@@ -547,7 +547,7 @@ class SubHubApp(ctk.CTk):
         self._startup_done = True
         try:
             import menu as m
-            m.register_host_restart(lambda: self.after(0, self._restart_app))
+            m.register_host_restart(lambda: self._run_on_main( self._restart_app))
         except Exception:
             pass
         self._bootstrap_backend()
@@ -589,12 +589,15 @@ class SubHubApp(ctk.CTk):
     def _startup_tray(self) -> None:
         """Иконка SubHub в системном трее — нужна для фонового режима."""
         if not self._app_settings.get("background_mode", True):
+            if getattr(self, "_want_start_hidden", False):
+                self._ensure_window_visible()
             return
         if not self._ensure_tray():
             self._log("⚠ Трей: pip install pystray Pillow — без иконки нельзя скрыть окно")
+            self._hidden_to_tray = False
+            self._ensure_window_visible()
             return
-        if (self._app_settings.get("start_minimized")
-                and self._app_settings.get("background_mode")):
+        if getattr(self, "_want_start_hidden", False):
             self._hidden_to_tray = True
             self.withdraw()
             self._log("Запущено в фоне — иконка в трее, двойной клик откроет окно")
@@ -991,7 +994,7 @@ class SubHubApp(ctk.CTk):
             "home": lambda: (self._refresh_home_ggsell(), self._refresh_update_badge()),
             "youtube_hub": lambda: (self._refresh_youtube_hub(), self._refresh_update_badge()),
             "ggsell": self._refresh_ggsell,
-            "run": lambda: (self._refresh_run_page(), self._sync_run_page_status),
+            "run": lambda: (self._refresh_run_page(), self._sync_run_page_status()),
             "profiles": self._refresh_profiles,
             "cards": self._refresh_cards,
             "archive": self._refresh_archive,
@@ -1003,6 +1006,9 @@ class SubHubApp(ctk.CTk):
                 self._refresh_settings_keys(), self._refresh_update_badge(),
                 self._sync_settings_switches(), self._refresh_grizzly_status(),
                 self._sync_windows_startup(),
+                self.after(150, lambda: self._update_grizzly_cancel_btn(
+                    self._grizzly_active_total > 0,
+                )),
             ),
         }
         fn = refresh.get(name)
@@ -1669,11 +1675,11 @@ class SubHubApp(ctk.CTk):
                 ok, msg = asyncio.run(ds.topup(
                     email, password, amount, card,
                     login_method=method,
-                    log=lambda s: self.after(0, self._ds_log_line, str(s)),
+                    log=lambda s: self._run_on_main( self._ds_log_line, str(s)),
                 ))
             except Exception as e:
                 ok, msg = False, f"Ошибка: {e}"
-            self.after(0, self._ds_topup_done, ok, msg)
+            self._run_on_main( self._ds_topup_done, ok, msg)
 
         threading.Thread(target=_w, daemon=True, name="ds-topup").start()
 
@@ -2218,11 +2224,12 @@ class SubHubApp(ctk.CTk):
 
         btns = ctk.CTkFrame(p, fg_color="transparent")
         btns.grid(row=2, column=0, sticky="ew")
-        ctk.CTkButton(
+        self.vpn_check_btn = ctk.CTkButton(
             btns, text="🔒  Проверить VPN", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY, "bold"),
             fg_color=SVC_YOUTUBE, hover_color="#cc0029", command=self._check_vpn,
-        ).pack(side="left", padx=(0, 8))
+        )
+        self.vpn_check_btn.pack(side="left", padx=(0, 8))
         ctk.CTkButton(
             btns, text="📦  Установить расширения", height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_BODY),
@@ -2380,8 +2387,9 @@ class SubHubApp(ctk.CTk):
             text_color=TEXT_DIM, font=_ui_font(FONT_SMALL),
         )
         self.grizzly_cancel_status.pack(fill="x", pady=(0, 4))
+        self.grizzly_btn_slot = ctk.CTkFrame(inner_gs, fg_color="transparent")
         self.grizzly_cancel_btn = ctk.CTkButton(
-            inner_gs, text="🛑 Отменить все активные номера", height=BTN_H,
+            self.grizzly_btn_slot, text="🛑 Отменить все активные номера", height=BTN_H,
             corner_radius=RADIUS_BTN, fg_color=ERROR, hover_color="#da3633",
             command=self._cancel_grizzly_numbers,
         )
@@ -2562,9 +2570,13 @@ class SubHubApp(ctk.CTk):
                 self._grizzly_active_total = int(msg.split(":", 1)[1].split()[0])
             except Exception:
                 pass
-        elif msg.startswith("Сейчас активных номеров нет") or msg.startswith("Отменено"):
+        elif (
+            msg.startswith("Сейчас активных номеров нет")
+            or msg.startswith("Отменено")
+            or "активных номеров нет" in msg.lower()
+        ):
             self._grizzly_active_total = 0
-        if msg.startswith("Сейчас активных номеров нет"):
+        if msg.startswith("Сейчас активных номеров нет") or "активных номеров нет" in msg.lower():
             color = TEXT_DIM
         elif msg.startswith("Активных номеров:"):
             color = WARNING
@@ -2582,17 +2594,23 @@ class SubHubApp(ctk.CTk):
     def _update_grizzly_cancel_btn(self, visible: bool) -> None:
         if not hasattr(self, "grizzly_cancel_btn"):
             return
-        if visible:
+        slot = getattr(self, "grizzly_btn_slot", self.grizzly_cancel_btn)
+        if visible and self._grizzly_active_total > 0:
             self.grizzly_cancel_btn.configure(
-                state="normal", fg_color=ERROR, hover_color="#da3633",
+                state="normal",
+                fg_color=ERROR,
+                hover_color="#da3633",
+                text_color=TEXT_PRIMARY,
             )
             if not self._grizzly_btn_shown:
                 self.grizzly_cancel_btn.pack(fill="x")
+                slot.pack(fill="x", pady=(2, 0))
                 self._grizzly_btn_shown = True
         else:
             if self._grizzly_btn_shown:
-                self.grizzly_cancel_btn.pack_forget()
+                slot.pack_forget()
                 self._grizzly_btn_shown = False
+            self.grizzly_cancel_btn.configure(state="disabled")
 
     def _apply_grizzly_result(self, r: dict) -> None:
         total = int(r.get("total") or 0)
@@ -2618,9 +2636,9 @@ class SubHubApp(ctk.CTk):
             except Exception as exc:
                 r = {"error": str(exc), "total": 0}
             try:
-                self.after(0, lambda: self._apply_grizzly_result(r))
+                self._run_on_main( lambda: self._apply_grizzly_result(r))
             finally:
-                self.after(0, lambda: setattr(self, "_grizzly_status_busy", False))
+                self._run_on_main( lambda: setattr(self, "_grizzly_status_busy", False))
 
         threading.Thread(target=_worker, daemon=True, name="grizzly-status").start()
 
@@ -2633,8 +2651,16 @@ class SubHubApp(ctk.CTk):
         import grizzly as gz
         r = gz.cancel_all_active_rentals_blocking("вручную")
         msg = self._grizzly_cancel_summary(r)
-        self.after(0, lambda: self._log(f"Grizzly: {msg}"))
-        self.after(0, lambda: self._apply_grizzly_result(r))
+        self._run_on_main( lambda: self._log(f"Grizzly: {msg}"))
+        self._run_on_main( lambda: self._apply_grizzly_result(r))
+
+    def _apply_grizzly_startup(self, r: dict) -> None:
+        summary = self._grizzly_cancel_summary(r)
+        if int(r.get("total") or 0) > 0 or r.get("error"):
+            self._log(f"Grizzly: {summary}")
+        if hasattr(self, "grizzly_cancel_status"):
+            self._apply_grizzly_result(r)
+        self.after(1500, self._refresh_grizzly_status)
 
     def _bootstrap_backend(self) -> None:
         import menu as m
@@ -2648,29 +2674,22 @@ class SubHubApp(ctk.CTk):
         except Exception:
             pass
         try:
-            cleanup_box: dict = {}
-
-            def _startup_cancel() -> None:
-                cleanup_box["r"] = gz.startup_cleanup_active_rentals("старт приложения")
-
             if not _sync_windows_startup_from_settings(self._app_settings):
                 self._log("⚠ Автозагрузка Windows: не удалось применить настройку")
             elif self._app_settings.get("run_at_startup"):
                 self._log("✓ Автозагрузка Windows включена")
 
-            t = _thr.Thread(target=_startup_cancel, daemon=True, name="grizzly-startup-cancel")
-            t.start()
-            t.join(timeout=35)
-            r = cleanup_box.get("r") or {}
-            summary = self._grizzly_cancel_summary(r)
-            if int(r.get("total") or 0) > 0 or r.get("error"):
-                self._log(f"Grizzly: {summary}")
-            if hasattr(self, "grizzly_cancel_status"):
-                self._apply_grizzly_result(r)
-            self.after(1500, self._refresh_grizzly_status)
+            def _startup_cancel() -> None:
+                try:
+                    r = gz.startup_cleanup_active_rentals("старт приложения")
+                except Exception as exc:
+                    r = {"error": str(exc), "total": 0}
+                self._run_on_main(self._apply_grizzly_startup, r)
+
+            _thr.Thread(target=_startup_cancel, daemon=True, name="grizzly-startup-cancel").start()
 
             m.start_background_bootstrap(
-                on_complete=lambda: self.after(0, self._refresh_vpn_page),
+                on_complete=lambda: self._run_on_main(self._refresh_vpn_page),
             )
             self.after(2000, self._poll_vpn_bootstrap)
             gz.start_global_monitor()
@@ -2727,6 +2746,25 @@ class SubHubApp(ctk.CTk):
     def _log(self, msg: str) -> None:
         self._log_sink.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
 
+    def _run_on_main(self, fn: Callable, /, *args, **kwargs) -> None:
+        """Планирует обновление UI в главном потоке Tk (безопасно из фоновых потоков)."""
+        self._main_queue.put((fn, args, kwargs))
+
+    def _poll_main_queue(self) -> None:
+        try:
+            while True:
+                fn, args, kwargs = self._main_queue.get_nowait()
+                try:
+                    fn(*args, **kwargs)
+                except Exception as exc:
+                    self._log(f"UI: {exc}")
+        except queue.Empty:
+            pass
+        try:
+            self.after(50, self._poll_main_queue)
+        except RuntimeError:
+            pass
+
     def _run_bg(self, fn: Callable, label: str = "") -> None:
         if label:
             self._log(label)
@@ -2737,7 +2775,7 @@ class SubHubApp(ctk.CTk):
             except Exception as e:
                 self._log(f"Ошибка: {e}")
             finally:
-                self.after(0, self._ensure_window_visible)
+                self._run_on_main( self._ensure_window_visible)
 
         threading.Thread(target=_wrap, daemon=True).start()
 
@@ -2809,7 +2847,7 @@ class SubHubApp(ctk.CTk):
         except Exception:
             data = None
         try:
-            self.after(0, self._apply_status_tick, data)
+            self._run_on_main( self._apply_status_tick, data)
         except Exception:
             self._status_tick_busy = False
 
@@ -3141,9 +3179,9 @@ class SubHubApp(ctk.CTk):
             try:
                 asyncio.run(self._load_ggsell_orders())
             except Exception as e:
-                self.after(0, lambda: self._log(f"GGSell заказы: {e}"))
+                self._run_on_main( lambda: self._log(f"GGSell заказы: {e}"))
             finally:
-                self.after(0, self._ggsell_orders_loaded)
+                self._run_on_main( self._ggsell_orders_loaded)
 
         threading.Thread(target=_w, daemon=True, name="ggs-orders").start()
         threading.Thread(target=self._fetch_ggsell_balance, daemon=True).start()
@@ -3438,9 +3476,9 @@ class SubHubApp(ctk.CTk):
         def _w():
             try:
                 parsed = asyncio.run(self._fetch_ggsell_messages_parsed(inv_id))
-                self.after(0, lambda: self._ggsell_chat_loaded(inv_id, parsed, None))
+                self._run_on_main( lambda: self._ggsell_chat_loaded(inv_id, parsed, None))
             except Exception as e:
-                self.after(0, lambda: self._ggsell_chat_loaded(inv_id, None, str(e)))
+                self._run_on_main( lambda: self._ggsell_chat_loaded(inv_id, None, str(e)))
 
         threading.Thread(target=_w, daemon=True, name="ggs-chat").start()
 
@@ -3497,7 +3535,7 @@ class SubHubApp(ctk.CTk):
                 asyncio.run(self._send_ggsell_message(inv, body))
             except Exception as e:
                 err = str(e)
-            self.after(0, lambda: self._ggsell_after_send(inv, err))
+            self._run_on_main( lambda: self._ggsell_after_send(inv, err))
 
         threading.Thread(target=_w, daemon=True, name="ggs-send").start()
 
@@ -3692,9 +3730,9 @@ class SubHubApp(ctk.CTk):
                 c = GGSellClient(gs["api_key"], int(gs["seller_id"]), http_timeout=15)
                 bal = await c.get_balance()
                 await c.close()
-                self.after(0, lambda b=bal: self._set_ggsell_balance(f"${b:.2f}"))
+                self._run_on_main( lambda b=bal: self._set_ggsell_balance(f"${b:.2f}"))
             except Exception as e:
-                self.after(0, lambda: self._set_ggsell_balance("ошибка"))
+                self._run_on_main( lambda: self._set_ggsell_balance("ошибка"))
                 self._log(f"GGSell баланс: {e}")
         asyncio.run(_run())
 
@@ -3722,9 +3760,9 @@ class SubHubApp(ctk.CTk):
                 c = GrizzlySMSClient(key, http_timeout=10)
                 bal = await c.get_balance()
                 await c.close()
-                self.after(0, lambda: self.dash_balance.configure(text=f"GrizzlySMS: ${bal:.4f}"))
+                self._run_on_main( lambda: self.dash_balance.configure(text=f"GrizzlySMS: ${bal:.4f}"))
             except Exception as e:
-                self.after(0, lambda: self.dash_balance.configure(text=f"Баланс: {e}"))
+                self._run_on_main( lambda: self.dash_balance.configure(text=f"Баланс: {e}"))
         asyncio.run(_run())
 
     def _refresh_settings_keys(self) -> None:
@@ -4217,7 +4255,7 @@ class SubHubApp(ctk.CTk):
             ok, msg = m.delete_archive_record(rec)
             self._log(f"{'✓' if ok else '✗'} {msg}")
             self._selected_archive = None
-            self.after(0, self._refresh_archive)
+            self._run_on_main( self._refresh_archive)
         self._prof_run(phone, f"Удаление записи {phone}…", _w)
 
     def _open_path(self, path) -> None:
@@ -4507,13 +4545,15 @@ class SubHubApp(ctk.CTk):
         if hasattr(self, "ds_card_box"):
             self._refresh_deepseek()
 
+    _VPN_BOOTSTRAP_TERMINAL = frozenset(("ready", "error", "no_ext"))
+
     def _poll_vpn_bootstrap(self, attempt: int = 0) -> None:
         """Обновляет вкладку VPN, пока фоновая установка расширений не завершится."""
         import menu as m
         if hasattr(self, "vpn_page_status"):
             self._refresh_vpn_page()
         state = m.get_vpn_bg_status().get("state", "idle")
-        if state in ("ready", "error", "no_ext") or attempt >= 45:
+        if state in self._VPN_BOOTSTRAP_TERMINAL or attempt >= 90:
             return
         self.after(2000, lambda: self._poll_vpn_bootstrap(attempt + 1))
 
@@ -4718,9 +4758,9 @@ class SubHubApp(ctk.CTk):
         try:
             import grizzly as gz
             bal = gz.get_balance()
-            self.after(0, lambda: self.run_stat_balance.configure(text=f"${bal:.2f}"))
+            self._run_on_main( lambda: self.run_stat_balance.configure(text=f"${bal:.2f}"))
         except Exception:
-            self.after(0, lambda: self.run_stat_balance.configure(text="—"))
+            self._run_on_main( lambda: self.run_stat_balance.configure(text="—"))
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
@@ -4796,10 +4836,10 @@ class SubHubApp(ctk.CTk):
                         sys.stdout.write(line)
                 code = self._proc.wait() if self._proc else -1
                 m.clear_automation_proc()
-                self.after(0, lambda: self._run_finished(code))
+                self._run_on_main( lambda: self._run_finished(code))
             except Exception as e:
                 m.clear_automation_proc()
-                self.after(0, lambda: self._run_finished(-1, str(e)))
+                self._run_on_main( lambda: self._run_finished(-1, str(e)))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -4871,27 +4911,47 @@ class SubHubApp(ctk.CTk):
                 self.run_progress.grid_remove()
 
     def _check_vpn(self) -> None:
+        if getattr(self, "_vpn_check_busy", False):
+            return
+        self._vpn_check_busy = True
         self._log("Проверка VPN и доступности Flipkart…")
         self._set_run_status_ui("Проверка VPN…", WARNING)
-        if hasattr(self, "vpn_page_status"):
-            self.vpn_page_status.configure(text="⏳  Проверка VPN и Flipkart…")
+        import menu as m
+        m._set_vpn_bg_status("warming", "Проверка VPN и Flipkart…")
+        self._refresh_vpn_page()
+        if hasattr(self, "vpn_check_btn"):
+            self.vpn_check_btn.configure(state="disabled")
 
         def _worker():
             import menu as m
+            ok = False
+            msg = "✗ Проверка не завершилась"
             try:
-                ok = asyncio.run(m._check_flipkart_accessible())
+                ok = asyncio.run(asyncio.wait_for(
+                    m._check_flipkart_accessible(), timeout=120.0,
+                ))
                 msg = "✓ VPN OK · Flipkart доступен" if ok else "✗ Flipkart недоступен (проверьте VPN)"
                 self._log(msg)
                 if ok:
                     m._set_vpn_bg_status("ready", "Flipkart доступен")
                 else:
                     m._set_vpn_bg_status("error", "Flipkart недоступен")
-                self.after(0, lambda: self._apply_vpn_check_result(ok, msg))
+            except asyncio.TimeoutError:
+                msg = "✗ Таймаут проверки VPN (120 с)"
+                self._log(msg)
+                m._set_vpn_bg_status("error", "Таймаут проверки VPN")
             except Exception as e:
+                msg = f"✗ {e}"
                 self._log(f"Ошибка: {e}")
-                self.after(0, lambda: self._apply_vpn_check_result(False, f"✗ {e}"))
+                m._set_vpn_bg_status("error", str(e)[:80])
             finally:
-                self.after(0, self._ensure_window_visible)
+                def _done():
+                    self._vpn_check_busy = False
+                    if hasattr(self, "vpn_check_btn"):
+                        self.vpn_check_btn.configure(state="normal")
+                    self._apply_vpn_check_result(ok, msg)
+                    self._ensure_window_visible()
+                self._run_on_main( _done)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -4915,7 +4975,8 @@ class SubHubApp(ctk.CTk):
                 + (f" · установлено {n}" if n else " · на месте"),
             )
             self._log(f"✓ Готово ({n} профилей обновлено)")
-            self.after(0, self._refresh_vpn_page)
+            self._run_on_main(self._refresh_vpn_page)
+            self._run_on_main(lambda: self.after(2000, self._poll_vpn_bootstrap))
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -4980,7 +5041,7 @@ class SubHubApp(ctk.CTk):
                     if self._current_page == "archive":
                         self._schedule_refresh("archive", self._refresh_archive)
 
-                self.after(0, _ui)
+                self._run_on_main( _ui)
 
         threading.Thread(target=_w, daemon=True, name=f"prof-{phone}").start()
 
@@ -4990,7 +5051,7 @@ class SubHubApp(ctk.CTk):
             ok = m.open_chrome(path)
             self._log(
                 f"{'✓' if ok else '✗'} Chrome +91 {phone}"
-                + (" — открываю VPN и Flipkart…" if ok else "")
+                + (" — запускается (Flipkart; VPN только при автоматизации)" if ok else "")
             )
         self._prof_run(phone, f"Открытие Chrome +91 {phone}…", _w)
 
@@ -5012,8 +5073,6 @@ class SubHubApp(ctk.CTk):
             addr = m._gen_indian_address()
             ok, msg = asyncio.run(m._do_fill_address(path, addr, stop_at_payment=True))
             self._log(f"{'✓' if ok else '✗'} {phone}: {msg}")
-            if ok:
-                self.after(0, self._schedule_refresh)
         self._prof_run(phone, f"До оплаты · +91 {phone}…", _w)
 
     def _prof_set_issued(self, phone: str, path) -> None:
@@ -5455,7 +5514,7 @@ class SubHubApp(ctk.CTk):
                 self._log(f"{'✓' if ok else '✗'} {msg}")
             except Exception as e:
                 self._log(f"Ошибка: {e}")
-            self.after(0, self._refresh_profiles)
+            self._run_on_main( self._refresh_profiles)
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -5479,7 +5538,7 @@ class SubHubApp(ctk.CTk):
                         self._log(f"  … и ещё {len(commits) - 8}")
                 else:
                     self._log(f"✓ Версия актуальна (проверено {when})")
-                self.after(0, self._refresh_update_badge)
+                self._run_on_main( self._refresh_update_badge)
             except Exception as e:
                 self._log(f"Ошибка: {e}")
 
@@ -5538,18 +5597,18 @@ class SubHubApp(ctk.CTk):
                 ok, msg = m._do_git_update()
                 self._log(f"{'✓' if ok else '✗'} {msg}")
                 if not ok:
-                    self.after(0, lambda: messagebox.showerror("Ошибка обновления", msg))
-                    self.after(0, self._enable_upd_btn)
+                    self._run_on_main( lambda: messagebox.showerror("Ошибка обновления", msg))
+                    self._run_on_main( self._enable_upd_btn)
                     return
                 self._log("📦 Установка зависимостей…")
                 m.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
                 m.run([sys.executable, "-m", "playwright", "install", "chromium"])
                 self._log("♻ Перезапуск через 2 сек…")
-                self.after(2000, self._restart_app)
+                self._run_on_main(lambda: self.after(2000, self._restart_app))
             except Exception as e:
                 self._log(f"Ошибка: {e}")
-                self.after(0, lambda: messagebox.showerror("Ошибка", str(e)))
-                self.after(0, self._enable_upd_btn)
+                self._run_on_main( lambda: messagebox.showerror("Ошибка", str(e)))
+                self._run_on_main( self._enable_upd_btn)
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -5641,14 +5700,16 @@ class SubHubApp(ctk.CTk):
 
         def _w():
             import menu as m
-            ok, msg = m.ensure_dependencies(log_fn=self._log)
+            ok, msg = m.ensure_dependencies(
+                log_fn=lambda s: self._run_on_main(self._log, str(s)),
+            )
             self._log(f"{'✓' if ok else '⚠'} {msg}")
             if ok:
                 m.start_background_bootstrap(
                     force=True,
-                    on_complete=lambda: self.after(0, self._refresh_vpn_page),
+                    on_complete=lambda: self._run_on_main(self._refresh_vpn_page),
                 )
-                self.after(2000, self._poll_vpn_bootstrap)
+                self._run_on_main(lambda: self.after(2000, self._poll_vpn_bootstrap))
 
         threading.Thread(target=_w, daemon=True).start()
 
@@ -5815,19 +5876,24 @@ class SubHubApp(ctk.CTk):
             return True
         try:
             import pystray
+            from PIL import Image  # noqa: F401
         except ImportError:
             return False
         if self._tray_icon is not None:
             return True
+        try:
+            tray_img = self._tray_image()
+        except Exception:
+            return False
 
         def _show(_icon=None, _item=None) -> None:
-            self.after(0, self._show_from_tray)
+            self._run_on_main(self._show_from_tray)
 
         def _restart(_icon=None, _item=None) -> None:
-            self.after(0, self._restart_app)
+            self._run_on_main(self._restart_app)
 
         def _quit(_icon=None, _item=None) -> None:
-            self.after(0, self._quit_app)
+            self._run_on_main(self._quit_app)
 
         menu = pystray.Menu(
             pystray.MenuItem("Открыть", _show, default=True),
@@ -5836,7 +5902,7 @@ class SubHubApp(ctk.CTk):
             pystray.MenuItem("Выход", _quit),
         )
         self._tray_icon = pystray.Icon(
-            "subhub", self._tray_image(), APP_NAME, menu,
+            "subhub", tray_img, APP_NAME, menu,
         )
 
         def _run() -> None:
