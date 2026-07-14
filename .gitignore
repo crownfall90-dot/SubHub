@@ -38,3 +38,9 @@ __pycache__/
 # Editor / IDE
 .cursor/mcp.json
 *.log
+
+# Build / installer artifacts (build locally via scripts/)
+dist/
+SubHub.exe
+setup.exe
+uninstall.exe
