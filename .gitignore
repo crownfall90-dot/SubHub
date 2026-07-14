@@ -39,8 +39,7 @@ __pycache__/
 .cursor/mcp.json
 *.log
 
-# Build / installer artifacts (build locally via scripts/)
+# Build / staging (локальная сборка; сам установщик setup.exe — в репо для коллег)
 dist/
 SubHub.exe
-setup.exe
 uninstall.exe

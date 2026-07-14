@@ -2,7 +2,7 @@
 
 **SubHub** — десктопное приложение для команды: автоматизация YouTube Premium (Flipkart), маркетплейс GGSELL и Telegram-бот в одном окне.
 
-> Репозиторий: [github.com/crownfall90-dot/flipkart-automation](https://github.com/crownfall90-dot/flipkart-automation)
+> Репозиторий: [github.com/crownfall90-dot/SubHub](https://github.com/crownfall90-dot/SubHub)
 
 ---
 
@@ -19,7 +19,14 @@
 
 ## Быстрый старт (для коллег)
 
-### 1. Требования
+### Установка через Setup.exe (рекомендуется)
+
+1. Скачать [`setup.exe`](https://github.com/crownfall90-dot/SubHub/raw/master/setup.exe) из корня репозитория  
+   (или взять из [Releases](https://github.com/crownfall90-dot/SubHub/releases))
+2. Запустить установщик — появятся ярлыки, `SubHub.exe` и деинсталлятор
+3. Скопировать `config.yaml.example` → `config.yaml`, `secrets.yaml.example` → `secrets.yaml` и заполнить ключи
+
+### 1. Требования (если ставите из исходников)
 
 - Windows 10/11
 - [Python 3.10+](https://www.python.org/downloads/) — при установке отметить **Add Python to PATH**
@@ -28,8 +35,8 @@
 ### 2. Клонирование
 
 ```bash
-git clone https://github.com/crownfall90-dot/flipkart-automation.git
-cd flipkart-automation
+git clone https://github.com/crownfall90-dot/SubHub.git
+cd SubHub
 ```
 
 Или **Code → Download ZIP** и распаковать в папку без пробелов в пути (например `C:\SubHub`).

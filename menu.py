@@ -561,7 +561,7 @@ _GIT = _find_git()
 
 # ── GitHub HTTP-обновление (работает без git, только stdlib) ──────────────────
 _GH_OWNER = "crownfall90-dot"
-_GH_REPO  = "flipkart-automation"  # GitHub-репозиторий (OTA-обновления через raw/master)
+_GH_REPO  = "SubHub"  # GitHub-репозиторий (OTA / raw master)
 
 # Файлы, которые скачиваются при «Обновить» в SubHub (коллеги получают то же через git pull)
 _UPDATE_FILES = [

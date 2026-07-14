@@ -7449,6 +7449,7 @@ class SubHubApp(ctk.CTk):
     def _setup_exe_candidates(self) -> list[Path]:
         dist = _HERE / "dist"
         return [
+            _HERE / "setup.exe",
             dist / "SubHub-Setup.exe",
             dist / f"SubHub-Setup-{APP_VERSION}.exe",
             _HERE / f"SubHub-Setup-{APP_VERSION}.exe",
