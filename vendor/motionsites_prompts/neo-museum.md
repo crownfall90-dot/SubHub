@@ -13,112 +13,52 @@ fetched: 2026-07-13
 
 ## Prompt
 
-Build a 404 "Page Not Found" hero page as a single full-viewport (100vh, no scroll) React + Vite + Tailwind CSS application using the DM Sans font and Google Material Symbols Rounded icons. The page must match the following specification exactly:
+Build a single-page hero section with a full-screen looping background video, liquid glass UI elements, and a dark cinematic aesthetic. Use React, TypeScript, Tailwind CSS, and Lucide React icons. Here are the exact specifications:
 
----
+Background Video:
 
-## Fonts & External Resources
+Full-screen muted autoplaying video covering the entire viewport, positioned absolutely with object-cover
+Video source URL: https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_115001_bcdaa3b4-03de-47e7-ad63-ae3e392c32d4.mp4
+The video is shifted down by 17% (translate-y-[17%]) so the top portion of the video is cropped -- the interesting content is in the lower portion of the frame
+The video loops seamlessly with a custom JavaScript fade system (no CSS transitions): 500ms requestAnimationFrame-based fade-in on load/loop start, 500ms fade-out when 0.55 seconds remain before the video ends. A fadingOutRef boolean prevents re-triggering the fade-out from repeated timeUpdate events. On ended, opacity is set to 0, then after 100ms the video resets to currentTime = 0, plays, and fades back in. Each new fade cancels any running animation frame to prevent competing animations. Fades resume from the current opacity rather than snapping.
+The outer container is min-h-screen bg-black with overflow-hidden
 
-- **Google Font:** DM Sans (all weights, variable: `opsz 9..40, wght 100..1000`)
-- **Google Material Symbols Rounded:** `opsz,wght,FILL,GRAD@24,400,1,0`
-- **Logo image:** `https://pub-f170a2592d2c4a1485466404c36807be.r2.dev/Tests/logoipsum-415.svg` (rendered with `filter: brightness(0)` to make it black, height 28px)
-- **Background spaceship image:** `https://pub-e68758f43067417dba612b2371819aa1.r2.dev/viktor-components/alien-spaceship.png`
+Font:
 
----
+Import Google Font "Instrument Serif" (both regular and italic) via CSS @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap')
+The heading uses fontFamily: "'Instrument Serif', serif" applied via inline style
 
-## Layout
+Liquid Glass CSS (.liquid-glass class):
 
-The entire page is exactly `100vh` with `overflow: hidden` on html, body, and `#root`. No scrolling. The body uses `display: flex; flex-direction: column`. The `#root` div also uses `height: 100vh; display: flex; flex-direction: column; overflow: hidden`.
+background: rgba(255, 255, 255, 0.01) with background-blend-mode: luminosity
+backdrop-filter: blur(4px) and -webkit-backdrop-filter: blur(4px)
+border: none
+box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.1)
+position: relative; overflow: hidden
+A ::before pseudo-element creates the glass border effect:
+position: absolute; inset: 0; border-radius: inherit; padding: 1.4px
+background: linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.15) 20%, rgba(255,255,255,0) 40%, rgba(255,255,255,0) 60%, rgba(255,255,255,0.15) 80%, rgba(255,255,255,0.45) 100%)
+Mask trick for border-only rendering: -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask-composite: exclude
+pointer-events: none
 
----
+Layout (all inside one full-screen flex column):
 
-## Background
+Navigation bar (relative z-20, padding pl-6 pr-6 py-6):
+Inner container: rounded-full px-6 py-3 flex items-center justify-between max-w-5xl mx-auto
+Left side: Logo area with a Globe icon (size 24) and text "Asme" in white, font-semibold text-lg, with gap-2
+Next to the logo (with gap-8): three nav links ("Features", "Pricing", "About") -- hidden on mobile, shown on md: -- styled text-white/80 hover:text-white transition-colors text-sm font-medium
+Right side (gap-4): "Sign Up" as plain white text button, "Login" as a liquid-glass rounded-full px-6 py-2 button
 
-Body has a layered background:
-1. The spaceship PNG centered at `center 40%`, sized with `background-size: contain`
-2. A `linear-gradient(to top left, #F5F5F5, #F7F7F7)` covering the full page
+Hero content area (relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-12 text-center -translate-y-[20%]):
+Heading: "Built for the curious" -- text-5xl md:text-6xl lg:text-7xl text-white mb-8 tracking-tight whitespace-nowrap with Instrument Serif font
+Below the heading, a max-w-xl w-full space-y-4 container:
+Email input bar: liquid-glass rounded-full pl-6 pr-2 py-2 flex items-center gap-3. Inside: a transparent email input (placeholder: "Enter your email", text-white placeholder:text-white/40 text-base) and a white circular submit button (bg-white rounded-full p-3 text-black) containing an ArrowRight icon (size 20)
+Subtitle text: text-white text-sm leading-relaxed px-4 -- "Stay updated with the latest news and insights. Subscribe to our newsletter today and never miss out on exciting updates."
+Manifesto button: centered, liquid-glass rounded-full px-8 py-3 text-white text-sm font-medium hover:bg-white/5 transition-colors
 
-Both are `background-attachment: fixed` and `no-repeat`.
+Social icons footer (relative z-10 flex justify-center gap-4 pb-12):
+Three circular icon buttons, each liquid-glass rounded-full p-4 text-white/80 hover:text-white hover:bg-white/5 transition-all
+Icons: Instagram, Twitter, Globe (all size 20) from lucide-react
+Each has an aria-label
 
----
-
-## Color Variables (CSS custom properties)
-
-```
---text-main: #1a1a1a
---text-secondary: #888888
---bg-page: #F5F5F5
---card-bg: #ffffff
-```
-
----
-
-## Navbar
-
-- Max-width `1100px`, centered, padding `28px 40px`
-- Has a dashed bottom border made with `background-image: linear-gradient(to right, rgba(0,0,0,0.08) 2px, transparent 2px); background-size: 6px 1px` on a `::after` pseudo-element
-- **Left:** Logo (the SVG image + the text "nexto." in 20px bold, -0.3px letter-spacing, color #111, flex with 9px gap)
-- **Center:** Nav links ("Our Team", "Solutions" with a dropdown arrow character, "Showcase", "News") - 14px, weight 400, opacity 0.65, hover to opacity 1, gap 36px
-- **Right:** CTA button "Let's Connect" - dark gradient button (`linear-gradient(180deg, #2c2c2c 0%, #111111 100%)`), white text 13px weight 500, border-radius 40px, padding `5px 16px 5px 5px`. Has a white circular arrow icon (24px circle) on the LEFT side with a chevron SVG inside. Box-shadow `0 4px 15px rgba(0,0,0,0.15)`. On hover: translateY(-1px), stronger shadow, brightness(1.1).
-- **Hamburger (mobile only):** 3 spans, 24px wide, 2px height, animates to X when active. Hidden on desktop, shown on mobile (`display: flex` at max-width 768px).
-
----
-
-## Mobile Navigation
-
-- Fixed full-screen overlay, slides in from right with `transform: translateX(100%)` -> `translateX(0)`, cubic-bezier(0.77, 0, 0.175, 1) transition
-- On mobile: left-aligned, large links (38px, weight 800, letter-spacing -1.5px), each with bottom border, padding 24px 0
-- Last link is the CTA button styled same as navbar but with 32px arrow circle
-
----
-
-## Main Content Area
-
-- `flex: 1`, centered both ways (`align-items: center; justify-content: center`), max-width 700px, padding `20px 20px 30px`
-- **Lost text:** "Seems you've wandered off..." - 15px, color `--text-secondary`, weight 400, margin-bottom 12px
-- **Title wrapper:** `position: relative; display: inline-block; margin-bottom: 14px`
-  - **Cloud decoration:** Material Symbols "cloud" icon, positioned `top: -18px; left: -24px`, font-size 42px, with gradient text fill (`linear-gradient(to bottom, #F7B2FB 50%, #786EF1 80%, #5588FB 100%)` using `-webkit-background-clip: text; -webkit-text-fill-color: transparent`), white drop-shadow outline, `floatSlow` animation (5s, 0.3s delay)
-  - **Heart decoration:** Material Symbols "favorite" icon, positioned `bottom: -15px; right: 20px`, font-size 32px, same gradient fill, white drop-shadow outline, `floatSlow` animation (4.5s, 1s delay)
-  - **Title:** "Whoops! Nothing here yet" - `font-size: clamp(34px, 5vw, 52px)`, weight 500, letter-spacing -1.5px, line-height 1.08, color #0f0f0f
-- **Subtext:** "Grab a 30-minute `chat` to explore your ideas, scope, and vision. We'll find common ground, sync and `define` a clear roadmap." - 14px, color `--text-secondary`, line-height 1.7, max-width 470px, margin-bottom 28px. The words "chat" and "define" are in highlighted tags (inline-flex, background #E0E2E7, 12.5px, weight 600, padding 2px 12px, border-radius 6px)
-
----
-
-## Navigation Cards
-
-- Flex column, gap 12px, max-width 460px, positioned at bottom with `margin-top: auto`
-- **Card 1 "Main Page":** House SVG icon (path: `M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H5a1 1 0 01-1-1V9.5z` with door `M9 21V12h6v9` in white). Subtitle: "Back where it all begins..."
-- **Card 2 "Showcase":** Circle-dot SVG icon (circle r=9 filled, inner circle r=3.5 white). Subtitle: "Where we walk the walk"
-- Each card: white background, border-radius 18px, padding 18px 22px, flex between, 1px border rgba(0,0,0,0.05), shadow `0 2px 12px rgba(0,0,0,0.04)`. On hover: translateY(-3px), shadow `0 8px 28px rgba(0,0,0,0.08)`.
-- Icon container: 48px circle, background #eaecf0, scales 1.05 on card hover
-- Right chevron arrow (rsaquo character, 21px), translateX(6px) on hover
-- Card title: 15px weight 600, subtitle: 12px color `--text-secondary`
-
----
-
-## Animations
-
-```css
-@keyframes floatSlow {
-  0%, 100% { transform: translateY(0px) rotate(0deg); }
-  50% { transform: translateY(-10px) rotate(3deg); }
-}
-```
-
----
-
-## Responsive Breakpoints
-
-**768px and below:**
-- Hide nav-links and desktop CTA button, show hamburger
-- Background-size: 90%, position: center 45%
-- Navbar padding: 20px
-- Title: 30px, decorations smaller
-- Cards: full width, gap 10px, smaller padding/icons
-
-**480px and below:**
-- Title: 26px
-- Background-size: 100%
-- Decorations even smaller
-
----
+Tech stack: Vite + React 18 + TypeScript, Tailwind CSS 3, lucide-react for all icons. Default Tailwind config with no extensions. No other UI libraries.

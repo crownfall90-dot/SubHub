@@ -1,6 +1,7 @@
 """Smoke + интеграционные проверки GUI/backend."""
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import threading
@@ -62,13 +63,113 @@ def test_vpn_helpers() -> None:
     import menu as m
 
     js = m._veepn_connect_js(loops=2, sleep_ms=1000)
-    if "pickIndiaId" not in js or "india" not in js.lower():
-        fail("vpn_india_js", "нет pickIndiaId")
+    if "pickCountryId" not in js or "wantIso" not in js:
+        fail("vpn_country_js", "нет pickCountryId / USA")
+    if not hasattr(m, "_VPN_FLIPKART_COUNTRY_ORDER"):
+        fail("vpn_helpers", "нет _VPN_FLIPKART_COUNTRY_ORDER")
+    if m._VPN_FLIPKART_COUNTRY_ORDER[0] != "us":
+        fail("vpn_helpers", "USA не первый в порядке стран")
     if not hasattr(m, "_vpn_connect_for_profile"):
         fail("vpn_helpers", "нет _vpn_connect_for_profile")
     if not hasattr(m, "_navigate_flipkart_resilient"):
         fail("vpn_helpers", "нет _navigate_flipkart_resilient")
-    ok("vpn_helpers", "India + resilient navigate")
+    if not hasattr(m, "disconnect_vpn_on_shutdown"):
+        fail("vpn_helpers", "нет disconnect_vpn_on_shutdown")
+    if not hasattr(m, "_vpn_toggle_reconnect_flipkart"):
+        fail("vpn_helpers", "нет _vpn_toggle_reconnect_flipkart")
+    # sticky cancel после shutdown не должен ломать следующий fill/buy
+    m._purchase_cancel.set()
+    m.disconnect_vpn_on_shutdown()
+    if m._purchase_cancel.is_set():
+        fail("vpn_helpers", "_purchase_cancel залипает после disconnect_vpn_on_shutdown")
+    # VeepN только для успешных done (+ .profile_meta.json); вход/tmp — нет
+    from pathlib import Path as _P
+    sample = _P("chrome_profiles_done") / "profile_smokevpn"
+    sample.mkdir(parents=True, exist_ok=True)
+    meta = sample / ".profile_meta.json"
+    try:
+        if m._profile_allows_vpn(sample):
+            fail("vpn_helpers", "VPN allow без meta (ожидали False)")
+        meta.write_text('{"phone":"0000000000"}', encoding="utf-8")
+        if not m._profile_allows_vpn(sample):
+            fail("vpn_helpers", "VPN allow: успешный done+meta должен быть True")
+        tmp = _P("chrome_profiles_done") / "profile_0000000000_tmp_1"
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            (tmp / ".profile_meta.json").write_text("{}", encoding="utf-8")
+            if m._profile_allows_vpn(tmp):
+                fail("vpn_helpers", "VPN allow для _tmp_ (ожидали False)")
+        finally:
+            with contextlib.suppress(Exception):
+                (tmp / ".profile_meta.json").unlink(missing_ok=True)
+                tmp.rmdir()
+    finally:
+        with contextlib.suppress(Exception):
+            meta.unlink(missing_ok=True)
+            sample.rmdir()
+    ok("vpn_helpers", "USA + resilient navigate + VPN only for done+meta")
+
+
+def test_purge_temp_profiles() -> None:
+    """Классификация: tmp/без meta = temp; done+meta = нельзя удалять."""
+    import menu as m
+
+    keep = m.DONE_PROFILES_DIR / "profile_smoke_keep"
+    tmp = m.DONE_PROFILES_DIR / "profile_smoke_tmp_1"
+    bare = m.DONE_PROFILES_DIR / "profile_smoke_bare"
+    work = m.PROFILES_DIR / "profile_smoke_work"
+    for d in (keep, tmp, bare, work):
+        d.mkdir(parents=True, exist_ok=True)
+    (keep / ".profile_meta.json").write_text('{"phone":"1"}', encoding="utf-8")
+    try:
+        if not hasattr(m, "purge_temp_profiles"):
+            fail("purge_temp", "нет purge_temp_profiles")
+        if not m._is_temp_profile_dir(tmp) or not m._is_temp_profile_dir(bare):
+            fail("purge_temp", "tmp/bare должны быть temp")
+        if not m._is_temp_profile_dir(work):
+            fail("purge_temp", "chrome_profiles/ без meta = temp")
+        if m._is_temp_profile_dir(keep):
+            fail("purge_temp", "done+meta нельзя считать temp")
+    finally:
+        import shutil as _sh
+        for d in (keep, tmp, bare, work):
+            with contextlib.suppress(Exception):
+                _sh.rmtree(d, ignore_errors=True)
+    ok("purge_temp", "классификация temp vs done+meta")
+
+
+def test_launch_helpers() -> None:
+    """SubHub.exe / быстрый PID-скан / boot-обёртка."""
+    import time
+    import app as a
+
+    boot = ROOT / "scripts" / "_gui_boot.py"
+    if not boot.exists():
+        fail("launch_helpers", "нет scripts/_gui_boot.py")
+    exe = ROOT / "SubHub.exe"
+    if not exe.exists():
+        fail("launch_helpers", "нет SubHub.exe — scripts/build_subhub_exe.bat")
+    launcher = a._launcher_path()
+    if launcher.resolve() != exe.resolve():
+        fail("launch_helpers", f"launcher={launcher}, expected SubHub.exe")
+    t0 = time.perf_counter()
+    a._collect_subhub_gui_pids()
+    dt = time.perf_counter() - t0
+    if dt > 1.5:
+        fail("launch_helpers", f"PID scan {dt:.2f}s — слишком медленно")
+    if not a._cmdline_is_subhub_gui(
+        f'pythonw.exe "{ROOT / "scripts" / "_gui_boot.py"}"'
+    ):
+        fail("launch_helpers", "_gui_boot.py не распознаётся как GUI")
+    import menu as m
+    git = (m._GIT or "").lower().replace("/", "\\")
+    if git.endswith("git.cmd"):
+        fail("launch_helpers", f"git.cmd вызывает вспышки cmd: {m._GIT}")
+    win = ROOT / "winproc.py"
+    if not win.exists():
+        fail("launch_helpers", "нет winproc.py")
+    ok("launch_helpers", f"exe + boot + silent git + PID scan {dt:.2f}s")
+
 
 
 def test_fill_to_payment_cli() -> None:
@@ -86,6 +187,41 @@ def test_fill_to_payment_cli() -> None:
     if proc.returncode != 0:
         fail("fill_to_payment_cli", proc.stderr or "py_compile failed")
     ok("fill_to_payment_cli", "CLI + run_to_payment.py")
+
+
+def test_gift_payment_helpers() -> None:
+    """Gift knapsack + pay_method wiring (scripts/test_gift_payment_helpers.py)."""
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "test_gift_payment_helpers.py")],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        fail("gift_payment_helpers", (proc.stdout or "") + (proc.stderr or ""))
+    ok("gift_payment_helpers", "select + balance + buy resilient")
+
+
+def test_selector_health() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "test_selector_health.py")],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        fail("selector_health", (proc.stdout or "") + (proc.stderr or ""))
+    ok("selector_health")
+
+
+def test_backup_zip() -> None:
+    out = ROOT / "data" / "backups" / "_smoke_backup.zip"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "backup_data.py"), "-o", str(out)],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        fail("backup_zip", (proc.stdout or "") + (proc.stderr or ""))
+    if not out.is_file() or out.stat().st_size < 20:
+        fail("backup_zip", "zip missing/empty")
+    out.unlink(missing_ok=True)
+    ok("backup_zip")
 
 
 def test_open_chrome_flipkart() -> None:
@@ -173,7 +309,12 @@ def main() -> None:
 
     test_subprocess_log_stream()
     test_vpn_helpers()
+    test_purge_temp_profiles()
+    test_launch_helpers()
     test_fill_to_payment_cli()
+    test_gift_payment_helpers()
+    test_selector_health()
+    test_backup_zip()
     test_open_chrome_flipkart()
     test_full_cycle_boot()
     print(f"\n=== ALL OK ({MARK}) ===\n")

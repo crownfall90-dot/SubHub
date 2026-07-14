@@ -234,8 +234,9 @@ def _kill_chrome_for_profile_standalone(profile_path) -> int:
                 f"Where-Object {{$_.CommandLine -like '*{folder_name}*'}} | "
                 f"ForEach-Object {{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}}"
             )
-            subprocess.run(["powershell", "-Command", ps_cmd],
-                           capture_output=True, timeout=8)
+            subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                           capture_output=True, timeout=8,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             killed = -1
         except Exception:
             pass
@@ -276,8 +277,9 @@ def kill_all_bot_chrome() -> int:
                 f"Where-Object {{{conditions}}} | "
                 f"ForEach-Object {{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}}"
             )
-            subprocess.run(["powershell", "-Command", ps_cmd],
-                           capture_output=True, timeout=10)
+            subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                           capture_output=True, timeout=10,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             killed = -1
         except Exception:
             pass

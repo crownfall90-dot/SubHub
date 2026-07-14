@@ -57,7 +57,7 @@ python scripts/smoke_test.py
 
 Ищи в `automation.log`:
 - `VeepN подключён` / `VeepN уже подключён` — OK
-- `VPN не подключился` / `VPN: таймаут` — проблема расширения или India-сервера
+- `VPN не подключился` / `VPN: таймаут` — проблема расширения или страны (USA приоритет)
 
 Ключевые функции в `menu.py`:
 - `_veepn_connect_js()` — JS для popup/service worker
@@ -91,7 +91,7 @@ CLI `--fill-to-payment` обрабатывается в `menu.py` (~строка
 ### Шаг 6 — Типичные fix-петли
 
 ```
-Access Denied → VPN → _ensure_veepn_connected → retry navigate
+Access Denied → VPN → смена страны (USA → FR → DE → NL) → retry navigate
 OTP timeout   → grizzlysms balance / price_tiers / poll_interval
 Selector miss → config.yaml selectors → Flipkart DOM changed
 Profile stuck → какая папка (active/done/used) → не копировать вслепую
@@ -154,7 +154,7 @@ chrome_profiles_backup/ → бэкапы
 
 | Симптом | Действие |
 |---------|----------|
-| Access Denied | VPN; `vpn_extension/` актуален; India server |
+| Access Denied | VPN; смена страны (USA приоритет); `vpn_extension/` актуален |
 | OTP timeout | Баланс Grizzly; `price_tiers`; увеличить `wait_timeout` |
 | Селектор не найден | `selectors.*` в config; Flipkart сменил вёрстку |
 | Профиль «завис» | Проверить папку профиля; record JSON в used |

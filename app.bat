@@ -6,12 +6,16 @@ set "PYTHONUTF8=1"
 
 if /I "%~1"=="--console" goto console
 
+if exist "%~dp0SubHub.exe" (
+  start "" "%~dp0SubHub.exe"
+  exit /b 0
+)
 wscript.exe //nologo "%~dp0app_launch.vbs"
 exit /b 0
 
 :console
 :loop
-python app.py
+python "%~dp0app.py"
 set "EX=%errorlevel%"
 
 if "%EX%"=="42" goto restart

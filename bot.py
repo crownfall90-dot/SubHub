@@ -2285,8 +2285,9 @@ def _menu_tg_bot_thread() -> None:
             try:
                 loop = asyncio.get_running_loop()
                 def _pip():
+                    import winproc
                     req = Path(__file__).parent / "requirements.txt"
-                    r = subprocess.run(
+                    r = winproc.run(
                         [sys.executable, "-m", "pip", "install", "-r", str(req), "--upgrade"],
                         capture_output=True, text=True, timeout=120,
                         encoding="utf-8", errors="replace")
@@ -2345,7 +2346,10 @@ def _menu_tg_bot_thread() -> None:
                 import os
                 creationflags = 0
                 if os.name == "nt":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
                 loop = asyncio.get_running_loop()
                 proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
                 _proc[0]   = proc
@@ -2377,7 +2381,10 @@ def _menu_tg_bot_thread() -> None:
                 import os
                 creationflags = 0
                 if os.name == "nt":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
                 loop = asyncio.get_running_loop()
                 proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
                 _proc[0]   = proc
@@ -2418,7 +2425,10 @@ def _menu_tg_bot_thread() -> None:
                 import os
                 creationflags = 0
                 if os.name == "nt":
-                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                    creationflags = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
                 loop = asyncio.get_running_loop()
                 proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
                 _proc[0]   = proc
@@ -2503,10 +2513,11 @@ def _menu_tg_bot_thread() -> None:
                     return _m("_http_check_updates")()
                 _git_ok = False
                 try:
-                    _fr = subprocess.run([_GIT, "fetch", "--quiet", "origin"],
+                    import winproc
+                    _fr = winproc.run([_GIT, "fetch", "--quiet", "origin"],
                                          capture_output=True, timeout=20, cwd=_cwd)
                     if _fr.returncode == 0:
-                        r2 = subprocess.run(
+                        r2 = winproc.run(
                             [_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
                             capture_output=True, text=True, timeout=10, cwd=_cwd,
                             encoding="utf-8", errors="replace")
@@ -3508,9 +3519,10 @@ def _menu_tg_bot_thread() -> None:
                         if not (_cwd_u / ".git").exists():
                             return _m("_http_check_updates")()
                         try:
-                            subprocess.run([_GIT, "fetch", "--quiet", "origin"],
+                            import winproc
+                            winproc.run([_GIT, "fetch", "--quiet", "origin"],
                                            capture_output=True, timeout=20, cwd=_cwd_u)
-                            r2 = subprocess.run(
+                            r2 = winproc.run(
                                 [_GIT, "log", "HEAD..FETCH_HEAD", "--oneline", "--no-color"],
                                 capture_output=True, text=True, timeout=10, cwd=_cwd_u,
                                 encoding="utf-8", errors="replace")

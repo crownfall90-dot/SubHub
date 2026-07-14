@@ -10,7 +10,10 @@
     },
     "stitch": {
       "command": "npx",
-      "args": ["-y", "@_davideast/stitch-mcp", "proxy"]
+      "args": ["-y", "@_davideast/stitch-mcp", "proxy"],
+      "env": {
+        "STITCH_API_KEY": "<YOUR_STITCH_API_KEY>"
+      }
     },
     "@21st-dev/magic": {
       "command": "npx",

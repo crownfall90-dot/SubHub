@@ -2366,7 +2366,12 @@ class GGSellBotHandler:
         ]
         try:
             import os
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
             loop = asyncio.get_running_loop()
             proc = await loop.run_in_executor(
                 None, lambda: subprocess.Popen(args, creationflags=creationflags))

@@ -13,11 +13,11 @@ _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DONE_FILE = _DATA_DIR / "ggsel_done.json"
 
 STATUS_ICON = {
-    "new": "🟢",
-    "issued": "🔵",
-    "used": "🟡",
-    "pending": "⏳",
-    "refunded": "🟠",
+    "new": "",
+    "issued": "",
+    "used": "",
+    "pending": "",
+    "refunded": "",
 }
 STATUS_LABEL = {
     "new": "Новый",
@@ -219,7 +219,6 @@ async def fetch_youtube_orders(client) -> tuple[list[dict], dict[int, str]]:
 def row_label(order: dict, state: dict, chat_map: dict | None = None) -> str:
     inv = invoice_id(order)
     sk = status_key(inv, state)
-    icon = STATUS_ICON.get(sk, "•")
     p = parse_order(order)
     email = order_email(order, state, chat_map)
     dt = p["date"]
@@ -231,5 +230,5 @@ def row_label(order: dict, state: dict, chat_map: dict | None = None) -> str:
             period = f"({m_p.group(1)}) "
             break
     if email:
-        return f"{icon}  {period}{email[:38]}   {dt_show}"
-    return f"{icon}  {period}#{inv}   {dt_show}"
+        return f"{period}{email[:38]}   {dt_show}"
+    return f"{period}#{inv}   {dt_show}"

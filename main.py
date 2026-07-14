@@ -4,6 +4,7 @@ Browser Login Automation using Playwright
 """
 
 import asyncio
+import contextlib
 import json
 import random
 import shutil
@@ -80,6 +81,19 @@ def _update_stat(key: str = "", delta: int = 0, money: float = 0.0, balance: Opt
 # ─────────────────────────────────────────────────────────────────────────────
 # Telegram Bot Manager
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _tg_notifications_enabled() -> bool:
+    """Тумблер «Telegram-бот» в настройках SubHub (data/app_settings.json).
+
+    Гасит только рассылку уведомлений; сам бот и диалог (OTP-режимы) работают.
+    """
+    try:
+        raw = json.loads(
+            (_DATA / "app_settings.json").read_text(encoding="utf-8"))
+        return bool(raw.get("notify_telegram", True))
+    except Exception:
+        return True
+
 
 class TelegramBotManager:
     """Управляет Telegram-ботом: подписка на уведомления и отправка OTP кодов."""
@@ -237,6 +251,9 @@ class TelegramBotManager:
                 return False
 
     async def notify_all(self, text: str) -> None:
+        if not _tg_notifications_enabled():
+            logger.info("[Telegram] Уведомления отключены в настройках SubHub")
+            return
         if not self.active_chats:
             logger.warning("[Telegram] Нет подписчиков. Напишите боту любое сообщение в Telegram.")
             return
@@ -246,6 +263,9 @@ class TelegramBotManager:
 
     async def notify_filtered(self, text: str, key: str) -> None:
         """Отправка только подписчикам у которых включён ключ настройки."""
+        if not _tg_notifications_enabled():
+            logger.info("[Telegram] Уведомления отключены в настройках SubHub")
+            return
         targets = [c for c in self.active_chats if self._get_setting(c, key)]
         if not targets:
             logger.info(f"[Telegram] Уведомление '{key}' пропущено — отключено у всех")
@@ -603,6 +623,8 @@ class LoginAutomation:
         # Фоновые задачи для номеров, которые нельзя было отменить из-за кулдауна.
         self._background_tasks: list[asyncio.Task] = []
         self._stale_cancelled: bool = False  # очистка старых активаций только 1 раз
+        self._last_proxy_host: str | None = None  # free-proxy host текущего launch
+        self._last_used_proxy: bool = False
 
     # ── public ──────────────────────────────────────────────────────────────
 
@@ -678,7 +700,7 @@ class LoginAutomation:
             logger.info(f"[{index}] Старт — до {max_parallel} параллельных изолированных контекстов")
 
             async def _pipeline(attempt_num: int) -> None:
-                """Ищет номер + открывает вкладку + phase1 в изолированном временном профиле."""
+                """1) Купить номер 2) Chrome+VPN 3) Flipkart 4) ввод номера / OTP."""
                 act_id = None
                 phone = ""
                 temp_path = profile_path.parent / f"{profile_path.name}_tmp_{attempt_num}"
@@ -686,6 +708,7 @@ class LoginAutomation:
                 in_active = False  # True когда передали владение в словарь active
                 try:
                     await self._pause.wait()  # пауза перед покупкой номера
+                    logger.info(f"[{index}] Ищу номер GrizzlySMS (#{attempt_num})…")
                     num = await self._acquire_number(index)
                     if num is None:
                         return
@@ -698,11 +721,42 @@ class LoginAutomation:
                     await self._notify_bought(phone, cost, bal_after)
 
                     await self._pause.wait()  # пауза перед запуском браузера
+                    logger.info(f"[{index}] Chrome → Flipkart → ввод {phone} → Request OTP")
                     temp_context = await self._launch_context(temp_path)
-                    tab = await temp_context.new_page()
+                    # Не открываем Flipkart второй раз: _launch_context уже мог
+                    # оставить вкладку на login (прокси-путь).
+                    tab = await self._ready_login_page(temp_context)
                     tab.set_default_timeout(self.config.timeout)
-                    await tab.goto(self.config.site_url, wait_until="domcontentloaded")
                     ok = await self._login_phase1(tab, phone, index)
+                    # Access Denied / OTP reject — другой прокси или прямой доступ
+                    # (без VeepN-расширения на этапе входа).
+                    if not ok and getattr(self, "_last_used_proxy", False):
+                        import menu as _menu_fb
+                        denied = False
+                        with contextlib.suppress(Exception):
+                            denied = await _menu_fb._flipkart_page_access_denied(tab)
+                        self._poison_last_proxy(
+                            "access_denied" if denied else "otp_fail",
+                        )
+                        with contextlib.suppress(Exception):
+                            await temp_context.close()
+                        logger.warning(
+                            f"[{index}] "
+                            + (
+                                "Access Denied — другой прокси"
+                                if denied
+                                else "OTP через прокси отклонён — другой прокси / напрямую"
+                            )
+                            + f" (+{phone})"
+                        )
+                        temp_context = await self._launch_context(
+                            temp_path,
+                            _allow_proxy=True,
+                            _proxy_tries_left=3 if denied else 2,
+                        )
+                        tab = await self._ready_login_page(temp_context)
+                        tab.set_default_timeout(self.config.timeout)
+                        ok = await self._login_phase1(tab, phone, index)
                     if ok:
                         await self.sms_client.set_status(act_id, GrizzlySMSClient.STATUS_READY)
                         mon = asyncio.create_task(
@@ -960,8 +1014,7 @@ class LoginAutomation:
             recovery_context = None
             try:
                 recovery_context = await self._launch_context(recovery_path)
-                recovery_tab = await recovery_context.new_page()
-                await recovery_tab.goto(self.config.site_url, wait_until="domcontentloaded")
+                recovery_tab = await self._ready_login_page(recovery_context)
                 logger.info(f"[{index}] Восстановление: фаза 1 для +{short_phone} в новом профиле")
                 if await self._login_phase1(recovery_tab, phone, index):
                     logger.info(f"[{index}] Восстановление: фаза 2 — ввожу код {code}")
@@ -1125,7 +1178,7 @@ class LoginAutomation:
         context: Optional[BrowserContext] = None
         try:
             context = await self._launch_context(profile_path)
-            page = await context.new_page()
+            page = await self._ready_login_page(context)
             page.set_default_timeout(self.config.timeout)
             success = await self._login(page, account, index)
             if success:
@@ -1477,6 +1530,33 @@ class LoginAutomation:
         except Exception:
             pass
 
+    async def _ready_login_page(self, context: BrowserContext) -> Page:
+        """Вкладка для входа: переиспользуем уже открытый Flipkart (прокси-путь)."""
+        page = None
+        for p in list(context.pages):
+            try:
+                u = (p.url or "").lower()
+            except Exception:
+                continue
+            if "flipkart.com" in u and "chrome-extension://" not in u:
+                page = p
+                break
+        if page is None:
+            page = context.pages[0] if context.pages else await context.new_page()
+        try:
+            cur = (page.url or "").lower()
+        except Exception:
+            cur = ""
+        if "flipkart.com" not in cur or "access denied" in cur:
+            await page.goto(
+                self.config.site_url,
+                wait_until="domcontentloaded",
+                timeout=min(45_000, int(self.config.timeout or 45_000)),
+            )
+        with contextlib.suppress(Exception):
+            await page.bring_to_front()
+        return page
+
     # ── Phase helpers ─────────────────────────────────────────────────────────
 
     @staticmethod
@@ -1497,17 +1577,9 @@ class LoginAutomation:
         display_phone = self._format_phone(phone)
         logger.info(f"[{index}] Ввожу номер: +91 {display_phone}")
 
-        # Ждём если Flipkart показывает bot-challenge ("Are you a human?")
-        if not await self._wait_bot_challenge(page, index):
-            await self._save_screenshot(page, index, phone, "bot_challenge")
-            return False
-
-        # Ждём появления формы — не networkidle (Flipkart его никогда не достигает),
-        # а конкретного input-элемента ниже шапки.
-        rect = None
-        deadline = asyncio.get_running_loop().time() + 8
-        while asyncio.get_running_loop().time() < deadline:
-            rect = await page.evaluate("""
+        # Сначала ищем поле — если оно уже есть, не ждём bot-challenge 25s
+        # (медленные прокси иначе теряют минуту на холостом опросе).
+        _field_js = """
                 () => {
                     const el = [...document.querySelectorAll('input')].find(i => {
                         const ph = (i.placeholder || '').toLowerCase();
@@ -1521,10 +1593,32 @@ class LoginAutomation:
                     return { x: Math.round(r.left + r.width/2),
                              y: Math.round(r.top  + r.height/2) };
                 }
-            """)
+            """
+        # Access Denied на экране входа = этот прокси/канал не для Flipkart
+        with contextlib.suppress(Exception):
+            import menu as _menu_ad
+            if await _menu_ad._flipkart_page_access_denied(page):
+                logger.warning(f"[{index}] Access Denied — прокси не подошёл для Flipkart")
+                await self._save_screenshot(page, index, phone, "access_denied")
+                self._poison_last_proxy("access_denied")
+                return False
+
+        rect = None
+        with contextlib.suppress(Exception):
+            rect = await page.evaluate(_field_js)
+        if rect is None:
+            if not await self._wait_bot_challenge(page, index, timeout=12.0):
+                await self._save_screenshot(page, index, phone, "bot_challenge")
+                return False
+
+        # Ждём форму — не networkidle (Flipkart его не достигает)
+        deadline = asyncio.get_running_loop().time() + 10
+        while rect is None and asyncio.get_running_loop().time() < deadline:
+            with contextlib.suppress(Exception):
+                rect = await page.evaluate(_field_js)
             if rect:
                 break
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.25)
 
         if rect is None:
             logger.error(f"[{index}] Поле ввода не найдено")
@@ -1618,10 +1712,11 @@ class LoginAutomation:
                 await self._click_if_exists(page, second, label="CONTINUE-2")
                 await asyncio.sleep(0.8)
 
-            # Параллельно ждём OTP-поле ИЛИ toast «Maximum attempts».
-            # Toast может появиться через 1–5s после нажатия, поэтому опрашиваем до 20s.
-            otp_sel_ph1 = "input[type='text'], input[type='number']"
-            _ph1_dl = asyncio.get_running_loop().time() + 20
+            # Ждём именно OTP-поле (не поле телефона!) или toast ошибки.
+            import menu as _menu
+            otp_sel_ph1 = _menu._OTP_SEL
+            otp_ok = False
+            _ph1_dl = asyncio.get_running_loop().time() + 12
             while asyncio.get_running_loop().time() < _ph1_dl:
                 if await self._is_flipkart_blocked(page):
                     logger.warning(
@@ -1629,16 +1724,69 @@ class LoginAutomation:
                     )
                     await self._save_screenshot(page, index, phone, "blocked_phase1")
                     return False
+                if await self._is_otp_send_rejected(page):
+                    logger.warning(
+                        f"[{index}] +{phone}: Flipkart отказал в OTP "
+                        "«Something's not right» — обычно плохой прокси/IP"
+                    )
+                    await self._save_screenshot(page, index, phone, "otp_rejected")
+                    self._poison_last_proxy("otp_rejected")
+                    return False
                 try:
                     el = await page.query_selector(otp_sel_ph1)
                     if el and await el.is_visible():
-                        break   # OTP-поле появилось
+                        # Не путать с полем телефона на том же экране
+                        val = (await el.input_value()).strip()
+                        ph = ((await el.get_attribute("placeholder")) or "").lower()
+                        if "mobile" in ph or "email" in ph or "search" in ph:
+                            pass
+                        elif len(val) >= 10 and val.isdigit():
+                            pass  # ещё телефон
+                        else:
+                            otp_ok = True
+                            break
                 except Exception:
                     pass
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.35)
+
+            if not otp_ok:
+                if await self._is_otp_send_rejected(page):
+                    self._poison_last_proxy("otp_rejected")
+                logger.error(
+                    f"[{index}] OTP-поле не появилось после Request OTP "
+                    f"(URL: {page.url}) — прокси/IP скорее всего отвергнут Flipkart"
+                )
+                await self._save_screenshot(page, index, phone, "no_otp_field")
+                return False
 
         logger.info(f"[{index}] Phase1 OK — URL: {page.url}")
         return True
+
+    def _poison_last_proxy(self, reason: str = "") -> None:
+        """Убрать прокси, на котором Flipkart не шлёт OTP, из пула."""
+        host = getattr(self, "_last_proxy_host", None)
+        if not host:
+            return
+        with contextlib.suppress(Exception):
+            import menu as _menu
+            _menu._mark_free_proxy_dead(host)
+            logger.info(f"Прокси {host} убран из пула ({reason or 'bad'})")
+        self._last_proxy_host = None
+
+    async def _is_otp_send_rejected(self, page: Page) -> bool:
+        """Toast «Something's not right» — Flipkart не принял запрос OTP (часто прокси)."""
+        try:
+            text = await page.evaluate(
+                "() => (document.body?.innerText || '') + ' ' + (document.body?.textContent || '')"
+            )
+            t = text.lower()
+            return (
+                "something's not right" in t
+                or "somethings not right" in t
+                or ("something" in t and "not right" in t and "try again" in t)
+            )
+        except Exception:
+            return False
 
     async def _is_flipkart_blocked(self, page: Page) -> bool:
         """Проверяет блокировку номера/аккаунта на странице Flipkart."""
@@ -2131,74 +2279,129 @@ class LoginAutomation:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     ]
 
-    async def _launch_context(self, profile_path: Path, headless: Optional[bool] = None) -> BrowserContext:
-        vp = random.choice(self._VIEWPORTS)
-        ua = random.choice(self._USER_AGENTS)
+    async def _launch_context(
+        self,
+        profile_path: Path,
+        headless: Optional[bool] = None,
+        _allow_proxy: bool = True,
+        _proxy_tries_left: int = 3,
+    ) -> BrowserContext:
+        """Chrome для входа: сеть через _resolve_flipkart_launch_network.
 
-        # Prefer real Chrome for better stealth; fall back to Playwright Chromium
-        chrome_exe = _find_chrome()
-        if chrome_exe:
-            logger.debug(f"Используем реальный Chrome: {chrome_exe}")
-        else:
-            logger.debug("Реальный Chrome не найден, используем Playwright Chromium")
-
+        proxy.enabled ВКЛ → proxy-first. Без VeepN-расширения на этапе входа.
+        Access Denied / прокси не открыл Flipkart → другой прокси, затем direct
+        (VPN на ПК). _allow_proxy=False — сразу без публичного прокси.
+        """
         use_headless = self.config.headless if headless is None else headless
-
-        args = [
-            "--disable-blink-features=AutomationControlled",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-popup-blocking",
-            "--disable-notifications",
-            "--disable-save-password-bubble",
-            "--disable-features=TranslateUI,OptimizationHints,MediaRouter",
-            "--disable-renderer-backgrounding",
-            "--disable-ipc-flooding-protection",
-            "--window-size={},{}".format(vp["width"], vp["height"] + 74),
-        ]
-
-        # VPN-расширение: без него Flipkart недоступен (Access Denied). Системный
-        # Chrome 137+ игнорирует --load-extension, поэтому при наличии расширения
-        # форсируем встроенный Chromium от Playwright и настоящее видимое окно
-        # (VPNLY не подключается в headless — проверено вживую).
         import menu as _menu
-        _vpn_ext = _menu._vpn_extension_dir()
-        if _vpn_ext:
-            chrome_exe = None
-            use_headless = False
-            if _menu._needs_load_extension(profile_path):
-                args.append(f"--disable-extensions-except={_vpn_ext}")
-                args.append(f"--load-extension={_vpn_ext}")
+
+        profile_path = Path(profile_path)
+        profile_path.mkdir(parents=True, exist_ok=True)
+        _menu._pre_inject_chrome_prefs(profile_path)
+
+        # Вход / поиск номеров — без VeepN-расширения (только прокси или прямой доступ)
+        use_vpn, proxy = await _menu._resolve_flipkart_launch_network(
+            allow_proxy=_allow_proxy,
+            allow_vpn_extension=False,
+        )
+        use_vpn = False  # расширение не для логина
+        self._last_used_proxy = bool(proxy and proxy.get("server"))
+        self._last_proxy_host = (
+            (proxy or {}).get("_free_host") if self._last_used_proxy else None
+        )
+        if proxy:
+            src = proxy.get("_source") or "proxy"
+            logger.info(
+                f"[{profile_path.name}] Вход через прокси "
+                f"{proxy.get('server')} [{src}] (без расширения)"
+            )
+        else:
+            logger.info(
+                f"[{profile_path.name}] Flipkart без прокси и без расширения "
+                "(прямой доступ / VPN на ПК)"
+            )
+
+        phone = ""
+        with contextlib.suppress(Exception):
+            phone = _menu._phone_from_path(profile_path) or ""
+        kw = _menu._browser_launch_kw(
+            headless=use_headless,
+            phone=phone,
+            profile_path=profile_path,
+            use_vpn=False,
+            proxy=proxy,
+        )
 
         context = await self.playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_path),
-            executable_path=chrome_exe,   # None → Playwright Chromium
-            headless=use_headless,
-            slow_mo=0,
-            args=args,
-            ignore_https_errors=True,
-            viewport=vp,
-            user_agent=ua,
-            locale="en-IN",
-            timezone_id="Asia/Kolkata",
-            extra_http_headers={
-                "Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7",
-            },
+            str(profile_path.resolve()),
+            **kw,
         )
-        await context.add_init_script(self._build_stealth_js())
+        with contextlib.suppress(Exception):
+            await context.add_init_script(self._build_stealth_js())
+        with contextlib.suppress(Exception):
+            await _menu._close_extension_startup_tabs(context)
 
         if self.config.block_media:
             await context.route(
                 "**/*.{png,jpg,jpeg,gif,svg,webp,ico,avif,woff,woff2,ttf,otf,eot,mp4,mp3}",
                 lambda route: route.abort()
             )
-        if _vpn_ext:
-            _menu._register_purchase_profile(profile_path)
-            if not await _menu._vpn_connect_on_use(context, profile_path):
-                _menu._unregister_purchase_profile(profile_path)
-                await context.close()
-                raise RuntimeError("VPN не подключился — Flipkart недоступен без VPN")
-        logger.debug(f"Контекст: {profile_path.name} | {vp['width']}×{vp['height']} | {ua[:40]}...")
+
+        if proxy:
+            # Одна загрузка login: оставляем вкладку для phase1 (без второго goto).
+            ok_proxy = False
+            access_denied = False
+            page = context.pages[0] if context.pages else await context.new_page()
+            with contextlib.suppress(Exception):
+                await page.goto(
+                    self.config.site_url,
+                    wait_until="domcontentloaded",
+                    timeout=18_000,
+                )
+                access_denied = await _menu._flipkart_page_access_denied(page)
+                _body = (await page.evaluate(
+                    "() => document.body?.innerText?.slice(0,400) || ''")).lower()
+                ok_proxy = (
+                    not access_denied
+                    and "flipkart" in _body
+                )
+            if not ok_proxy:
+                host = proxy.get("_free_host") or proxy.get("server")
+                why = "Access Denied" if access_denied else "не открыл Flipkart"
+                logger.info(
+                    f"[{profile_path.name}] Прокси {host} — {why} "
+                    f"(прокси не подошёл)"
+                )
+                with contextlib.suppress(Exception):
+                    if proxy.get("_free_host"):
+                        _menu._mark_free_proxy_dead(proxy["_free_host"])
+                with contextlib.suppress(Exception):
+                    await context.close()
+                # Сначала другой прокси, потом direct (без расширения)
+                if _allow_proxy and _proxy_tries_left > 0:
+                    logger.info(
+                        f"[{profile_path.name}] Перезапуск с другим прокси "
+                        f"(осталось попыток: {_proxy_tries_left})"
+                    )
+                    return await self._launch_context(
+                        profile_path,
+                        headless=headless,
+                        _allow_proxy=True,
+                        _proxy_tries_left=_proxy_tries_left - 1,
+                    )
+                logger.info(
+                    f"[{profile_path.name}] Прокси исчерпаны — прямой доступ "
+                    "(VPN на ПК, без расширения)"
+                )
+                return await self._launch_context(
+                    profile_path,
+                    headless=headless,
+                    _allow_proxy=False,
+                    _proxy_tries_left=0,
+                )
+            logger.info(f"[{profile_path.name}] ✔ Flipkart через прокси — вкладка готова")
+
+        logger.debug(f"Контекст: {profile_path.name}")
         return context
 
     async def _wait_bot_challenge(self, page: Page, index: int, timeout: float = 25.0) -> bool:
@@ -2545,11 +2748,16 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     _script_dir = Path(__file__).resolve().parent
     setup_logging(log_file=str(_script_dir / "automation.log"))
 
-    logger.info("Проверка доступности Flipkart...")
-    if not await _check_flipkart_accessible():
-        logger.error("Flipkart недоступен. Запуск невозможен. Повторите попытку позже.")
-        sys.exit(2)
-    logger.info("Flipkart доступен.")
+    # Фоновая проверка прямого доступа + прогрев пула прокси (если включён).
+    # Порядок: номер → Chrome → (прокси / VPN) → сайт → ввод номера.
+    try:
+        import menu as _menu_ping
+        asyncio.create_task(_menu_ping._flipkart_direct_accessible())
+        if _menu_ping._proxy_enabled():
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _menu_ping.prefetch_free_proxies)
+    except Exception:
+        pass
 
     config_path = _script_dir / "config.yaml"
     if not config_path.exists():

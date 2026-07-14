@@ -13,52 +13,52 @@ fetched: 2026-07-13
 
 ## Prompt
 
-Please build a modern, two-column registration interface called "Aurora Sign Up". Use React, Tailwind CSS (v4), `motion/react` (for animations), and `lucide-react` (for icons). The app should be contained entirely in `App.tsx` and `index.css`.
+Build a single-page hero section with a full-screen looping background video, liquid glass UI elements, and a dark cinematic aesthetic. Use React, TypeScript, Tailwind CSS, and Lucide React icons. Here are the exact specifications:
 
-### 1. Global Setup & CSS (`index.css`)
-- Import the "Inter" font from Google Fonts (weights 300, 400, 500, 600, 700).
-- Extend the Tailwind theme with `--font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;` and a custom color: `--color-brand-gray: #1A1A1A`.
-- Apply base styles to the `body`: `@apply font-sans bg-black text-white antialiased;`.
+Background Video:
 
-### 2. Main Layout (`App.tsx` container)
-- The `<main>` element should have: `flex min-h-screen w-full bg-black selection:bg-white/30 p-2 transition-all duration-500`. 
-- On `lg` breakpoints: `lg:h-screen lg:overflow-hidden lg:p-4`.
-- Split this container into a Left Column (Hero) and a Right Column (Form).
+Full-screen muted autoplaying video covering the entire viewport, positioned absolutely with object-cover
+Video source URL: https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_115001_bcdaa3b4-03de-47e7-ad63-ae3e392c32d4.mp4
+The video is shifted down by 17% (translate-y-[17%]) so the top portion of the video is cropped -- the interesting content is in the lower portion of the frame
+The video loops seamlessly with a custom JavaScript fade system (no CSS transitions): 500ms requestAnimationFrame-based fade-in on load/loop start, 500ms fade-out when 0.55 seconds remain before the video ends. A fadingOutRef boolean prevents re-triggering the fade-out from repeated timeUpdate events. On ended, opacity is set to 0, then after 100ms the video resets to currentTime = 0, plays, and fades back in. Each new fade cancels any running animation frame to prevent competing animations. Fades resume from the current opacity rather than snapping.
+The outer container is min-h-screen bg-black with overflow-hidden
 
-### 3. Left Column (Hero & Background Video)
-- Width on large screens should be exactly `w-[52%]`. It should be hidden on mobile/tablet and only visible `lg:flex`.
-- Styles: `relative flex-col items-center justify-end pb-32 px-12 rounded-3xl overflow-hidden shadow-2xl h-full`.
-- **Background Video**: Add an absolutely positioned `<video>` tag (`inset-0`, `w-full`, `h-full`, `object-cover`). It must have `autoPlay`, `muted`, `loop`, and `playsInline`. 
-- **CRITICAL**: The `<source>` MUST be exactly `https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260506_081238_406ed0e3-5d83-436e-a512-0bbff7ec5b95.mp4` (`type="video/mp4"`).
-- **CRITICAL**: Do NOT add any dark overlay, gradient, or tint mask over the video. Let it play purely without overlays.
-- **Hero Content Container**: Place content over the video (`z-10 w-full max-w-xs space-y-8`).
-- **Animations**: Use `motion.div` for a staggered reveal. The container should transition `opacity: 0` to `1` with `staggerChildren: 0.15` and `delayChildren: 0.2`. Every child element inside should fade in and slide up (`y: 10` to `y: 0`, duration `0.5`).
-- **Brand/Logo**: A flex row with the `Circle` icon from Lucide (fill-white text-white) and the text "Aurora" (`text-xl font-semibold tracking-tight`).
-- **Heading Block**: "Join Aurora" (`text-4xl font-medium tracking-tight whitespace-nowrap`). Below it, a description: "Follow these 3 quick phases to activate your space." (`text-white/60 text-sm leading-relaxed px-4`).
-- **Steps**: Render a custom `<StepItem>` component three times. 
-  1: "Register your identity" (active state)
-  2: "Configure your studio"
-  3: "Finalize your profile"
+Font:
 
-### 4. Right Column (Sign Up Form)
-- A container with `flex-1 flex flex-col items-center justify-center py-12 lg:py-6 px-4 sm:px-12 lg:px-16 xl:px-24 overflow-y-auto lg:overflow-hidden`.
-- **Animation**: Wrap the interior content in a `motion.div` that fades in (`opacity: 0` to `1`, `duration: 0.8`, `ease: "easeOut"`). Inner width `w-full max-w-xl`, spacing `space-y-8 lg:space-y-6 sm:space-y-10`.
-- **Header**: "Create New Profile" (`text-3xl font-medium tracking-tight`). Subtitle: "Input your basic details to begin the journey." (`text-white/40 text-sm`).
-- **Social Buttons**: A 2-column grid (`grid grid-cols-2 gap-4`). Render Google (`Chrome` icon) and Github (`Github` icon) using a `<SocialButton>` component.
-- **Divider**: A horizontal line (`border-white/10`) with the text "Or" in the center (`bg-black px-4 text-xs font-medium text-white/40 uppercase tracking-widest`).
-- **Form Layout**: 
-  - First Name and Last Name in a 2-column grid.
-  - Email (full width).
-  - Password (full width) with a custom `lucide-react` `Eye` toggle icon in the absolute right of the input, and a tiny helper text "Requires at least 8 symbols."
-  - **Submit Button**: "Create Account" (`w-full h-14 bg-white text-black font-semibold rounded-xl hover:bg-white/90 active:scale-[0.98] mt-4`).
-  - **Footer Link**: "Member of the team? Log in".
+Import Google Font "Instrument Serif" (both regular and italic) via CSS @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap')
+The heading uses fontFamily: "'Instrument Serif', serif" applied via inline style
 
-### 5. Reusable Components to Create
-Create these exact functional components at the bottom of the file:
-1. **`<StepItem>`**: Takes `number`, `text`, and an optional `active` boolean.
-   - If active: Apply `bg-white text-black border border-white`. The number circle is `bg-black text-white`.
-   - If inactive: Apply `bg-brand-gray text-white border-none`. The number circle is `bg-white/10 text-white/40`.
-2. **`<SocialButton>`**: Takes `icon` and `label`. Button has `bg-black border border-white/10 rounded-xl hover:bg-white/5`.
-3. **`<InputGroup>`**: Takes `label`, `placeholder`, and `type`. The label is `text-sm font-medium text-white`. The input is `bg-brand-gray border-none rounded-xl h-11 px-4 text-white placeholder:text-white/20 focus:ring-2 focus:ring-white/20`.
+Liquid Glass CSS (.liquid-glass class):
 
-Ensure the final code uses `export default function App()` at the top.
+background: rgba(255, 255, 255, 0.01) with background-blend-mode: luminosity
+backdrop-filter: blur(4px) and -webkit-backdrop-filter: blur(4px)
+border: none
+box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.1)
+position: relative; overflow: hidden
+A ::before pseudo-element creates the glass border effect:
+position: absolute; inset: 0; border-radius: inherit; padding: 1.4px
+background: linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.15) 20%, rgba(255,255,255,0) 40%, rgba(255,255,255,0) 60%, rgba(255,255,255,0.15) 80%, rgba(255,255,255,0.45) 100%)
+Mask trick for border-only rendering: -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask-composite: exclude
+pointer-events: none
+
+Layout (all inside one full-screen flex column):
+
+Navigation bar (relative z-20, padding pl-6 pr-6 py-6):
+Inner container: rounded-full px-6 py-3 flex items-center justify-between max-w-5xl mx-auto
+Left side: Logo area with a Globe icon (size 24) and text "Asme" in white, font-semibold text-lg, with gap-2
+Next to the logo (with gap-8): three nav links ("Features", "Pricing", "About") -- hidden on mobile, shown on md: -- styled text-white/80 hover:text-white transition-colors text-sm font-medium
+Right side (gap-4): "Sign Up" as plain white text button, "Login" as a liquid-glass rounded-full px-6 py-2 button
+
+Hero content area (relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-12 text-center -translate-y-[20%]):
+Heading: "Built for the curious" -- text-5xl md:text-6xl lg:text-7xl text-white mb-8 tracking-tight whitespace-nowrap with Instrument Serif font
+Below the heading, a max-w-xl w-full space-y-4 container:
+Email input bar: liquid-glass rounded-full pl-6 pr-2 py-2 flex items-center gap-3. Inside: a transparent email input (placeholder: "Enter your email", text-white placeholder:text-white/40 text-base) and a white circular submit button (bg-white rounded-full p-3 text-black) containing an ArrowRight icon (size 20)
+Subtitle text: text-white text-sm leading-relaxed px-4 -- "Stay updated with the latest news and insights. Subscribe to our newsletter today and never miss out on exciting updates."
+Manifesto button: centered, liquid-glass rounded-full px-8 py-3 text-white text-sm font-medium hover:bg-white/5 transition-colors
+
+Social icons footer (relative z-10 flex justify-center gap-4 pb-12):
+Three circular icon buttons, each liquid-glass rounded-full p-4 text-white/80 hover:text-white hover:bg-white/5 transition-all
+Icons: Instagram, Twitter, Globe (all size 20) from lucide-react
+Each has an aria-label
+
+Tech stack: Vite + React 18 + TypeScript, Tailwind CSS 3, lucide-react for all icons. Default Tailwind config with no extensions. No other UI libraries.
