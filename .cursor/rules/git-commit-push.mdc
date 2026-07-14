@@ -1,0 +1,40 @@
+---
+description: После каждой готовой обновы — коммит и push на remote
+alwaysApply: true
+---
+
+# Коммит и push после обновы (всегда)
+
+После **каждой** завершённой обновы (фича, фикс, рефактор, правило), когда проверки из `agent-verify-and-limits` пройдены:
+
+1. **Commit** — закоммить релевантные изменения (не спрашивай отдельно: это постоянное согласие для SubHub).
+2. **Push** — `git push` на tracked remote текущей ветки (`-u` если upstream ещё нет).
+
+## Как коммитить
+
+- Сообщение: 1–2 предложения, **why** важнее what; стиль как в `git log`.
+- Staging: только файлы задачи. **Не** коммитить секреты (`.env`, `secrets.yaml`, ключи), `chrome_profiles*/`, кэш, бинарники сборки, `debug/`.
+- PowerShell: сообщение через here-string, не bash HEREDOC:
+
+```powershell
+git add <files...>
+git commit -m @"
+Commit message here.
+
+"@
+git push
+git status -sb
+```
+
+## Когда не коммитить / не пушить
+
+- Пользователь явно сказал «не коммить» / «не пушь».
+- Проверки или security-review ещё красные / есть блокер.
+- Нечего коммитить (чистый `git status`).
+- Force-push на `main`/`master` — только если пользователь явно попросил.
+
+## Порядок с проверками
+
+```
+правка → py_compile/lint/smoke → security-review → commit → push → «готово»
+```

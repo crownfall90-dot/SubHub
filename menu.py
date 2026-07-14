@@ -1849,38 +1849,74 @@ def _is_temp_profile_dir(profile_path: Path | str | None) -> bool:
 
 
 def purge_temp_profiles() -> dict:
-    """Удаляет временные профили. Успешные/доступные (done+meta) не трогает."""
+    """Удаляет временные профили. Успешные/доступные (done+meta) не трогает.
+
+    Сначала rmtree без скана Chrome; если папки заняты — один общий kill и повтор.
+    (Раньше kill+sleep на каждый профиль → минуты «зависания».)
+    """
+    import os as _os
     import shutil as _sh
+    import stat as _stat
+    import time as _t
+
+    def _rm_err(func, path, exc_info):
+        try:
+            _os.chmod(path, _stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass
+
     removed: list[str] = []
     skipped = 0
     errors: list[str] = []
-    candidates: list[Path] = []
+    to_delete: list[Path] = []
     for root in (PROFILES_DIR, DONE_PROFILES_DIR):
         if not root.exists():
             continue
         for p in root.iterdir():
-            if p.is_dir() and p.name.startswith("profile_"):
-                candidates.append(p)
-    for p in candidates:
-        if not _is_temp_profile_dir(p):
-            skipped += 1
-            continue
-        try:
-            with contextlib.suppress(Exception):
-                _kill_chrome_for_profile(p)
-            with contextlib.suppress(Exception):
-                _clear_stale_profile_locks(p)
-            # повторная проверка: meta мог появиться пока убивали Chrome
+            if not (p.is_dir() and p.name.startswith("profile_")):
+                continue
+            if _is_temp_profile_dir(p):
+                to_delete.append(p)
+            else:
+                skipped += 1
+
+    def _attempt(paths: list[Path]) -> list[Path]:
+        nonlocal skipped
+        failed: list[Path] = []
+        for p in paths:
+            if not p.exists():
+                continue
+            # meta мог появиться пока удаляли соседние
             if not _is_temp_profile_dir(p):
                 skipped += 1
                 continue
-            _sh.rmtree(p, ignore_errors=True)
+            for lock in ("SingletonLock", "lockfile", "SingletonSocket"):
+                with contextlib.suppress(PermissionError, OSError):
+                    (p / lock).unlink(missing_ok=True)
+            try:
+                _sh.rmtree(str(p), onerror=_rm_err)
+            except Exception as exc:
+                errors.append(f"{p.name}: {exc}")
+                if p.exists():
+                    failed.append(p)
+                continue
             if p.exists():
-                errors.append(p.name)
+                failed.append(p)
             else:
                 removed.append(p.name)
-        except Exception as exc:
-            errors.append(f"{p.name}: {exc}")
+        return failed
+
+    leftover = _attempt(to_delete)
+    if leftover:
+        with contextlib.suppress(Exception):
+            _kill_chrome_for_profiles(leftover)
+        _t.sleep(0.4)
+        leftover = _attempt(leftover)
+        for p in leftover:
+            if p.exists():
+                errors.append(p.name)
+
     _invalidate_done_profiles_cache()
     return {
         "removed": len(removed),
@@ -2801,29 +2837,35 @@ async def _navigate_flipkart_resilient(
         return await _force_navigate_flipkart(page, url, label=label, fast=fast)
 
     # Старт VPN: живой прокси → сразу Flipkart (не рвём сессию).
-    # Смена страны только если сайт НЕ открылся.
+    # Без загруженного расширения (вход через HTTP-прокси) — только goto.
     usa_denials = 0
-    if _vpn_extension_dir():
-        eid0 = await _vpn_ext_id(context)
-        already = bool(eid0 and await _vpn_is_proxy_active(context, eid0))
-        if already:
-            cc0 = ""
-            if eid0 and _vpn_is_veepn():
-                with contextlib.suppress(Exception):
-                    cc0 = await _veepn_connected_country_hint(context, eid0)
-            print(
-                f"  {G}✔ VPN жив ({(cc0 or '?').upper()}) — Flipkart{RST}"
-            )
-            await _dismiss_all_veepn_welcome(context)
-            await _close_vpn_extension_tabs(context, eid0)
-            await _work_page()
-        else:
-            print(f"  {DIM}VPN выкл — включаю…{RST}")
-            if not await _ensure_vpn_connected(context, quick=True, flipkart=True):
-                print(f"  {DIM}VPN ещё поднимается — авто-перебор на сайте{RST}")
-            await _dismiss_all_veepn_welcome(context)
-            await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
-            await _work_page()
+    eid0 = await _vpn_ext_id(context) if _vpn_extension_dir() else None
+    if not eid0:
+        ok_nav, err_nav = await _goto(fast=True)
+        diag = await _diagnose_flipkart_state(context, page)
+        if diag.get("ok"):
+            return True, page, ""
+        return False, page, diag.get("hint") or err_nav or "Flipkart не открылся (без VPN)"
+
+    already = bool(await _vpn_is_proxy_active(context, eid0))
+    if already:
+        cc0 = ""
+        if _vpn_is_veepn():
+            with contextlib.suppress(Exception):
+                cc0 = await _veepn_connected_country_hint(context, eid0)
+        print(
+            f"  {G}✔ VPN жив ({(cc0 or '?').upper()}) — Flipkart{RST}"
+        )
+        await _dismiss_all_veepn_welcome(context)
+        await _close_vpn_extension_tabs(context, eid0)
+        await _work_page()
+    else:
+        print(f"  {DIM}VPN выкл — включаю…{RST}")
+        if not await _ensure_vpn_connected(context, quick=True, flipkart=True):
+            print(f"  {DIM}VPN ещё поднимается — авто-перебор на сайте{RST}")
+        await _dismiss_all_veepn_welcome(context)
+        await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
+        await _work_page()
 
     for round_n in range(1, max_rounds + 1):
         ok_nav, err_nav = await _goto(fast=(round_n == 1))
@@ -5367,8 +5409,6 @@ _LAST_CHROMIUM_CLOSED_AT: float = 0.0
 _VPN_CHROME_COOLDOWN_SEC = 6.0
 _vpn_bg_status: dict = {"state": "idle", "message": ""}
 _vpn_bg_lock = threading.Lock()
-_bg_bootstrap_started = False
-_bg_bootstrap_lock = threading.Lock()
 
 
 def get_vpn_bg_status() -> dict:
@@ -5704,68 +5744,6 @@ async def _warmup_vpn_extension() -> bool:
     return True
 
 
-def start_background_bootstrap(
-    force: bool = False,
-    on_complete=None,
-) -> None:
-    """Фон при старте: только скан + копирование файлов. Chrome НЕ открывается."""
-    global _bg_bootstrap_started
-
-    with _bg_bootstrap_lock:
-        if _bg_bootstrap_started and not force:
-            return
-        _bg_bootstrap_started = True
-
-    def _worker():
-        try:
-            time.sleep(0.5)
-
-            if not _vpn_extension_dir():
-                _set_vpn_bg_status("no_ext", "vpn_extension/ не найдено")
-                return
-
-            if not _deps_ok_full():
-                _set_vpn_bg_status("installing", "Зависимости…")
-                try:
-                    ensure_dependencies()
-                except Exception:
-                    pass
-
-            scan = scan_profiles_extension_status()
-            _set_vpn_bg_status(
-                "warming",
-                f"Расширения в профили: {scan['with_ext']}/{scan['total']}…",
-            )
-
-            n = install_extensions_filesystem_all()
-            scan = scan_profiles_extension_status()
-            sync_vpn_extension_status()
-
-            if scan["missing"]:
-                if n:
-                    print(f"  {G}✔ Расширение скопировано в {n} профил(ей) без Chrome{RST}")
-                print(
-                    f"  {DIM}Профили без расширения: {', '.join(scan['missing_names'][:5])}"
-                    f"{'…' if scan['missing'] > 5 else ''}{RST}"
-                )
-            elif n:
-                print(f"  {G}✔ Расширение установлено в {n} профил(ей) без Chrome{RST}")
-        except Exception as exc:
-            _set_vpn_bg_status("error", str(exc)[:120])
-            global _bg_bootstrap_started
-            with _bg_bootstrap_lock:
-                _bg_bootstrap_started = False
-        finally:
-            sync_vpn_extension_status()
-            if on_complete:
-                try:
-                    on_complete()
-                except Exception:
-                    pass
-
-    threading.Thread(target=_worker, daemon=True, name="bg-bootstrap").start()
-
-
 def _note_chromium_closed() -> None:
     """Фиксирует момент закрытия Chromium — VPNLY не успевает в новом окне сразу."""
     global _LAST_CHROMIUM_CLOSED_AT
@@ -6029,8 +6007,9 @@ async def _force_navigate_flipkart(
 
     last_err = ""
     attempts = 1 if fast else 3
-    cdp_timeout = 12.0 if fast else 22.0
-    goto_timeout = 25_000 if fast else 45_000
+    # fast: короткий таймаут — мёртвый HTTP-прокси не должен висеть минутами
+    cdp_timeout = 10.0 if fast else 22.0
+    goto_timeout = 16_000 if fast else 45_000
 
     for target in targets:
         for attempt in range(attempts):
@@ -6097,20 +6076,28 @@ async def _force_navigate_flipkart(
 async def _open_flipkart_page(
     ctx, url: str, *, label: str = "", work_page=None,
 ) -> tuple[bool, object]:
-    """Открывает Flipkart на рабочей вкладке (после VPN)."""
-    await _dismiss_all_veepn_welcome(ctx)
-    eid = await _vpn_ext_id(ctx)
-    await _close_vpn_extension_tabs(ctx, eid)
+    """Открывает Flipkart на рабочей вкладке.
+
+    VeepN-путь — только если расширение реально загружено в контексте.
+    Иначе (прокси Playwright / direct) — сразу goto, без ожидания VPN UI
+    (иначе зависание на about:blank).
+    """
     page = work_page or await _ensure_single_work_page(ctx)
     with contextlib.suppress(Exception):
         await _maximize_window(ctx, page)
         await page.bring_to_front()
-    if _vpn_extension_dir():
+    eid = await _vpn_ext_id(ctx)
+    if eid and _vpn_extension_dir():
+        await _dismiss_all_veepn_welcome(ctx)
+        await _close_vpn_extension_tabs(ctx, eid)
         ok, page, _ = await _navigate_flipkart_resilient(
             ctx, page, url, label=label,
         )
     else:
-        ok, _ = await _force_navigate_flipkart(page, url, label=label, fast=True)
+        # HTTP-прокси / PC VPN — без VeepN
+        ok, _ = await _force_navigate_flipkart(
+            page, url, label=label, fast=True,
+        )
     if ok:
         page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
     return ok, page
@@ -6928,11 +6915,19 @@ def _save_meta_field(profile_path: Path, **fields) -> bool:
         return False
 
 
-def _kill_chrome_for_profile(profile_path) -> int:
-    """Завершает Chrome-процессы, использующие указанную папку профиля."""
-    import subprocess, os
-    path_str = str(profile_path).replace("/", "\\")
-    folder_name = os.path.basename(path_str)
+def _kill_chrome_for_profiles(profile_paths) -> int:
+    """Один проход по процессам — убивает Chrome для любого из профилей."""
+    import os
+    import subprocess
+    paths = [Path(p) for p in (profile_paths or []) if p]
+    if not paths:
+        return 0
+    needles: list[str] = []
+    for p in paths:
+        path_str = str(p).replace("/", "\\")
+        needles.append(path_str)
+        needles.append(os.path.basename(path_str))
+    needles = list(dict.fromkeys(n for n in needles if n))
     killed = 0
     try:
         import psutil
@@ -6941,26 +6936,35 @@ def _kill_chrome_for_profile(profile_path) -> int:
                 if "chrome" not in (proc.info.get("name") or "").lower():
                     continue
                 cmdline = " ".join(proc.info.get("cmdline") or [])
-                if folder_name in cmdline or path_str in cmdline:
+                if any(n in cmdline for n in needles):
                     proc.kill()
                     killed += 1
             except Exception:
                 pass
+        return killed
     except ImportError:
-        # psutil недоступен — убиваем через PowerShell по имени папки
-        try:
-            ps_cmd = (
-                f"Get-WmiObject Win32_Process -Filter \"name='chrome.exe'\" | "
-                f"Where-Object {{$_.CommandLine -like '*{folder_name}*'}} | "
-                f"ForEach-Object {{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}}"
-            )
-            subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
-                           capture_output=True, timeout=8,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            killed = -1  # неизвестно сколько
-        except Exception:
-            pass
-    return killed
+        # psutil недоступен — PowerShell по имени папки (по одной)
+        for p in paths:
+            folder_name = os.path.basename(str(p).replace("/", "\\"))
+            try:
+                ps_cmd = (
+                    f"Get-WmiObject Win32_Process -Filter \"name='chrome.exe'\" | "
+                    f"Where-Object {{$_.CommandLine -like '*{folder_name}*'}} | "
+                    f"ForEach-Object {{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}}"
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                    capture_output=True, timeout=8,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:
+                pass
+        return -1
+
+
+def _kill_chrome_for_profile(profile_path) -> int:
+    """Завершает Chrome-процессы, использующие указанную папку профиля."""
+    return _kill_chrome_for_profiles([profile_path])
 
 
 def _find_chrome_pids_for_profile(profile_path: Path) -> list:
@@ -16203,7 +16207,8 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         use_vpn=False, proxy=_proxy,
                     ),
                 )
-                await asyncio.sleep(4.0)
+                # без VeepN — не ждём вкладки расширения
+                await asyncio.sleep(0.6 if _proxy else 1.2)
                 await _close_extension_startup_tabs(ctx)
                 _grizzly_module.update_rental_browser(phone_id, ctx=ctx)
 
@@ -16216,8 +16221,9 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 # Access Denied = прокси не подошёл → другой прокси / напрямую
                 _open_ok = False
                 for _prx_try in range(4 if _proxy else 1):
+                    print(f"  {DIM}→ Flipkart (прокси/direct)…{RST}")
                     ok, page = await _open_flipkart_page(
-                        ctx, login_url, label=phone_10,
+                        ctx, login_url, label=phone_10, work_page=page,
                     )
                     if ok:
                         _open_ok = True
@@ -16235,6 +16241,10 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     _, _proxy = await _resolve_flipkart_launch_network(
                         allow_vpn_extension=False,
                     )
+                    if _proxy:
+                        print(f"  {DIM}другой прокси: {_proxy.get('server')}{RST}")
+                    else:
+                        print(f"  {DIM}прямой доступ (без прокси){RST}")
                     ctx = await pw.chromium.launch_persistent_context(
                         str(profile_path.resolve()),
                         **_browser_launch_kw(
@@ -16243,7 +16253,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             use_vpn=False, proxy=_proxy,
                         ),
                     )
-                    await asyncio.sleep(3.5)
+                    await asyncio.sleep(0.5)
                     await _close_extension_startup_tabs(ctx)
                     await ctx.grant_permissions(
                         ["geolocation"], origin="https://www.flipkart.com",
@@ -19149,7 +19159,6 @@ if __name__ == "__main__":
                 # Фоновая проверка обновлений (один раз при старте)
                 threading.Thread(target=_check_updates_bg, daemon=True, name="update-check").start()
                 screen_install(auto=True)
-                start_background_bootstrap()
                 # Ждём первый ответ от Telegram API (макс 12 сек)
                 for _ in range(24):
                     if _bot_module._tg_status != "starting":

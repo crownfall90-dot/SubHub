@@ -12,6 +12,7 @@ alwaysApply: true
 1. **Ошибки** — синтаксис (`py_compile`), линтер (`ReadLints` на изменённых файлах), вывод команды (exit code ≠ 0 = провал).
 2. **SubHub smoke** — при правках Python: `python scripts/smoke_test.py`.
 3. **Security review** — перед «готово» запусти subagent `security-review` (`readonly: true`) на `uncommitted changes` или `branch changes`.
+4. **Commit + push** — см. `.cursor/rules/git-commit-push.mdc` (после зелёных проверок).
 
 Не переходи к следующей итерации, пока текущий шаг не прошёл проверку или не зафиксирована причина блокера.
 

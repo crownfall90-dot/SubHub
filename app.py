@@ -4090,15 +4090,11 @@ class SubHubApp(ctk.CTk):
 
             _thr.Thread(target=_startup_cancel, daemon=True, name="grizzly-startup-cancel").start()
 
-            m.start_background_bootstrap(
-                on_complete=lambda: self._run_on_main(self._refresh_vpn_page),
-            )
             # Прогрев пула бесплатных прокси, чтобы первый вход не ждал подбор
             if m._proxy_enabled():
                 _thr.Thread(
                     target=m.prefetch_free_proxies, daemon=True, name="proxy-prefetch",
                 ).start()
-            self.after(2000, self._poll_vpn_bootstrap)
             gz.start_global_monitor()
             self._sync_ggs_monitor()
             import bot as bot_mod
@@ -4110,7 +4106,6 @@ class SubHubApp(ctk.CTk):
             elif r == "no_token":
                 self._log("⚠ Telegram: токен не настроен")
             self._log("✓ Фоновые сервисы запущены")
-            self._log("⏳ Проверка расширений в профилях — в фоне (без Chrome)…")
             self.after(800, self._ensure_desktop_shortcut)
         except Exception as e:
             self._log(f"⚠ Ошибка инициализации: {e}")
@@ -7170,10 +7165,58 @@ class SubHubApp(ctk.CTk):
 
     # ── Update & restart ──────────────────────────────────────────────────────
 
-    def _update_and_restart(self) -> None:
+    def _automation_is_busy(self) -> bool:
         if self._proc and self._proc.poll() is None:
-            messagebox.showwarning("Занято", "Сначала остановите запущенную автоматизацию.")
-            return
+            return True
+        try:
+            import menu as m
+            ext, _ = m.shared_automation_running()
+            return bool(ext)
+        except Exception:
+            return False
+
+    def _stop_automation_then_restart(self) -> None:
+        """Остановить run (локальный / Telegram) и сразу перезапустить GUI."""
+        self._log("■ Остановка → перезапуск…")
+        with contextlib.suppress(Exception):
+            self._stop_run()
+        deadline = time.time() + 8.0
+        while time.time() < deadline and self._automation_is_busy():
+            with contextlib.suppress(Exception):
+                self.update_idletasks()
+            time.sleep(0.12)
+        self.after(200, self._restart_app)
+
+    def _ask_stop_and_restart(self) -> bool:
+        """Диалог «Занято»: Да = остановить и перезапустить. False = отмена."""
+        if not self._automation_is_busy():
+            return False
+        return bool(messagebox.askyesno(
+            "Занято",
+            "Идёт автоматизация.\n\n"
+            "Остановить и сразу перезапустить?",
+            icon="warning",
+            parent=self,
+        ))
+
+    def _update_and_restart(self) -> None:
+        if self._automation_is_busy():
+            if not messagebox.askyesno(
+                "Занято",
+                "Идёт автоматизация.\n\n"
+                "Остановить и обновить с перезапуском?",
+                icon="warning",
+                parent=self,
+            ):
+                return
+            self._log("■ Остановка перед обновлением…")
+            with contextlib.suppress(Exception):
+                self._stop_run()
+            deadline = time.time() + 8.0
+            while time.time() < deadline and self._automation_is_busy():
+                with contextlib.suppress(Exception):
+                    self.update_idletasks()
+                time.sleep(0.12)
         try:
             import bot as bot_mod
             n = len(getattr(bot_mod, "_update_commits", []) or [])
@@ -7216,20 +7259,23 @@ class SubHubApp(ctk.CTk):
         self._refresh_update_badge()
 
     def _restart_for_update(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            messagebox.showwarning("Занято", "Сначала остановите автоматизацию.")
+        if self._automation_is_busy():
+            if self._ask_stop_and_restart():
+                self._stop_automation_then_restart()
             return
         if messagebox.askyesno(
             "Применение обновления",
             "Файлы уже обновлены на диске.\nПерезапустить SubHub для применения?",
+            parent=self,
         ):
             self._restart_app()
 
     def _restart_only(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            messagebox.showwarning("Занято", "Сначала остановите автоматизацию.")
+        if self._automation_is_busy():
+            if self._ask_stop_and_restart():
+                self._stop_automation_then_restart()
             return
-        if messagebox.askyesno("Перезапуск", "Перезапустить приложение?"):
+        if messagebox.askyesno("Перезапуск", "Перезапустить приложение?", parent=self):
             self._restart_app()
 
     def _desktop_shortcut_path(self) -> Path:
@@ -7630,11 +7676,7 @@ class SubHubApp(ctk.CTk):
             )
             self._log(f"{'✓' if ok else '⚠'} {msg}")
             if ok:
-                m.start_background_bootstrap(
-                    force=True,
-                    on_complete=lambda: self._run_on_main(self._refresh_vpn_page),
-                )
-                self._run_on_main(lambda: self.after(2000, self._poll_vpn_bootstrap))
+                self._run_on_main(self._refresh_vpn_page)
 
         threading.Thread(target=_w, daemon=True).start()
 

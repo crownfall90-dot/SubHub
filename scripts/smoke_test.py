@@ -111,31 +111,68 @@ def test_vpn_helpers() -> None:
 
 
 def test_purge_temp_profiles() -> None:
-    """Классификация: tmp/без meta = temp; done+meta = нельзя удалять."""
+    """Классификация + быстрый purge в изолированных dirs (без реального chrome_profiles)."""
+    import tempfile
+    import time
     import menu as m
 
-    keep = m.DONE_PROFILES_DIR / "profile_smoke_keep"
-    tmp = m.DONE_PROFILES_DIR / "profile_smoke_tmp_1"
-    bare = m.DONE_PROFILES_DIR / "profile_smoke_bare"
-    work = m.PROFILES_DIR / "profile_smoke_work"
-    for d in (keep, tmp, bare, work):
-        d.mkdir(parents=True, exist_ok=True)
-    (keep / ".profile_meta.json").write_text('{"phone":"1"}', encoding="utf-8")
-    try:
-        if not hasattr(m, "purge_temp_profiles"):
-            fail("purge_temp", "нет purge_temp_profiles")
-        if not m._is_temp_profile_dir(tmp) or not m._is_temp_profile_dir(bare):
-            fail("purge_temp", "tmp/bare должны быть temp")
-        if not m._is_temp_profile_dir(work):
-            fail("purge_temp", "chrome_profiles/ без meta = temp")
-        if m._is_temp_profile_dir(keep):
-            fail("purge_temp", "done+meta нельзя считать temp")
-    finally:
-        import shutil as _sh
-        for d in (keep, tmp, bare, work):
-            with contextlib.suppress(Exception):
-                _sh.rmtree(d, ignore_errors=True)
-    ok("purge_temp", "классификация temp vs done+meta")
+    if not hasattr(m, "purge_temp_profiles"):
+        fail("purge_temp", "нет purge_temp_profiles")
+
+    with tempfile.TemporaryDirectory(prefix="purge_smoke_") as td:
+        root = Path(td)
+        work = root / "chrome_profiles"
+        done = root / "chrome_profiles_done"
+        work.mkdir()
+        done.mkdir()
+        keep = done / "profile_smoke_keep"
+        tmp = done / "profile_smoke_tmp_1"
+        bare = done / "profile_smoke_bare"
+        work_p = work / "profile_smoke_work"
+        bulk = [work / f"profile_smoke_bulk_{i}" for i in range(24)]
+        for d in (keep, tmp, bare, work_p, *bulk):
+            d.mkdir()
+        (keep / ".profile_meta.json").write_text('{"phone":"1"}', encoding="utf-8")
+
+        old_w, old_d = m.PROFILES_DIR, m.DONE_PROFILES_DIR
+        kill_n = {"n": 0}
+        real_kill = m._kill_chrome_for_profiles
+
+        def _count_kill(paths):
+            kill_n["n"] += 1
+            return 0
+
+        m.PROFILES_DIR = work
+        m.DONE_PROFILES_DIR = done
+        m._kill_chrome_for_profiles = _count_kill
+        try:
+            if not m._is_temp_profile_dir(tmp) or not m._is_temp_profile_dir(bare):
+                fail("purge_temp", "tmp/bare должны быть temp")
+            if not m._is_temp_profile_dir(work_p):
+                fail("purge_temp", "chrome_profiles/ без meta = temp")
+            if m._is_temp_profile_dir(keep):
+                fail("purge_temp", "done+meta нельзя считать temp")
+            t0 = time.perf_counter()
+            r = m.purge_temp_profiles()
+            dt = time.perf_counter() - t0
+            if not keep.exists():
+                fail("purge_temp", "удалили done+meta")
+            if tmp.exists() or bare.exists() or work_p.exists():
+                fail("purge_temp", "temp не удалились")
+            if any(d.exists() for d in bulk):
+                fail("purge_temp", "bulk temp не удалились")
+            if int(r.get("removed") or 0) < 26:
+                fail("purge_temp", f"removed={r.get('removed')}")
+            # пустые папки — без kill; иначе регрессия «kill на каждый профиль»
+            if kill_n["n"] != 0:
+                fail("purge_temp", f"лишний kill x{kill_n['n']}")
+            if dt > 3.0:
+                fail("purge_temp", f"слишком медленно {dt:.2f}s")
+        finally:
+            m.PROFILES_DIR = old_w
+            m.DONE_PROFILES_DIR = old_d
+            m._kill_chrome_for_profiles = real_kill
+    ok("purge_temp", "classify + fast purge, keep meta")
 
 
 def test_launch_helpers() -> None:
