@@ -1274,6 +1274,7 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
             str(profile_path.resolve()),
             **launch_kw,
         )
+        _mark_browser_network(ctx, use_vpn=False, proxy=proxy)
         await asyncio.sleep(2.0)
         await _close_extension_startup_tabs(ctx)
         await _block_vpn_junk_routes(ctx)
@@ -2851,8 +2852,25 @@ async def _navigate_flipkart_resilient(
         return await _force_navigate_flipkart(page, url, label=label, fast=fast)
 
     # Старт VPN: живой прокси → сразу Flipkart (не рвём сессию).
-    # Без загруженного расширения (вход через HTTP-прокси) — только goto.
+    # HTTP-прокси Playwright / direct (skip_vpn) — только goto, VeepN не включаем
+    # даже если расширение уже лежит в done-профиле.
     usa_denials = 0
+    if _context_skip_vpn(context):
+        with contextlib.suppress(Exception):
+            if await _vpn_ext_id(context):
+                await _vpn_disconnect(context)
+        ok_nav, err_nav = await _goto(fast=True)
+        diag = await _diagnose_flipkart_state(context, page)
+        if diag.get("ok"):
+            return True, page, ""
+        # ещё 2 попытки без смены страны VPN
+        for _ in range(2):
+            ok_nav, err_nav = await _goto(fast=False)
+            diag = await _diagnose_flipkart_state(context, page)
+            if diag.get("ok"):
+                return True, page, ""
+        return False, page, diag.get("hint") or err_nav or "Flipkart не открылся (прокси/direct)"
+
     eid0 = await _vpn_ext_id(context) if _vpn_extension_dir() else None
     if not eid0:
         ok_nav, err_nav = await _goto(fast=True)
@@ -6100,18 +6118,27 @@ async def _open_flipkart_page(
     with contextlib.suppress(Exception):
         await _maximize_window(ctx, page)
         await page.bring_to_front()
-    eid = await _vpn_ext_id(ctx)
-    if eid and _vpn_extension_dir():
-        await _dismiss_all_veepn_welcome(ctx)
-        await _close_vpn_extension_tabs(ctx, eid)
-        ok, page, _ = await _navigate_flipkart_resilient(
-            ctx, page, url, label=label,
-        )
-    else:
-        # HTTP-прокси / PC VPN — без VeepN
+    # HTTP-прокси / direct: не включаем VeepN, даже если он уже в профиле
+    if _context_skip_vpn(ctx):
+        with contextlib.suppress(Exception):
+            if await _vpn_ext_id(ctx):
+                await _vpn_disconnect(ctx)
         ok, _ = await _force_navigate_flipkart(
             page, url, label=label, fast=True,
         )
+    else:
+        eid = await _vpn_ext_id(ctx)
+        if eid and _vpn_extension_dir():
+            await _dismiss_all_veepn_welcome(ctx)
+            await _close_vpn_extension_tabs(ctx, eid)
+            ok, page, _ = await _navigate_flipkart_resilient(
+                ctx, page, url, label=label,
+            )
+        else:
+            # HTTP-прокси / PC VPN — без VeepN
+            ok, _ = await _force_navigate_flipkart(
+                page, url, label=label, fast=True,
+            )
     if ok:
         page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
     return ok, page
@@ -7100,6 +7127,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                 headless=headless, phone=username,
                 profile_path=profile_path, use_vpn=use_vpn, proxy=proxy,
             ))
+        _mark_browser_network(ctx, use_vpn=use_vpn, proxy=proxy)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         if not headless:
             await _maximize_window(ctx, page)
@@ -8740,6 +8768,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 phone=_phone_from_path(profile_path),
                 profile_path=profile_path, use_vpn=use_vpn, proxy=proxy,
             ))
+        _mark_browser_network(ctx, use_vpn=use_vpn, proxy=proxy)
         await _close_extension_startup_tabs(ctx)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = await _main_work_page(ctx)
@@ -14587,15 +14616,16 @@ async def _resolve_flipkart_launch_network(
 
     Вход / поиск номеров: allow_vpn_extension=False — только прокси или прямой
     доступ (VPN на ПК). VeepN-расширение не ставится и не подключается.
-    Успешные done-профили (заполнение/покупка): allow_vpn_extension=True.
+    Успешные done-профили (заполнение/покупка): allow_vpn_extension=True
+    только если proxy.enabled выключен (иначе proxy-only, без VeepN).
     """
     want_proxy = allow_proxy and _proxy_enabled()
     if want_proxy:
         proxy = await _select_proxy_for_launch_async()
         if proxy:
             return False, proxy
-        if allow_vpn_extension and _vpn_extension_dir():
-            return True, None
+        # proxy.enabled — только прокси/direct, без fallback на VeepN
+        print(f"  {Y}⚠ Прокси включён, но живой не найден — без VeepN (direct / VPN на ПК){RST}")
         return False, None
     # Без публичного прокси: прямой доступ / VPN на ПК
     with contextlib.suppress(Exception):
@@ -14606,6 +14636,25 @@ async def _resolve_flipkart_launch_network(
     return False, None
 
 
+def _mark_browser_network(ctx, *, use_vpn: bool = False, proxy: dict | None = None) -> None:
+    """Помечает контекст: HTTP-прокси / direct → навигейшн не включает VeepN."""
+    if ctx is None:
+        return
+    via = bool(proxy and proxy.get("server"))
+    with contextlib.suppress(Exception):
+        ctx._subhub_via_proxy = via
+        ctx._subhub_skip_vpn = via or (not use_vpn)
+
+
+def _context_skip_vpn(context) -> bool:
+    """True → не включать VeepN (прокси Playwright или явный direct)."""
+    marked = getattr(context, "_subhub_skip_vpn", None)
+    if marked is not None:
+        return bool(marked)
+    # без метки: тумблер прокси ВКЛ → VeepN не трогаем
+    return _proxy_enabled()
+
+
 async def _resolve_profile_scenario_network(
     profile_path: Path | None = None,
     *,
@@ -14613,13 +14662,15 @@ async def _resolve_profile_scenario_network(
 ) -> tuple[bool, dict | None, str | None]:
     """Сеть для сценариев готового профиля (Chrome / адрес / покупка / активация).
 
-    proxy.enabled → прокси; если нет — fallback на VPN-расширение (если разрешено).
-    proxy выкл → direct / VPN на ПК; fallback на расширение только если allow_vpn.
+    proxy.enabled → только прокси (без VeepN).
+    proxy выкл → direct / VPN на ПК; fallback на расширение если allow_vpn.
 
     Returns (use_vpn, proxy, err).
     """
+    # proxy.on → VeepN запрещён даже как fallback
+    allow_vpn = allow_vpn_extension and not _proxy_enabled()
     use_vpn, proxy = await _resolve_flipkart_launch_network(
-        allow_vpn_extension=allow_vpn_extension,
+        allow_vpn_extension=allow_vpn,
     )
     if proxy:
         print(f"  {G}Сеть: прокси {proxy.get('server')}{RST}")
@@ -15089,6 +15140,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                     phone=_phone_from_path(profile_path),
                     profile_path=profile_path, use_vpn=use_vpn, proxy=proxy,
                 ))
+            _mark_browser_network(ctx, use_vpn=use_vpn, proxy=proxy)
             await _close_extension_startup_tabs(ctx)
             await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
             page = await _main_work_page(ctx)
@@ -16315,6 +16367,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         use_vpn=False, proxy=_proxy,
                     ),
                 )
+                _mark_browser_network(ctx, use_vpn=False, proxy=_proxy)
                 # без VeepN — не ждём вкладки расширения
                 await asyncio.sleep(0.6 if _proxy else 1.2)
                 await _close_extension_startup_tabs(ctx)
@@ -16361,6 +16414,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             use_vpn=False, proxy=_proxy,
                         ),
                     )
+                    _mark_browser_network(ctx, use_vpn=False, proxy=_proxy)
                     await asyncio.sleep(0.5)
                     await _close_extension_startup_tabs(ctx)
                     await ctx.grant_permissions(
@@ -16514,6 +16568,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                         use_vpn=False, proxy=_proxy_n,
                                     ),
                                 )
+                                _mark_browser_network(n_ctx, use_vpn=False, proxy=_proxy_n)
                                 _grizzly_module.update_rental_browser(nid, ctx=n_ctx)
                                 await n_ctx.grant_permissions(
                                     ["geolocation"], origin="https://www.flipkart.com",
