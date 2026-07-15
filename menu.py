@@ -1337,6 +1337,7 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
                 break
             await asyncio.sleep(0.5)
     finally:
+        set_profile_op_stage(profile_path, "")
         if ctx:
             with contextlib.suppress(Exception):
                 await _vpn_disconnect(ctx)
