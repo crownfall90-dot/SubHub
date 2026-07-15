@@ -1203,8 +1203,11 @@ def _connect_vpn_over_cdp(port: int, target_url: str | None = None) -> bool:
         return False
 
 
-def open_chrome(profile_path: Path) -> bool:
-    """Один видимый Chrome: VPN → Flipkart. Окно остаётся открытым до закрытия пользователем."""
+def open_chrome(profile_path: Path, url: str | None = None) -> bool:
+    """Один видимый Chrome: VPN → Flipkart. Окно остаётся открытым до закрытия пользователем.
+
+    url — необязательный старт (например страница товара 3 мес.); иначе _profile_url.
+    """
     profile_path = Path(profile_path)
     key = str(profile_path.resolve())
     with _OPEN_CHROME_LOCK:
@@ -1220,7 +1223,7 @@ def open_chrome(profile_path: Path) -> bool:
 
     def _worker() -> None:
         try:
-            asyncio.run(_open_chrome_keep_alive(profile_path))
+            asyncio.run(_open_chrome_keep_alive(profile_path, url=url))
         except Exception as exc:
             print(f"  {R}Chrome: {exc}{RST}")
         finally:
@@ -1237,14 +1240,14 @@ def open_chrome(profile_path: Path) -> bool:
     return True
 
 
-async def _open_chrome_keep_alive(profile_path: Path) -> None:
+async def _open_chrome_keep_alive(profile_path: Path, url: str | None = None) -> None:
     """Запускает профиль, открывает Flipkart; держит сессию до закрытия окна.
 
     proxy.enabled → через прокси; выкл → VPN на ПК / напрямую (расширение не включаем).
     """
     profile_path = Path(profile_path)
     tag = _phone_from_path(profile_path) or profile_path.name
-    url = _profile_url(profile_path)
+    target = (url or "").strip() or _profile_url(profile_path)
     if _is_profile_locked(profile_path):
         _clear_stale_profile_locks(profile_path)
 
@@ -1289,25 +1292,25 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
             pass
 
         if proxy:
-            print(f"  {DIM}Открываю Flipkart (+91 {tag}) через прокси → {url[:80]}…{RST}")
+            print(f"  {DIM}Открываю Flipkart (+91 {tag}) через прокси → {target[:80]}…{RST}")
         elif _vpn_extension_dir():
-            print(f"  {DIM}Flipkart (+91 {tag}) → {url[:80]}…{RST}")
+            print(f"  {DIM}Flipkart (+91 {tag}) → {target[:80]}…{RST}")
             print(f"  {DIM}VPN не включается — только во время автоматизации{RST}")
             with contextlib.suppress(Exception):
                 await _vpn_disconnect(ctx)
         else:
-            print(f"  {DIM}Открываю Flipkart (+91 {tag}) → {url[:80]}…{RST}")
+            print(f"  {DIM}Открываю Flipkart (+91 {tag}) → {target[:80]}…{RST}")
 
         _stealth = _build_stealth_js_m()
         if _stealth:
             await ctx.add_init_script(_stealth)
 
-        ok, page = await _open_flipkart_page(ctx, url, label=tag, work_page=page)
+        ok, page = await _open_flipkart_page(ctx, target, label=tag, work_page=page)
         if not ok:
             with contextlib.suppress(Exception):
                 fresh = await ctx.new_page()
                 await fresh.bring_to_front()
-                ok, page = await _open_flipkart_page(ctx, url, label=tag, work_page=fresh)
+                ok, page = await _open_flipkart_page(ctx, target, label=tag, work_page=fresh)
 
         if ok:
             print(f"  {G}✔ Flipkart открыт (+91 {tag}){RST}")
@@ -1318,7 +1321,7 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
             except Exception:
                 pass
         elif not ok:
-            print(f"  {Y}⚠ Откройте Flipkart вручную: {url}{RST}")
+            print(f"  {Y}⚠ Откройте Flipkart вручную: {target}{RST}")
 
         while ctx:
             try:
@@ -9894,9 +9897,58 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
             pass
         return False
 
+    # Кнопка Buy Now у Flipkart — <div> (не <button>), поэтому CSS/role-селекторы
+    # её часто не видят. Клик по самому DOM-элементу устойчив к смещению вёрстки
+    # (инфобар --no-sandbox, попап Google-переводчика и т.п.), в отличие от клика
+    # по координатам мыши — те промахиваются, если сверху появилась панель.
+    async def _buy_now_handle():
+        try:
+            handle = await page.evaluate_handle("""() => {
+                const want = (t) => /^buy\\s*now$/i.test((t||'').replace(/\\s+/g,' ').trim());
+                const isYellow = (el) => {
+                    const m = window.getComputedStyle(el).backgroundColor
+                        .match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+                    return m && +m[1] > 180 && +m[2] > 100 && +m[3] < 100;
+                };
+                let best = null, bestScore = -1;
+                for (const el of document.querySelectorAll(
+                        'button, a, div, span, [role=\"button\"]')) {
+                    const t = (el.innerText || el.textContent || '')
+                        .replace(/\\s+/g, ' ').trim();
+                    const textHit = want(t);
+                    if (!textHit && !(isYellow(el) && /buy/i.test(t) && t.length < 24))
+                        continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 40 || r.height < 14) continue;
+                    // приоритет: точное «buy now» + жёлтый + ниже по странице
+                    const score = (textHit ? 100 : 0) + (isYellow(el) ? 40 : 0) + r.top / 100;
+                    if (score > bestScore) { bestScore = score; best = el; }
+                }
+                return best;
+            }""")
+            return handle.as_element()
+        except Exception:
+            return None
+
     clicked = False
-    if target and target.get("x"):
-        print(f"  {DIM}Buy Now: клик «{target.get('t', 'Buy Now')}»…{RST}")
+    el0 = await _buy_now_handle()
+    if el0 is not None:
+        print(f"  {DIM}Buy Now: клик по элементу…{RST}")
+        try:
+            await el0.scroll_into_view_if_needed()
+            await page.wait_for_timeout(200)
+            await el0.click(timeout=5_000)
+            clicked = True
+            await page.wait_for_timeout(400)
+        except Exception:
+            with contextlib.suppress(Exception):
+                await el0.click(force=True)
+                clicked = True
+                await page.wait_for_timeout(400)
+
+    # Резерв: клик по координатам центра найденной кнопки
+    if not clicked and target and target.get("x"):
+        print(f"  {DIM}Buy Now: клик по координатам «{target.get('t', 'Buy Now')}»…{RST}")
         with contextlib.suppress(Exception):
             await page.mouse.click(float(target["x"]), float(target["y"]))
             clicked = True
@@ -13581,13 +13633,130 @@ async def _click_place_order(page) -> bool:
     return False
 
 
+async def _select_gift_cards_pay_method(page) -> bool:
+    """Кликает «Gift Cards» в левой панели способов оплаты.
+
+    Открывает секцию с полями voucher/PIN. Не кликает «Use Gift Cards»
+    (галочка баланса) и не строки сводки с ₹.
+    """
+    try:
+        await page.wait_for_function(
+            """() => {
+                for (const el of document.querySelectorAll('*')) {
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (t === 'gift cards' || t === 'gift card' || t === 'pay by gift card') {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 30) return true;
+                    }
+                }
+                return false;
+            }""",
+            timeout=8_000,
+        )
+    except Exception:
+        pass
+
+    bbox = None
+    try:
+        bbox = await page.evaluate(r"""() => {
+            const exact = [
+                'gift cards', 'gift card', 'pay by gift card', 'pay with gift card',
+            ];
+            const isSummary = (t) => /[₹]|rs\.?\s*\d|−|–/.test(t) && /\d/.test(t);
+            for (const el of document.querySelectorAll('*')) {
+                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (!exact.includes(t) || isSummary(t)) continue;
+                if (/^use\s+gift/.test(t)) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width >= 40 && r.height >= 10 && el.offsetParent !== null)
+                    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+            }
+            for (const el of document.querySelectorAll(
+                'span, li, div, a, button, [role="button"], label'
+            )) {
+                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                if (!/gift\s*cards?/.test(t) || t.length > 40 || isSummary(t)) continue;
+                if (/use gift|add gift|have a flipkart|apply gift|redeem/.test(t)) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width >= 40 && r.height >= 10 && el.offsetParent !== null)
+                    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+            }
+            return null;
+        }""")
+    except Exception:
+        pass
+
+    if not bbox:
+        return False
+    await page.mouse.click(bbox["x"], bbox["y"])
+    await page.wait_for_timeout(1_200)
+    return True
+
+
+async def _use_gift_cards_checkbox_state(page) -> dict:
+    """Есть ли галочка «Use Gift Cards» (баланс уже на аккаунте).
+
+    return: {present: bool, checked: bool}
+    """
+    try:
+        return await page.evaluate(r"""() => {
+            const hit = (t) => /use\s+gifts?\s*cards?/i.test(t || '');
+            for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                const box = cb.closest('div,label,li,section') || cb.parentElement;
+                const t = (box ? box.innerText : '') || '';
+                if (!hit(t)) continue;
+                return {present: true, checked: !!cb.checked};
+            }
+            for (const el of document.querySelectorAll('[role="checkbox"]')) {
+                const box = el.closest('div,label,li,section') || el.parentElement;
+                const t = (box ? box.innerText : '') || '';
+                if (!hit(t)) continue;
+                return {
+                    present: true,
+                    checked: el.getAttribute('aria-checked') === 'true',
+                };
+            }
+            return {present: false, checked: false};
+        }""")
+    except Exception:
+        return {"present": False, "checked": False}
+
+
+async def _tick_use_gift_cards(page) -> bool:
+    """Ставит галочку «Use Gift Cards», если есть и снята. True = кликнули."""
+    try:
+        return bool(await page.evaluate(r"""() => {
+            const hit = (t) => /use\s+gifts?\s*cards?/i.test(t || '');
+            for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                const box = cb.closest('div,label,li,section') || cb.parentElement;
+                const t = (box ? box.innerText : '') || '';
+                if (!hit(t) || cb.checked) continue;
+                cb.click();
+                return true;
+            }
+            for (const el of document.querySelectorAll('[role="checkbox"]')) {
+                const box = el.closest('div,label,li,section') || el.parentElement;
+                const t = (box ? box.innerText : '') || '';
+                if (!hit(t) || el.getAttribute('aria-checked') === 'true') continue;
+                el.click();
+                return true;
+            }
+            return false;
+        }"""))
+    except Exception:
+        return False
+
+
 async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     """Оплата подарочными картами (Flipkart Gift Card).
-    Читает сумму заказа, подбирает набор гифт-карт, по очереди вводит
-    номер+PIN → «Add Gift Card» (баланс начисляется), затем «Place Order».
-    Каждую УСПЕШНО добавленную карту сразу помечает использованной.
-    Возврат: True — оплачено; "gift_insufficient" — не хватает гифт-карт;
-    "gift_failed" — карты отклонены / не удалось оформить."""
+
+    UX payments:
+      1) Если есть галочка «Use Gift Cards» — включаем баланс аккаунта,
+         карты из хранилища только на остаток.
+      2) Если галочки нет — слева «Gift Cards» → появляются поля ввода.
+      3) После каждой добавленной карты, если поле снова скрыто —
+         снова жмём «Gift Cards» слева.
+    """
     import re as _rg
     await page.wait_for_timeout(1_000)
 
@@ -13600,34 +13769,33 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _orig_total = 343
     print(f"  {C}🎁 Оплата гифт-картами. Цена ₹{_orig_total}{RST}")
 
-    # ── Шаг 0: сначала ПРИМЕНЯЕМ уже имеющийся гифт-баланс галочкой «Use Gift Card».
-    # Карты из хранилища добавляем ТОЛЬКО если этого не хватит (на остаток).
-    try:
-        await page.evaluate(r"""() => {
-            for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                const box = cb.closest('div,label,li,section') || cb.parentElement;
-                const t = (box ? box.innerText : '') || '';
-                if (/use gift card/i.test(t) && !cb.checked) { cb.click(); return; }
-            }
-            for (const el of document.querySelectorAll('[role="checkbox"]')) {
-                const box = el.closest('div,label,li,section') || el.parentElement;
-                const t = (box ? box.innerText : '') || '';
-                if (/use gift card/i.test(t) && el.getAttribute('aria-checked') !== 'true') { el.click(); return; }
-            }
-        }""")
-    except Exception:
-        pass
-    await page.wait_for_timeout(1_500)
+    # ── Шаг 0: баланс на аккаунте (галочка Use Gift Cards) vs панель Gift Cards ─
+    _cb = await _use_gift_cards_checkbox_state(page)
+    if _cb.get("present"):
+        if not _cb.get("checked"):
+            if await _tick_use_gift_cards(page):
+                print(f"  {G}✔ Use Gift Cards — применяю баланс аккаунта{RST}")
+                await page.wait_for_timeout(1_500)
+            else:
+                print(f"  {Y}⚠ Use Gift Cards есть, но не удалось включить{RST}")
+        else:
+            print(f"  {G}✔ Use Gift Cards уже включена{RST}")
+            await page.wait_for_timeout(500)
+    else:
+        # Галочки нет — открываем способ оплаты Gift Cards слева
+        if await _select_gift_cards_pay_method(page):
+            print(f"  {G}✔ Gift Cards (слева) — открываю поля ввода{RST}")
+        else:
+            print(f"  {Y}⚠ Gift Cards слева не найдена — пробую поля напрямую{RST}")
 
     _rem = await _read_order_total(page)
     if (await _gift_place_order_bbox(page)) or _rem <= 0:
-        # Существующего гифт-баланса уже хватает — карты не нужны, идём к Place Order
         print(f"  {G}💰 Хватает уже применённого гифт-баланса — карты из хранилища не нужны{RST}")
         total = 0
     else:
         total = _rem
         if _rem < _orig_total:
-            print(f"  {G}Применён имеющийся гифт-баланс, осталось покрыть ₹{_rem}{RST}")
+            print(f"  {G}Применён баланс аккаунта, осталось покрыть ₹{_rem}{RST}")
     # Гифт-картами платим кратно 50 — остаток к покрытию округляется ВВЕРХ
     _gift_need = -(-int(total) // 50) * 50 if total > 0 else 0
 
@@ -13642,12 +13810,10 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     _allow_big = False
 
     if total <= 0:
-        # Остаток уже покрыт имеющимся балансом — карты не нужны, сразу к Place Order
         pass
     elif _small_bal >= total:
         print(f"  {G}Мелких гифт-карт достаточно (₹{_small_bal}) — крупные (≥₹{GIFT_CONFIRM_THRESHOLD}) не трогаю{RST}")
     elif _total_bal >= total:
-        # Мелких мало, но с крупными хватает — спрашиваем подтверждение через TG
         _big = sorted({int(c.get("denom") or 0) for c in _all_gc
                        if not c.get("used") and c.get("number") and c.get("pin")
                        and int(c.get("denom") or 0) >= GIFT_CONFIRM_THRESHOLD}, reverse=True)
@@ -13709,19 +13875,29 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         except Exception:
             return False
 
-    async def _click_add_opener():
-        """Клик по ссылке «Add Gift Card» (открывает модалку ввода купона).
-        НЕ трогаем «Use Gift Card» — это подпись строки с галочкой (её ставит
-        отдельный _ensure_use_checkbox), клик по ней снял бы галочку."""
+    async def _ensure_voucher_fields() -> bool:
+        """Поле ввода видно? Иначе снова Gift Cards слева (+ Add Gift Card)."""
+        if await _voucher_visible():
+            return True
+        # После применения карты секция часто сворачивается — снова Gift Cards
+        if await _select_gift_cards_pay_method(page):
+            for _ in range(10):
+                await page.wait_for_timeout(300)
+                if await _voucher_visible():
+                    return True
+        # Иногда нужен ещё «Add Gift Card» / «Have a Flipkart Gift Card?»
         try:
             bb = await page.evaluate(r"""() => {
                 const want = [
                     'add gift card', 'have a flipkart gift card?',
                     'add a gift card', 'apply gift card', 'redeem gift card',
                 ];
-                for (const el of document.querySelectorAll('a,button,div,span,[role="button"]')) {
+                for (const el of document.querySelectorAll(
+                    'a,button,div,span,[role="button"]'
+                )) {
                     const t = (el.innerText || el.textContent || '').trim().toLowerCase();
                     if (!want.some(w => t === w || t.includes(w))) continue;
+                    if (/use\s+gift/.test(t)) continue;
                     const r = el.getBoundingClientRect();
                     if (r.width < 25 || r.height < 8 || el.offsetParent === null) continue;
                     return {x: r.x + r.width/2, y: r.y + r.height/2};
@@ -13730,10 +13906,13 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             }""")
             if bb:
                 await page.mouse.click(bb["x"], bb["y"])
-                return True
+                for _ in range(10):
+                    await page.wait_for_timeout(300)
+                    if await _voucher_visible():
+                        return True
         except Exception:
             pass
-        return False
+        return await _voucher_visible()
 
     async def _click_add_submit():
         """Клик по кнопке «Add Gift Card» в форме/модалке (отправка купона)."""
@@ -13753,22 +13932,10 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         return False
 
     async def _ensure_use_checkbox():
-        """Ставит галочку «Use Gift Card», если она есть и снята."""
-        try:
-            await page.evaluate(r"""() => {
-                for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
-                    const box = cb.closest('div,label,li,section') || cb.parentElement;
-                    const t = (box ? box.innerText : '') || '';
-                    if (/use gift card/i.test(t) && !cb.checked) { cb.click(); return; }
-                }
-                for (const el of document.querySelectorAll('[role="checkbox"]')) {
-                    const box = el.closest('div,label,li,section') || el.parentElement;
-                    const t = (box ? box.innerText : '') || '';
-                    if (/use gift card/i.test(t) && el.getAttribute('aria-checked') !== 'true') { el.click(); return; }
-                }
-            }""")
-        except Exception:
-            pass
+        """Держит галочку Use Gift Cards включённой (если она есть)."""
+        st = await _use_gift_cards_checkbox_state(page)
+        if st.get("present") and not st.get("checked"):
+            await _tick_use_gift_cards(page)
 
     async def _read_gift_applied():
         """Сумма, зачисленная гифт-картами (строка «Gift Cards −₹X» в сводке справа)."""
@@ -13833,19 +14000,16 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         _applied_before = await _read_gift_applied()
         _total_before = await _read_order_total(page)
 
-        # 1. Открываем форму ввода: жмём «Add Gift Card» и ЖДЁМ появления поля.
-        _field_ready = await _voucher_visible()
-        for _o in range(4):
-            if _field_ready:
+        # 1. Поле ввода: если скрыто после прошлой карты — снова Gift Cards слева
+        await _ensure_use_checkbox()
+        _field_ready = False
+        for _o in range(5):
+            if await _ensure_voucher_fields():
+                _field_ready = True
                 break
-            await _click_add_opener()
-            for _ in range(12):   # до ~4.2 сек ждём поле, но ловим сразу как появилось
-                await page.wait_for_timeout(350)
-                if await _voucher_visible():
-                    _field_ready = True
-                    break
+            await page.wait_for_timeout(400)
         if not _field_ready:
-            print(f"  {R}✘ Поле ввода гифт-карты не появилось после «Add Gift Card» — прекращаю{RST}")
+            print(f"  {R}✘ Поле ввода не появилось после Gift Cards — прекращаю{RST}")
             break
 
         # 2. Заполняем номер и PIN
@@ -13898,8 +14062,8 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
                 break
             _errcat = await _err_now()
             if _errcat:
-                # ошибка — но перепроверим зачисление ещё раз (ошибка могла остаться
-                # от прошлой карты, а эта на самом деле зачислилась)
+                # Стейл-ошибка на странице: ещё раз сверим зачисление
+                await page.wait_for_timeout(400)
                 _aa2 = await _read_gift_applied()
                 _tt2 = await _read_order_total(page)
                 if _aa2 > _applied_before or (_total_before > 0 and 0 < _tt2 < _total_before):
@@ -13908,49 +14072,35 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
                     _errcat = ""
                 break
 
-        # Уже использована / добавлена на ДРУГОМ аккаунте → пометить, удалить, взять следующую
-        if not _success and _errcat == "already":
-            print(f"  {Y}↩ Карта {_mask_gift(_num)} уже использована на другом аккаунте — "
-                  f"помечаю и удаляю, беру следующую{RST}")
-            _mark_gift_used(c, profile_path, status="used_elsewhere")
-            _tg_send_direct(f"🎁 Карта {_mask_gift(_num)} (₹{_dn}) уже использована на другом "
-                            f"аккаунте — удалена, пробую следующую.")
-            try: await page.keyboard.press("Escape")
-            except Exception: pass
+        if _success:
+            _delta = max(0, _applied_after - _applied_before)
+            if _delta <= 0 and _total_before > _total_after > 0:
+                _delta = _total_before - _total_after
+            applied += 1
+            if _applied_after > applied_sum:
+                applied_sum = _applied_after
+            else:
+                applied_sum += _delta if _delta > 0 else _dn
+            print(f"  {G}✔ Карта {_mask_gift(_num)} зачислена (+₹{_delta or _dn}). "
+                  f"Гифтом покрыто ₹{applied_sum}, Total ₹{_total_after}{RST}")
+            with contextlib.suppress(Exception):
+                _mark_gift_used(c, profile_path, status="used")
+            await _ensure_use_checkbox()
+            # После успеха поле часто пропадает — перед следующей картой снова Gift Cards
             continue
 
-        if not _success:
-            _why = "другой аккаунт" if _errcat == "already" else (_errcat or "нет зачисления")
-            print(f"  {Y}⚠ Карта {_mask_gift(_num)} не зачислилась ({_why}) — пропускаю{RST}")
-            _tried_bad.add(_num)
-            try: await page.keyboard.press("Escape")
-            except Exception: pass
+        if _errcat == "already":
+            print(f"  {Y}Карта уже использована — помечаю и беру следующую{RST}")
+            with contextlib.suppress(Exception):
+                _mark_gift_used(c, profile_path, status="used_elsewhere")
             continue
 
-        # Успех — сумма реально зачислена гифт-картой → помечаем использованной.
-        # applied_sum берём из фактически зачисленного справа (точнее суммы номиналов).
-        applied += 1
-        applied_sum = _applied_after if _applied_after > applied_sum else (applied_sum + _dn)
-        _mark_gift_used(c, profile_path, status="used")
-        print(f"  {G}✔ Карта {_mask_gift(_num)} зачислена (₹{_dn}). "
-              f"Гифтом покрыто ₹{applied_sum}, Total сейчас ₹{_total_after}{RST}")
+        print(f"  {Y}⚠ Карта не зачислилась ({_errcat or 'timeout'}) — пробую другую{RST}")
+        _tried_bad.add(_num)
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+        continue
 
-        # Быстрая проверка: не хватает ли уже (Place Order / остаток покрыт).
-        # Перечитываем зачисленную сумму и Total — сводка справа обновляется с
-        # задержкой, поэтому проверяем в цикле, чтобы НЕ добавить лишнюю карту.
-        await _ensure_use_checkbox()
-        for _poc in range(4):   # до ~2 сек, но выходим сразу как увидели
-            _ca = await _read_gift_applied()
-            if _ca > applied_sum:
-                applied_sum = _ca
-            _ct = await _read_order_total(page)
-            if await _gift_place_order_bbox(page) or applied_sum >= total or _ct <= 0:
-                _enough = True
-                break
-            await page.wait_for_timeout(500)
-        if _enough:
-            print(f"  {G}💰 Баланса достаточно — Place Order доступна, карты больше не добавляю{RST}")
-            break
 
     # ── Place Order ───────────────────────────────────────────────────────────
     await _ensure_use_checkbox()

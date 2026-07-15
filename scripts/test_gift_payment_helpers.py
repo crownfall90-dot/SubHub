@@ -47,7 +47,19 @@ def main() -> None:
     src = (ROOT / "menu.py").read_text(encoding="utf-8", errors="replace")
     assert "gift=(_pm == \"gift\")" in src or 'gift=(_pm == "gift")' in src
     assert "_do_gift_card_payment" in src
+    assert "_select_gift_cards_pay_method" in src
+    assert "_use_gift_cards_checkbox_state" in src
+    assert "_ensure_voucher_fields" in src
+    assert "gift cards" in src.lower()
     assert "_navigate_flipkart_resilient" in src
+    # Gift path: Use Gift Cards checkbox OR left Gift Cards; re-open field each card
+    gift_idx = src.find("async def _do_gift_card_payment")
+    assert gift_idx > 0
+    gift_chunk = src[gift_idx: gift_idx + 8000]
+    assert "_use_gift_cards_checkbox_state" in gift_chunk
+    assert "_select_gift_cards_pay_method" in gift_chunk
+    assert "_ensure_voucher_fields" in gift_chunk
+    assert "PLACEHOLDER_CUT" not in gift_chunk
     # Buy membership opens Flipkart via resilient (not only raw _open_flipkart_page)
     buy_idx = src.find("async def _do_buy_membership")
     assert buy_idx > 0

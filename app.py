@@ -5617,6 +5617,11 @@ class SubHubApp(ctk.CTk):
         _btn("Проверить активацию", lambda: self._prof_activate(phone, path), ACCENT)
 
         if cat in ("noaddr", "hasaddr"):
+            _btn(
+                "Перейти на товар (3 мес)",
+                lambda: self._prof_open_product(phone, path),
+                BTN_SECONDARY,
+            )
             _btn("Купить 3 мес · ₹343", lambda: self._profile_buy_for(prof, 3), ACCENT)
             _btn("Купить 12 мес · ₹1499", lambda: self._profile_buy_for(prof, 12), ACCENT)
             _btn("Заполнить адрес", lambda: self._profile_fill_address_for(prof), BTN_SECONDARY)
@@ -6776,6 +6781,18 @@ class SubHubApp(ctk.CTk):
                 + (" — запускается (Flipkart; VPN только при автоматизации)" if ok else "")
             )
         self._prof_run(phone, f"Открытие Chrome +91 {phone}…", _w)
+
+    def _prof_open_product(self, phone: str, path) -> None:
+        """Открыть Chrome сразу на странице YouTube/Black 3 мес."""
+        def _w():
+            import menu as m
+            url = m._BLACK_URLS.get(3) or m._BLACK_URLS[3]
+            ok = m.open_chrome(path, url=url)
+            self._log(
+                f"{'✓' if ok else '✗'} Товар 3 мес · +91 {phone}"
+                + (" — открываю страницу товара" if ok else "")
+            )
+        self._prof_run(phone, f"Товар 3 мес · +91 {phone}…", _w)
 
     def _prof_activate(self, phone: str, path) -> None:
         def _w():
