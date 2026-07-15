@@ -68,6 +68,8 @@ def main() -> None:
     assert "_ask_big_gift_confirm" in src
     assert "остались только крупные" in src
     assert "На складе хватает" in src
+    assert "Use Gift Cards — применяю уже использованный баланс" in src
+    assert "добираю картами" in src
     sel_idx = src.find("async def _select_gift_cards_pay_method")
     sel_chunk = src[sel_idx: sel_idx + 3500]
     assert "have a flipkart gift card" in sel_chunk
@@ -81,6 +83,16 @@ def main() -> None:
     assert buy_idx > 0
     buy_chunk = src[buy_idx: buy_idx + 4500]
     assert "_navigate_flipkart_resilient" in buy_chunk, "buy must use resilient navigate"
+    # Buy Now / payments: reload+retry without closing browser
+    assert "_BUY_NOW_TO_CHECKOUT_ROUNDS" in src
+    assert "_PAYMENTS_REACH_ROUNDS" in src
+    assert "обновляю товар и повторяю" in src
+    assert "Buy Now не дал переход на оплату — обновляю страницу" in src
+    assert "_profile_addr_meta" in src
+    assert "address_summary" in src
+    assert "_get_filled_email" in src
+    assert "_cv_filled_email" in src
+    assert "_set_filled_email" in src
 
     # Sticky cancel must not survive shutdown / is cleared at purchase entry
     m._purchase_cancel.set()

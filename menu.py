@@ -7069,6 +7069,39 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
     pause()
 
 
+def _profile_addr_meta(addr: dict | None) -> dict:
+    """Поля адреса для .profile_meta.json (GUI показывает под «Создан»)."""
+    if not addr:
+        return {}
+    name = str(addr.get("name") or "").strip()
+    pin = str(addr.get("pincode") or "").strip()
+    city = str(addr.get("city") or "").strip()
+    state = str(addr.get("state") or "").strip()
+    house = str(addr.get("house") or "").strip()
+    road = str(addr.get("road") or "").strip()
+    line = str(addr.get("address_line") or "").strip()
+    if not line and (house or road):
+        line = ", ".join(x for x in (house, road) if x)
+    locality = str(addr.get("locality") or "").strip()
+    phone = str(addr.get("phone") or "").strip()
+    summary = " | ".join(
+        x for x in (name, f"{pin} {city}".strip(), state) if x
+    )
+    out = {
+        "address_name": name,
+        "address_pincode": pin,
+        "address_city": city,
+        "address_state": state,
+        "address_house": house,
+        "address_road": road,
+        "address_line": line,
+        "address_locality": locality,
+        "address_phone": phone,
+        "address_summary": summary,
+    }
+    return {k: v for k, v in out.items() if v}
+
+
 def _save_meta_field(profile_path: Path, **fields) -> bool:
     """Записывает/обновляет поля в .profile_meta.json профиля.
 
@@ -8895,6 +8928,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _pay_method[0] = _load_pay_method()
     # Как bot.py: сброс sticky-cancel после предыдущего Stop/shutdown
     _purchase_cancel.clear()
+    _clear_filled_email()
     use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
     if net_err:
         return False, net_err
@@ -9050,6 +9084,8 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             await _maximize_window(ctx, page)
             if not await _fill_address_form(page, addr):
                 return False
+            with contextlib.suppress(Exception):
+                _save_meta_field(profile_path, **_profile_addr_meta(addr))
             try:
                 await page.wait_for_url("**/viewcheckout**", timeout=10_000)
             except Exception:
@@ -9145,7 +9181,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 print(f"  {Y}→ удалите профиль и возьмите следующий доступный{RST}")
                 return await _oos_delete_return(retry_done=True)
 
-            reached = await _viewcheckout_to_payments(page)
+            reached = await _viewcheckout_to_payments(page, profile_path)
             if reached == "OUT_OF_STOCK":
                 print(f"  {R}✘ Currently out of stock — удалите профиль, следующий{RST}")
                 return await _oos_delete_return(retry_done=True)
@@ -9156,13 +9192,13 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 print(f"  Всё ещё на address-map — жду возврата...")
                 try:
                     await page.wait_for_url("**/viewcheckout**", timeout=10_000)
-                    reached = await _viewcheckout_to_payments(page)
+                    reached = await _viewcheckout_to_payments(page, profile_path)
                 except Exception:
                     if "address-map" in page.url:
                         print(f"  address-map: нажимаю Back...")
                         await page.go_back()
                         await page.wait_for_timeout(3_000)
-                        reached = await _viewcheckout_to_payments(page)
+                        reached = await _viewcheckout_to_payments(page, profile_path)
             if reached == "OUT_OF_STOCK":
                 return await _oos_delete_return(retry_done=True)
 
@@ -9171,7 +9207,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 print(f"  Flipkart запросил адрес — заполняю...")
                 if not await _fill_addr_and_wait():
                     return False, "Кнопка Save Address не найдена (после Continue)"
-                reached = await _viewcheckout_to_payments(page)
+                reached = await _viewcheckout_to_payments(page, profile_path)
             if reached == "OUT_OF_STOCK":
                 return await _oos_delete_return(retry_done=True)
             if reached == "CAPTCHA":
@@ -9179,9 +9215,60 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 return False, "Капча Flipkart зависла (Are you a human?) — не удалось пройти даже после обновлений. Попробуйте запустить ещё раз позже."
 
         # ── Шаг C: проверяем payments ────────────────────────────────────────
+        # Не закрываем браузер и не стопаем процесс: F5/товар → Buy Now → Continue
         if "payments" not in page.url:
-            # Провал — закрываем браузер (иначе брошенные окна убьются жёстко → EPIPE)
-            _keep_open = False
+            for _pr in range(1, _PAYMENTS_REACH_ROUNDS + 1):
+                if "payments" in page.url:
+                    break
+                _ckcancel()
+                _keep_open = True
+                print(
+                    f"  {Y}Нет страницы оплаты — обновляю товар и повторяю "
+                    f"Buy Now / Continue ({_pr}/{_PAYMENTS_REACH_ROUNDS})…{RST}"
+                )
+                err_r = await _click_buy_now(page, product_url, skip_goto=False)
+                if err_r:
+                    if err_r == _NOT_LOGGED_IN_MSG or "не залогинен" in err_r.lower():
+                        return False, err_r
+                    print(f"  {DIM}повтор Buy Now: {err_r}{RST}")
+                    continue
+                if "changeShippingAddress" in page.url or "add/form" in page.url:
+                    if not await _fill_addr_and_wait():
+                        continue
+                if "viewcheckout" in page.url or (
+                    "checkout" in (page.url or "") and "payments" not in (page.url or "")
+                ):
+                    body_r = ""
+                    with contextlib.suppress(Exception):
+                        body_r = (await page.evaluate(
+                            "() => (document.body && document.body.textContent) || ''"
+                        )).lower()
+                    if any(p in body_r for p in _OOS_PHRASES):
+                        return await _oos_delete_return(retry_done=True)
+                    reached = await _viewcheckout_to_payments(page, profile_path)
+                    if reached == "OUT_OF_STOCK":
+                        return await _oos_delete_return(retry_done=True)
+                    if reached == "CAPTCHA":
+                        _keep_open = True
+                        return False, (
+                            "Капча Flipkart зависла (Are you a human?) — "
+                            "не удалось пройти даже после обновлений. "
+                            "Попробуйте запустить ещё раз позже."
+                        )
+                    if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url) \
+                            and "address-map" not in page.url:
+                        if await _fill_addr_and_wait():
+                            reached = await _viewcheckout_to_payments(page, profile_path)
+                    if reached is True or "payments" in page.url:
+                        break
+                try:
+                    await page.wait_for_url("**/payments**", timeout=8_000)
+                except Exception:
+                    pass
+
+        if "payments" not in page.url:
+            # Браузер оставляем открытым — пользователь / следующий прогон
+            _keep_open = True
             _cur_c = page.url.split("?")[0].rstrip("/")
             if _cur_c in ("https://www.flipkart.com", "https://flipkart.com", "https://m.flipkart.com"):
                 if await _page_logged_out(page):
@@ -9190,7 +9277,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                                "или сработала бот-защита. Повторите позже / восстановите вход.")
             if await _page_logged_out(page):
                 return False, _NOT_LOGGED_IN_MSG
-            return False, f"Не удалось перейти на оплату (URL: {_cur_c})"
+            return False, f"Не удалось перейти на оплату после {_PAYMENTS_REACH_ROUNDS} повторов (URL: {_cur_c})"
 
         if stop_at_payment:
             import time as _t_sap
@@ -9203,9 +9290,9 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             _save_meta_field(
                 profile_path,
                 prepared_ts=_t_sap.time(),
-                address_pincode=addr.get("pincode", ""),
-                address_city=addr.get("city", ""),
                 status="email_completed",
+                **_profile_addr_meta(addr),
+                **({"buyer_email": _get_filled_email()} if _get_filled_email() else {}),
             )
             _keep_open = False
             return True, f"{addr.get('name', '')} | {addr.get('pincode', '')} {addr.get('city', '')} → ✅ готов"
@@ -9228,11 +9315,12 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             page, gift=(_pm == "gift"), profile_path=profile_path,
         )
         try:
+            _em = _get_filled_email()
             _save_meta_field(
                 profile_path,
-                address_pincode=addr.get("pincode", ""),
-                address_city=addr.get("city", ""),
-                status="email_completed"
+                status="email_completed",
+                **_profile_addr_meta(addr),
+                **({"buyer_email": _em} if _em else {}),
             )
         except Exception:
             pass
@@ -9786,6 +9874,10 @@ async def _page_logged_out(page) -> bool:
 
 _NOT_LOGGED_IN_MSG = "Профиль не залогинен — в аккаунт нет входа (Buy Now недоступен)"
 
+# Если Buy Now / Continue не дали payments — F5 + повтор без закрытия браузера
+_BUY_NOW_TO_CHECKOUT_ROUNDS = 5
+_PAYMENTS_REACH_ROUNDS = 4
+
 
 async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     """
@@ -10050,18 +10142,103 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
         return None
 
     # Повторный клик — иногда первый клик попадает в неактивное состояние кнопки
-    clicked2 = (
-        await _try_click(page.locator(_BUY_CSS))
-        or await _try_click(page.get_by_role("button", name=_re.compile(r"buy\s*now", _re.I)))
-    )
-    if clicked2:
+    async def _second_click_buy() -> bool:
+        ok = (
+            await _try_click(page.locator(_BUY_CSS))
+            or await _try_click(page.get_by_role("button", name=_re.compile(r"buy\s*now", _re.I)))
+        )
+        if not ok:
+            el2 = await _buy_now_handle()
+            if el2 is not None:
+                with contextlib.suppress(Exception):
+                    await el2.click(force=True)
+                    ok = True
+        if not ok:
+            return False
         try:
             await page.wait_for_function(_CHECKOUT_DOM, timeout=15_000)
             await page.wait_for_timeout(500)
         except Exception:
             pass
-        if await _on_checkout():
+        return await _on_checkout()
+
+    if await _second_click_buy():
+        return None
+
+    # Не дошли до чекаута — обновляем страницу товара и жмём Buy Now снова
+    # (браузер не закрываем, процесс не останавливаем до исчерпания раундов / Stop)
+    for _rnd in range(1, _BUY_NOW_TO_CHECKOUT_ROUNDS):
+        _ckcancel()
+        if await _page_logged_out(page):
+            return _NOT_LOGGED_IN_MSG
+        print(
+            f"  {Y}Buy Now не дал переход на оплату — обновляю страницу "
+            f"и жму снова ({_rnd + 1}/{_BUY_NOW_TO_CHECKOUT_ROUNDS})…{RST}"
+        )
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+        except Exception:
+            with contextlib.suppress(Exception):
+                await page.reload(wait_until="domcontentloaded", timeout=15_000)
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=6_000)
+        await page.wait_for_timeout(600)
+        if any(s in page.url for s in _SUCCESS_PARTS) or "checkout" in page.url:
             return None
+
+        # снова ищем и кликаем Buy Now
+        target = None
+        for _s in range(20):
+            target = await _buy_now_target()
+            if target and target.get("inView"):
+                break
+            if target and not target.get("inView"):
+                with contextlib.suppress(Exception):
+                    await page.evaluate(
+                        """(y) => window.scrollTo({top: Math.max(0, y - 200), behavior: 'instant'})""",
+                        float(target["y"]) + await page.evaluate("() => window.scrollY"),
+                    )
+                await page.wait_for_timeout(300)
+                target = await _buy_now_target()
+                if target and target.get("inView"):
+                    break
+            await page.mouse.wheel(0, 520)
+            await page.wait_for_timeout(250)
+
+        clicked_r = False
+        el_r = await _buy_now_handle()
+        if el_r is not None:
+            try:
+                await el_r.scroll_into_view_if_needed()
+                await el_r.click(timeout=5_000)
+                clicked_r = True
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await el_r.click(force=True)
+                    clicked_r = True
+        if not clicked_r and target and target.get("x"):
+            with contextlib.suppress(Exception):
+                await page.mouse.click(float(target["x"]), float(target["y"]))
+                clicked_r = True
+        if not clicked_r:
+            clicked_r = (
+                await _try_click(page.locator(_BUY_CSS))
+                or await _try_click(
+                    page.get_by_role("button", name=_re.compile(r"buy\s*now", _re.I))
+                )
+            )
+        if clicked_r:
+            try:
+                await page.wait_for_function(_CHECKOUT_DOM, timeout=18_000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(400)
+            if await _on_checkout():
+                print(f"  {G}✔ Buy Now → чекаут с попытки {_rnd + 1}{RST}")
+                return None
+            if await _second_click_buy():
+                print(f"  {G}✔ Buy Now → чекаут (повторный клик, раунд {_rnd + 1}){RST}")
+                return None
 
     # До checkout не дошли — диагностируем причину по итоговой странице
     if await _page_logged_out(page):
@@ -10069,8 +10246,12 @@ async def _click_buy_now(page, url: str, skip_goto: bool = False) -> str | None:
     _cur = page.url.split("?")[0].rstrip("/")
     if _cur in ("https://www.flipkart.com", "https://flipkart.com", "https://m.flipkart.com"):
         return ("Buy Now вернул на главную Flipkart — товар недоступен по этой "
-                "ссылке, сессия слетела или сработала бот-защита")
-    return f"Клик по 'Buy now' не дал перехода на оплату (страница: {_cur[:60]})"
+                "ссылке, сессия слетела или сработала бот-защита "
+                f"(после {_BUY_NOW_TO_CHECKOUT_ROUNDS} попыток)")
+    return (
+        f"Клик по 'Buy now' не дал перехода на оплату после "
+        f"{_BUY_NOW_TO_CHECKOUT_ROUNDS} попыток (страница: {_cur[:60]})"
+    )
 
 
 _OOS_PHRASES = frozenset({
@@ -10515,6 +10696,23 @@ def _random_gmail() -> str:
 
 # Если задан — используется вместо случайного gmail при оплате (для конкретного покупателя)
 _override_email: str = ""
+# Email с последнего fill на чекауте — per-task/thread ContextVar (не общий global)
+import contextvars as _contextvars_email
+_cv_filled_email: _contextvars_email.ContextVar[str] = _contextvars_email.ContextVar(
+    "subhub_filled_email", default=""
+)
+
+
+def _set_filled_email(email: str) -> None:
+    _cv_filled_email.set((email or "").strip())
+
+
+def _get_filled_email() -> str:
+    return (_cv_filled_email.get() or "").strip()
+
+
+def _clear_filled_email() -> None:
+    _cv_filled_email.set("")
 
 
 def _to_gmail(email: str) -> str:
@@ -10715,6 +10913,7 @@ async def _fill_email_input(page) -> bool:
         pass
     await page.wait_for_timeout(500)
     print(f"  Email: {email}")
+    _set_filled_email(email)
     return True
 
 
@@ -13794,18 +13993,34 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _orig_total = 343
     print(f"  {C}🎁 Оплата гифт-картами. Цена ₹{_orig_total}{RST}")
 
-    # ── Шаг 0: баланс на аккаунте (галочка Use Gift Cards) vs панель Gift Cards ─
-    _cb = await _use_gift_cards_checkbox_state(page)
+    # ── Шаг 0: сначала галочка «Use Gift Cards» (уже использованные на аккаунте),
+    # потом добираем остаток картами из хранилища.
+    _cb = {"present": False, "checked": False}
+    for _ in range(12):
+        _cb = await _use_gift_cards_checkbox_state(page)
+        if _cb.get("present"):
+            break
+        # Иногда блок баланса появляется с задержкой после загрузки payments
+        await page.wait_for_timeout(350)
     if _cb.get("present"):
         if not _cb.get("checked"):
             if await _tick_use_gift_cards(page):
-                print(f"  {G}✔ Use Gift Cards — применяю баланс аккаунта{RST}")
-                await page.wait_for_timeout(1_500)
+                print(f"  {G}✔ Use Gift Cards — применяю уже использованный баланс{RST}")
             else:
                 print(f"  {Y}⚠ Use Gift Cards есть, но не удалось включить{RST}")
         else:
             print(f"  {G}✔ Use Gift Cards уже включена{RST}")
-            await page.wait_for_timeout(500)
+        # Ждём пересчёт Total после галочки (Gift Cards −₹X → остаток)
+        for _ in range(14):
+            await page.wait_for_timeout(400)
+            _rem_wait = await _read_order_total(page)
+            if await _gift_place_order_bbox(page):
+                break
+            if 0 < _rem_wait < _orig_total:
+                break
+            st2 = await _use_gift_cards_checkbox_state(page)
+            if st2.get("present") and not st2.get("checked"):
+                await _tick_use_gift_cards(page)
     else:
         # Галочки нет — открываем способ оплаты Gift Cards слева
         if await _select_gift_cards_pay_method(page):
@@ -13820,7 +14035,12 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     else:
         total = _rem
         if _rem < _orig_total:
-            print(f"  {G}Применён баланс аккаунта, осталось покрыть ₹{_rem}{RST}")
+            print(f"  {G}Баланс аккаунта учтён, осталось покрыть ₹{_rem} — добираю картами{RST}")
+        # После галочки поля ввода часто скрыты — сразу открываем для добора
+        if _cb.get("present") and total > 0:
+            with contextlib.suppress(Exception):
+                await _select_gift_cards_pay_method(page)
+                await page.wait_for_timeout(600)
     # Гифт-картами платим кратно 50 — остаток к покрытию округляется ВВЕРХ
     _gift_need = -(-int(total) // 50) * 50 if total > 0 else 0
 
@@ -14525,13 +14745,20 @@ async def _handle_set_location_on_viewcheckout(page) -> bool:
     return handled
 
 
-async def _viewcheckout_to_payments(page) -> bool:
+async def _viewcheckout_to_payments(page, profile_path: Path | None = None) -> bool:
     """
     Общий хелпер: на viewcheckout обрабатывает email, кликает Continue,
     ждёт переход на payments. Retry до 3 раз.
     Возвращает True если страница payments загружена.
+    profile_path — если задан, buyer_email пишется в .profile_meta.json.
     """
     import random as _r
+
+    def _persist_email_if_any() -> None:
+        em = _get_filled_email()
+        if profile_path and em:
+            with contextlib.suppress(Exception):
+                _save_meta_field(profile_path, buyer_email=em)
 
     _CHECKOUT_URL_PARTS = ("viewcheckout", "payments", "changeShippingAddress", "add/form")
     if "viewcheckout" not in page.url:
@@ -14718,6 +14945,7 @@ async def _viewcheckout_to_payments(page) -> bool:
                 print(f"  {BLD}Email всё ещё не принят — пробуем ещё раз{RST}")
                 await _handle_email_on_page(page)
                 await page.wait_for_timeout(1_000)
+            _persist_email_if_any()
 
         # 2. Прокрутим к кнопке и кликаем Continue (body может быть null при навигации)
         try:
@@ -14744,6 +14972,7 @@ async def _viewcheckout_to_payments(page) -> bool:
         await page.wait_for_timeout(1_500)
 
         if "payments" in page.url:
+            _persist_email_if_any()
             return True
         if "viewcheckout" not in page.url:
             break  # ушли на add/form или другую страницу
@@ -15481,6 +15710,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
     with contextlib.suppress(Exception):
         _pay_method[0] = _load_pay_method()
     _purchase_cancel.clear()
+    _clear_filled_email()
     use_vpn, proxy = False, None
     if not _skip_ping and _existing_ctx is None:
         use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
@@ -15707,6 +15937,8 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             if not await _fill_address_form(page, a):
                 return False
             addr_msg = f"Адрес: {a['name']} | {a['pincode']} {a['city']}"
+            with contextlib.suppress(Exception):
+                _save_meta_field(profile_path, **_profile_addr_meta(a))
             # Ждём viewcheckout или payments — не больше 20с
             if "viewcheckout" not in page.url and "payments" not in page.url:
                 try:
@@ -15745,7 +15977,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 print(f"  {Y}→ удалите профиль и возьмите следующий доступный{RST}")
                 return False, "OUT_OF_STOCK|DELETE_PROFILE"
 
-            reached = await _viewcheckout_to_payments(page)
+            reached = await _viewcheckout_to_payments(page, profile_path)
             if reached == "OUT_OF_STOCK":
                 print(f"  {R}✘ Currently out of stock — с этим профилем уже ничего не сделать{RST}")
                 print(f"  {Y}→ удалите профиль и возьмите следующий доступный{RST}")
@@ -15756,13 +15988,13 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 print(f"  Всё ещё на address-map — жду возврата на viewcheckout...")
                 try:
                     await page.wait_for_url("**/viewcheckout**", timeout=10_000)
-                    reached = await _viewcheckout_to_payments(page)
+                    reached = await _viewcheckout_to_payments(page, profile_path)
                 except Exception:
                     if "address-map" in page.url:
                         print(f"  address-map: нажимаю Back...")
                         await page.go_back()
                         await page.wait_for_timeout(3_000)
-                        reached = await _viewcheckout_to_payments(page)
+                        reached = await _viewcheckout_to_payments(page, profile_path)
             if reached == "OUT_OF_STOCK":
                 print(f"  {R}✘ Currently out of stock — удалите профиль, следующий{RST}")
                 return False, "OUT_OF_STOCK|DELETE_PROFILE"
@@ -15773,7 +16005,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 print(f"  Flipkart запросил адрес после Continue — заполняю...")
                 if not await _fill_addr_bm():
                     return False, "Кнопка Save Address не найдена (после Continue)"
-                reached = await _viewcheckout_to_payments(page)
+                reached = await _viewcheckout_to_payments(page, profile_path)
                 if reached == "OUT_OF_STOCK":
                     print(f"  {R}✘ Currently out of stock — удалите профиль, следующий{RST}")
                     return False, "OUT_OF_STOCK|DELETE_PROFILE"
@@ -15791,7 +16023,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             pass
 
         # ── Шаг C: проверяем что попали на payments ──────────────────────────
-        # Если URL ещё в переходе — ждём до 15 сек пока не появится payments
+        # Если URL ещё в переходе — ждём; иначе F5/товар → Buy Now → Continue (браузер открыт)
         if "payments" not in page.url:
             print(f"  {DIM}Ждём загрузки страницы оплаты...{RST}")
             try:
@@ -15799,11 +16031,64 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             except Exception:
                 pass
         if "payments" not in page.url:
+            _product_retry = _BLACK_URLS.get(months) or _BLACK_URLS[3]
+            for _pr in range(1, _PAYMENTS_REACH_ROUNDS + 1):
+                if "payments" in page.url:
+                    break
+                _ckcancel()
+                _keep_open = True
+                print(
+                    f"  {Y}Нет страницы оплаты — обновляю товар и повторяю "
+                    f"Buy Now / Continue ({_pr}/{_PAYMENTS_REACH_ROUNDS})…{RST}"
+                )
+                err_r = await _click_buy_now(page, _product_retry, skip_goto=False)
+                if err_r:
+                    if err_r == _NOT_LOGGED_IN_MSG or "не залогинен" in err_r.lower():
+                        return False, err_r
+                    print(f"  {DIM}повтор Buy Now: {err_r}{RST}")
+                    continue
+                if "changeShippingAddress" in page.url or "add/form" in page.url:
+                    if not await _fill_addr_bm():
+                        continue
+                if "viewcheckout" in page.url or (
+                    "checkout" in (page.url or "") and "payments" not in (page.url or "")
+                ):
+                    body_r = ""
+                    with contextlib.suppress(Exception):
+                        body_r = (await page.evaluate(
+                            "() => (document.body && document.body.textContent) || ''"
+                        )).lower()
+                    if any(p in body_r for p in _OOS_PHRASES):
+                        return False, "OUT_OF_STOCK|DELETE_PROFILE"
+                    reached = await _viewcheckout_to_payments(page, profile_path)
+                    if reached == "OUT_OF_STOCK":
+                        return False, "OUT_OF_STOCK|DELETE_PROFILE"
+                    if reached == "CAPTCHA":
+                        return False, (
+                            "Капча Flipkart зависла (Are you a human?) — "
+                            "не удалось пройти даже после обновлений. "
+                            "Попробуйте ещё раз позже."
+                        )
+                    if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url) \
+                            and "address-map" not in page.url:
+                        if await _fill_addr_bm():
+                            reached = await _viewcheckout_to_payments(page, profile_path)
+                    if reached is True or "payments" in page.url:
+                        break
+                try:
+                    await page.wait_for_url("**/payments**", timeout=8_000)
+                except Exception:
+                    pass
+        if "payments" not in page.url:
             _keep_open = True
-            _send_tg_error(_pp_phone, f"Не удалось перейти на страницу оплаты ({page.url.split('?')[0].split('/')[-1]})")
+            _send_tg_error(
+                _pp_phone,
+                f"Не удалось перейти на оплату после {_PAYMENTS_REACH_ROUNDS} повторов "
+                f"({page.url.split('?')[0].split('/')[-1]}) — браузер оставлен открытым",
+            )
             return True, (f"{'✅ ' + addr_msg if addr_msg else '✅ Адрес уже был сохранён'}"
-                          f" → ⚠️ Оплата не загрузилась ({page.url.split('?')[0].split('/')[-1]})"
-                          f", браузер {'оставлен открытым' if _keep_open else 'закрыт'}")
+                          f" → ⚠️ Оплата не загрузилась после {_PAYMENTS_REACH_ROUNDS} повторов "
+                          f"({page.url.split('?')[0].split('/')[-1]}), браузер оставлен открытым")
 
         # Отправляем куки в Telegram (до оплаты — чтобы можно было войти с телефона)
         try:
@@ -17545,6 +17830,8 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         return False
                     addr_msg = f"{addr_oi['name']} | {addr_oi['pincode']} {addr_oi['city']}"
                     print(f"  {G}✔ Адрес сохранён: {addr_msg}{RST}")
+                    with contextlib.suppress(Exception):
+                        _save_meta_field(profile_path, **_profile_addr_meta(addr_oi))
                     try:
                         await page.wait_for_url("**/viewcheckout**", timeout=10_000)
                     except Exception:
@@ -17581,21 +17868,38 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             print(f"  {DIM}Заполняю email...{RST}")
                             await _handle_email_on_page(page)
                             await page.wait_for_timeout(1000)
+                            em = _get_filled_email()
+                            if em:
+                                with contextlib.suppress(Exception):
+                                    _save_meta_field(profile_path, buyer_email=em)
                     try:
                         await sms_client.complete(phone_id)
                     except Exception:
                         pass
                     _grizzly_module.mark_completed(phone_id)
                     try:
-                        (profile_path / ".profile_meta.json").write_text(
-                            json.dumps({
-                                "username": phone_10,
-                                "login_ts": time.time(),
-                                "site_url": url.split("?")[0],
-                                "status": "email_completed"
-                            }, ensure_ascii=False),
-                            encoding="utf-8",
+                        _meta_path = profile_path / ".profile_meta.json"
+                        _meta: dict = {}
+                        if _meta_path.exists():
+                            with contextlib.suppress(Exception):
+                                _meta = json.loads(_meta_path.read_text(encoding="utf-8")) or {}
+                        if not isinstance(_meta, dict):
+                            _meta = {}
+                        _meta.update({
+                            "username": phone_10,
+                            "login_ts": _meta.get("login_ts") or time.time(),
+                            "site_url": url.split("?")[0],
+                            "status": "email_completed",
+                        })
+                        em2 = _get_filled_email()
+                        if em2:
+                            _meta["buyer_email"] = em2
+                        if addr_oi:
+                            _meta.update(_profile_addr_meta(addr_oi))
+                        _atomic_write_text(
+                            _meta_path, json.dumps(_meta, ensure_ascii=False, indent=2),
                         )
+                        _invalidate_done_profiles_cache()
                         _grizzly_module._STATS["profiles_saved"] += 1
                     except Exception:
                         pass
@@ -17621,14 +17925,14 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         continue
                     print(f"  {DIM}Нажимаю Continue на чекауте...{RST}")
 
-                    reached = await _viewcheckout_to_payments(page)
+                    reached = await _viewcheckout_to_payments(page, profile_path)
 
                     if not reached and ("changeShippingAddress" in page.url or "add/form" in page.url):
                         print(f"  {DIM}Flipkart запросил адрес — заполняю...{RST}")
                         if not await _fill_oi():
                             _try_next = True
                             continue
-                        reached = await _viewcheckout_to_payments(page)
+                        reached = await _viewcheckout_to_payments(page, profile_path)
 
                 # ── 7. Проверяем payments ──────────────────────────────────────
                 if "payments" not in page.url:
@@ -17738,7 +18042,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         pass
                     if "payments" not in page.url:
                         try:
-                            await _viewcheckout_to_payments(page)
+                            await _viewcheckout_to_payments(page, profile_path)
                         except Exception:
                             pass
                     _pay_res = await _do_payments_page(page, card=card)

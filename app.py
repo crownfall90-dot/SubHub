@@ -3233,7 +3233,7 @@ class SubHubApp(ctk.CTk):
             height=140, wrap="word",
         )
         self.profile_detail_body.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-        self.profile_detail_body.configure(state="disabled")
+        self._bind_readonly_copyable(self.profile_detail_body)
 
         # Блок «в процессе»: этап + стоп (показывается только при busy)
         self.profile_busy_frame = ctk.CTkFrame(
@@ -3394,7 +3394,7 @@ class SubHubApp(ctk.CTk):
 
         self.cards_list_wrap = ctk.CTkFrame(body, fg_color="transparent")
         self.cards_list_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.cards_list_wrap.grid_rowconfigure(1, weight=1)
+        self.cards_list_wrap.grid_rowconfigure(2, weight=1)
         self.cards_list_wrap.grid_columnconfigure(0, weight=1)
 
         self.gift_add_panel = ctk.CTkFrame(
@@ -3437,11 +3437,17 @@ class SubHubApp(ctk.CTk):
         self.gift_add_result = ctk.CTkLabel(add_inner, text="", text_color=TEXT_DIM, anchor="w")
         self.gift_add_result.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
+        # Сводка очереди гифт-карт — отдельный видимый блок (не кнопка в тулбаре)
+        self.gift_order_panel = ctk.CTkFrame(
+            self.cards_list_wrap, fg_color=BG_CARD, corner_radius=RADIUS_CARD,
+            border_width=1, border_color=BORDER_SUBTLE,
+        )
+
         self.cards_list = AutoHideScrollFrame(
             self.cards_list_wrap, fg_color=BG_SURFACE, corner_radius=RADIUS_CARD,
             border_width=1, border_color=BORDER_SUBTLE,
         )
-        self.cards_list.grid(row=1, column=0, sticky="nsew")
+        self.cards_list.grid(row=2, column=0, sticky="nsew")
 
         self.cards_detail = self._detail_panel(body)
         self.cards_detail.grid(row=0, column=1, sticky="nsew")
@@ -5572,14 +5578,64 @@ class SubHubApp(ctk.CTk):
             return
         self._render_profile_detail(prof)
 
+    def _bind_readonly_copyable(self, tb) -> None:
+        """Текст можно выделить и Ctrl+C — но не править (disabled блокирует копирование)."""
+        if getattr(tb, "_readonly_copy_bound", False):
+            return
+
+        def _on_key(e):
+            # Ctrl+C / Ctrl+A / Ctrl+Insert — разрешаем
+            if (e.state & 0x4) and e.keysym.lower() in ("c", "a", "insert", "с", "ф"):
+                return None
+            if e.keysym in (
+                "Left", "Right", "Up", "Down", "Home", "End",
+                "Prior", "Next", "Shift_L", "Shift_R",
+                "Control_L", "Control_R", "Alt_L", "Alt_R",
+                "Escape", "Tab",
+            ):
+                return None
+            return "break"
+
+        tb.bind("<Key>", _on_key)
+        tb.bind("<<Paste>>", lambda _e: "break")
+        tb.bind("<<Cut>>", lambda _e: "break")
+        tb._readonly_copy_bound = True
+
+    def _fill_readonly_text(self, tb, text: str) -> None:
+        tb.configure(state="normal")
+        tb.delete("1.0", "end")
+        tb.insert("1.0", (text or "").strip() or "—")
+        self._bind_readonly_copyable(tb)
+
+    def _copy_to_clipboard(self, text: str, *, toast_title: str = "Скопировано") -> None:
+        text = (text or "").strip()
+        if not text:
+            self._toast("Пусто", "Нечего копировать", WARNING)
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update_idletasks()
+            preview = text if len(text) <= 72 else text[:69] + "…"
+            self._toast(toast_title, preview, SUCCESS)
+        except Exception as e:
+            self._log(f"Буфер обмена: {e}")
+
+    def _profile_primary_link(self, prof: dict) -> str:
+        return (
+            (prof.get("issued_link") or prof.get("black_short_link")
+             or prof.get("black_activation_link") or "")
+        ).strip()
+
     def _render_profile_detail(self, prof: dict | None) -> None:
         for w in self.profile_detail_actions.winfo_children():
             w.destroy()
-        self.profile_detail_body.configure(state="normal")
-        self.profile_detail_body.delete("1.0", "end")
         if not prof:
-            self.profile_detail_body.insert("1.0", "Выберите профиль слева\n\nОдин клик — выбор и действия здесь.")
-            self.profile_detail_body.configure(state="disabled")
+            self._fill_readonly_text(
+                self.profile_detail_body,
+                "Выберите профиль слева\n\nОдин клик — выбор и действия здесь.\n"
+                "Текст можно выделить и скопировать (Ctrl+C).",
+            )
             if hasattr(self, "profile_busy_frame"):
                 self.profile_busy_frame.grid_remove()
             return
@@ -5588,15 +5644,12 @@ class SubHubApp(ctk.CTk):
         phone = str(prof.get("username", ""))
         path = prof.get("path")
         cat = self._profile_category(prof)
-        has_link = bool(
-            prof.get("black_activation_link") or prof.get("black_short_link")
-            or prof.get("issued_link")
-        )
+        link = self._profile_primary_link(prof)
+        has_link = bool(link)
         is_issued = bool(prof.get("issued_ts"))
         busy = phone in self._prof_busy
 
-        self.profile_detail_body.insert("1.0", self._profile_menu_info(prof))
-        self.profile_detail_body.configure(state="disabled")
+        self._fill_readonly_text(self.profile_detail_body, self._profile_menu_info(prof))
 
         # Отдельный блок этапа + стоп (не в textbox)
         if hasattr(self, "profile_busy_frame"):
@@ -5622,6 +5675,19 @@ class SubHubApp(ctk.CTk):
                 self.profile_detail_actions, txt, cmd, color,
             ).pack(fill="x", pady=3)
 
+        if has_link:
+            _btn(
+                "Копировать ссылку",
+                lambda l=link: self._copy_to_clipboard(l, toast_title="Ссылка"),
+                SUCCESS,
+            )
+        _btn(
+            "Копировать данные",
+            lambda p=prof: self._copy_to_clipboard(
+                self._profile_menu_info(p), toast_title="Данные профиля",
+            ),
+            BTN_SECONDARY,
+        )
         _btn("Открыть Chrome", lambda: self._prof_chrome(phone, path), BTN_SECONDARY)
         _btn("Проверить активацию", lambda: self._prof_activate(phone, path), ACCENT)
 
@@ -5978,8 +6044,6 @@ class SubHubApp(ctk.CTk):
                 ("Файл", self._upload_gift_file, BTN_SECONDARY),
                 ("Изменить", self._edit_selected_gift_card, BTN_SECONDARY),
                 ("Удалить", self._delete_gift_card, ERROR),
-                ("↑ Выше", lambda: self._move_gift_card(-1), BTN_SECONDARY),
-                ("↓ Ниже", lambda: self._move_gift_card(1), BTN_SECONDARY),
                 ("Способ оплаты", self._toggle_pay_method, WARNING),
             ]
         else:
@@ -6028,6 +6092,152 @@ class SubHubApp(ctk.CTk):
             for ch in w.winfo_children():
                 _bind(ch)
         return row
+
+    def _fill_gift_order_panel(self, gc: list, bal: int, pm_txt: str) -> None:
+        """Видимый блок: всего карт, по номиналам, порядок очереди, действия."""
+        for w in self.gift_order_panel.winfo_children():
+            w.destroy()
+
+        by_denom: dict[int, int] = {}
+        for c in gc:
+            d = int(c.get("denom") or 0)
+            if d > 0:
+                by_denom[d] = by_denom.get(d, 0) + 1
+
+        hdr = ctk.CTkFrame(self.gift_order_panel, fg_color="transparent")
+        hdr.pack(fill="x", padx=14, pady=(12, 6))
+        ctk.CTkLabel(
+            hdr, text="Очередь и сводка",
+            font=_ui_font(FONT_SECTION, "bold"), text_color=TEXT_PRIMARY,
+        ).pack(side="left")
+        ctk.CTkLabel(
+            hdr, text=f"₹{bal}",
+            font=_ui_font(FONT_SECTION, "bold"), text_color=SUCCESS,
+        ).pack(side="right")
+
+        # Метрики: всего + способ оплаты
+        metrics = ctk.CTkFrame(self.gift_order_panel, fg_color="transparent")
+        metrics.pack(fill="x", padx=14, pady=(0, 8))
+        for label, value, color in (
+            ("Всего карт", str(len(gc)), TEXT_PRIMARY),
+            ("Оплата", pm_txt, ACCENT),
+        ):
+            chip = ctk.CTkFrame(
+                metrics, fg_color=BG_ELEVATED, corner_radius=RADIUS_SM,
+                border_width=1, border_color=BORDER_SUBTLE,
+            )
+            chip.pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(
+                chip, text=label.upper(), font=_ui_font(FONT_CAPTION),
+                text_color=TEXT_MUTED,
+            ).pack(anchor="w", padx=10, pady=(6, 0))
+            ctk.CTkLabel(
+                chip, text=value, font=_ui_font(FONT_BODY, "bold"),
+                text_color=color,
+            ).pack(anchor="w", padx=10, pady=(0, 6))
+
+        # Номиналы — отдельная полоса
+        ctk.CTkLabel(
+            self.gift_order_panel, text="По номиналам",
+            font=_ui_font(FONT_CAPTION, "bold"), text_color=TEXT_MUTED,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(2, 4))
+        den_row = ctk.CTkFrame(self.gift_order_panel, fg_color="transparent")
+        den_row.pack(fill="x", padx=14, pady=(0, 8))
+        if not by_denom:
+            ctk.CTkLabel(
+                den_row, text="карт нет", text_color=TEXT_DIM,
+                font=_ui_font(FONT_CAPTION),
+            ).pack(side="left")
+        else:
+            for d in sorted(by_denom, reverse=True):
+                cnt = by_denom[d]
+                cell = ctk.CTkFrame(
+                    den_row, fg_color=ACCENT_SOFT, corner_radius=RADIUS_CHIP,
+                    border_width=1, border_color=BORDER_SUBTLE,
+                )
+                cell.pack(side="left", padx=(0, 6), pady=2)
+                ctk.CTkLabel(
+                    cell, text=f"₹{d}",
+                    font=_ui_font(FONT_BODY, "bold"), text_color=ACCENT,
+                ).pack(side="left", padx=(10, 4), pady=6)
+                ctk.CTkLabel(
+                    cell, text=f"×{cnt}",
+                    font=_ui_font(FONT_CAPTION, "bold"), text_color=TEXT_PRIMARY,
+                    fg_color=BG_ELEVATED, corner_radius=RADIUS_SM, padx=6, pady=2,
+                ).pack(side="left", padx=(0, 8), pady=6)
+
+        # Порядок очереди (видимая лента)
+        ctk.CTkLabel(
+            self.gift_order_panel, text="Порядок применения  ·  слева первая",
+            font=_ui_font(FONT_CAPTION, "bold"), text_color=TEXT_MUTED,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(2, 4))
+        q_wrap = ctk.CTkFrame(
+            self.gift_order_panel, fg_color=BG_SURFACE, corner_radius=RADIUS_SM,
+            border_width=1, border_color=BORDER_SUBTLE,
+        )
+        q_wrap.pack(fill="x", padx=14, pady=(0, 8))
+        q_row = ctk.CTkFrame(q_wrap, fg_color="transparent")
+        q_row.pack(fill="x", padx=8, pady=8)
+        if not gc:
+            ctk.CTkLabel(
+                q_row, text="Добавьте карты — порядок появится здесь",
+                text_color=TEXT_DIM, font=_ui_font(FONT_CAPTION),
+            ).pack(side="left")
+        else:
+            show_n = min(len(gc), 10)
+            for i in range(show_n):
+                d = int(gc[i].get("denom") or 0)
+                is_first = i == 0
+                is_sel = i == self._sel_gift_idx
+                bg = SUCCESS if is_first else (ACCENT_SOFT if is_sel else BG_ELEVATED)
+                fg = TEXT_ON_ACCENT if is_first else (ACCENT if is_sel else TEXT_PRIMARY)
+                border = SUCCESS if is_first else (ACCENT if is_sel else BORDER_SUBTLE)
+                pill = ctk.CTkFrame(
+                    q_row, fg_color=bg, corner_radius=RADIUS_CHIP,
+                    border_width=1, border_color=border,
+                )
+                pill.pack(side="left", padx=(0, 4))
+                ctk.CTkLabel(
+                    pill, text=f"{i + 1}",
+                    font=_ui_font(FONT_CAPTION, "bold"), text_color=fg,
+                    width=18,
+                ).pack(side="left", padx=(8, 2), pady=5)
+                ctk.CTkLabel(
+                    pill, text=f"₹{d}",
+                    font=_ui_font(FONT_CAPTION, "bold"), text_color=fg,
+                ).pack(side="left", padx=(0, 8), pady=5)
+                if i < show_n - 1:
+                    ctk.CTkLabel(
+                        q_row, text="→", font=_ui_font(FONT_CAPTION),
+                        text_color=TEXT_MUTED,
+                    ).pack(side="left", padx=(0, 4))
+            if len(gc) > show_n:
+                ctk.CTkLabel(
+                    q_row, text=f"+{len(gc) - show_n}",
+                    font=_ui_font(FONT_CAPTION, "bold"), text_color=TEXT_DIM,
+                ).pack(side="left", padx=(4, 0))
+
+        # Действия порядка — вместо потерянной кнопки в тулбаре
+        acts = ctk.CTkFrame(self.gift_order_panel, fg_color="transparent")
+        acts.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkLabel(
+            acts, text="Выбранную карту:",
+            font=_ui_font(FONT_CAPTION), text_color=TEXT_DIM,
+        ).pack(side="left", padx=(0, 8))
+        has_sel = self._sel_gift_idx is not None and 0 <= self._sel_gift_idx < len(gc)
+        self._action_btn(
+            acts, "В начало очереди", self._gift_to_front, SUCCESS,
+        ).pack(side="left", padx=(0, 6))
+        self._action_btn(
+            acts, "В конец", self._gift_to_end, BTN_SECONDARY,
+        ).pack(side="left", padx=(0, 6))
+        if not has_sel:
+            ctk.CTkLabel(
+                acts, text="сначала выберите карту в списке",
+                font=_ui_font(FONT_CAPTION), text_color=TEXT_MUTED,
+            ).pack(side="left", padx=(8, 0))
 
     def _gift_queue_row(
         self, parent, idx: int, total: int, denom: int,
@@ -6137,10 +6347,16 @@ class SubHubApp(ctk.CTk):
 
         if self._gift_add_visible and self._cards_tab == "gift":
             self.gift_add_panel.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-            self.cards_list.grid(row=1, column=0, sticky="nsew")
         else:
             self.gift_add_panel.grid_forget()
-            self.cards_list.grid(row=1, column=0, sticky="nsew")
+
+        if self._cards_tab == "gift":
+            self._fill_gift_order_panel(gc, bal, pm_txt)
+            self.gift_order_panel.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        else:
+            self.gift_order_panel.grid_forget()
+
+        self.cards_list.grid(row=2, column=0, sticky="nsew")
 
         for w in self.cards_list.winfo_children():
             w.destroy()
@@ -6210,30 +6426,6 @@ class SubHubApp(ctk.CTk):
                 ).pack(pady=40)
                 self._set_cards_detail("")
             else:
-                by_denom: dict[int, int] = {}
-                for c in gc:
-                    d = int(c.get("denom") or 0)
-                    by_denom[d] = by_denom.get(d, 0) + 1
-                breakdown = "  ·  ".join(
-                    f"₹{d}×{by_denom[d]}" for d in sorted(by_denom, reverse=True)
-                )
-                queue_line = " → ".join(
-                    f"₹{int(c.get('denom') or 0)}" for c in gc[:8]
-                )
-                if len(gc) > 8:
-                    queue_line += " → …"
-
-                hint = ctk.CTkFrame(
-                    self.cards_list, fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP,
-                    border_width=1, border_color=BORDER_SUBTLE,
-                )
-                hint.pack(fill="x", pady=(2, 6), padx=4)
-                ctk.CTkLabel(
-                    hint,
-                    text="Очередь применения — сверху первая. ↑↓ в строке меняют местами.",
-                    font=_ui_font(FONT_CAPTION), text_color=TEXT_DIM, anchor="w",
-                ).pack(fill="x", padx=10, pady=6)
-
                 for idx, c in enumerate(gc):
                     denom = int(c.get("denom") or 0)
                     series = str(c.get("number", "") or "")
@@ -6259,18 +6451,16 @@ class SubHubApp(ctk.CTk):
                         f"PIN: {c.get('pin', '—')}\n"
                         f"Добавлена: {m._fmt_msk(c['added_ts']) if c.get('added_ts') else '—'}\n\n"
                         f"В очереди: {pos} из {len(gc)} ({role})\n"
-                        f"Порядок: {queue_line}\n"
-                        f"Сводка: {breakdown}\n"
                         f"Способ оплаты: {pm_txt}\n\n"
-                        "↑↓ в строке или «↑ Выше» / «↓ Ниже» — переставить."
+                        "Порядок и сводка — в блоке над списком.\n"
+                        "↑↓ в строке — сдвинуть на одну позицию."
                     )
                 else:
                     self._set_cards_detail(
                         f"Всего: {len(gc)} шт.  ·  Баланс ₹{bal}\n"
-                        f"Порядок: {queue_line}\n{breakdown}\n\n"
-                        f"Способ оплаты: {pm_txt}\n"
-                        "Зелёный №1 — первая карта при оплате.\n"
-                        "Стрелки ↑↓ в строке меняют соседние карты местами."
+                        f"Способ оплаты: {pm_txt}\n\n"
+                        "Сводка и порядок — в блоке над списком.\n"
+                        "Выберите карту или сдвиньте ↑↓ в строке."
                     )
 
         else:
@@ -6768,11 +6958,33 @@ class SubHubApp(ctk.CTk):
         lines = [phone, ""]
         if prof.get("login_str"):
             lines.append(f"Создан: {prof['login_str']}")
+        # Адрес / email — сразу под «Создан», из .profile_meta.json
+        addr_sum = (prof.get("address_summary") or "").strip()
+        if not addr_sum:
+            name = (prof.get("address_name") or "").strip()
+            pin = (prof.get("address_pincode") or "").strip()
+            city = (prof.get("address_city") or "").strip()
+            bits = [x for x in (name, f"{pin} {city}".strip()) if x]
+            addr_sum = " | ".join(bits)
+        addr_line = (prof.get("address_line") or "").strip()
+        if not addr_line:
+            house = (prof.get("address_house") or "").strip()
+            road = (prof.get("address_road") or "").strip()
+            addr_line = ", ".join(x for x in (house, road) if x)
+        if addr_sum:
+            lines.append(f"Адрес: {addr_sum}")
+        if addr_line:
+            lines.append(addr_line)
+        st = (prof.get("address_state") or "").strip()
+        if st and st not in addr_sum:
+            lines.append(f"Штат: {st}")
+        em = (prof.get("buyer_email") or "").strip()
+        if em:
+            lines.append(f"Email: {em}")
         if prof.get("issued_str"):
             lines.append(f"Выдан: {prof['issued_str']}")
         inv = prof.get("issued_invoice_id")
         if inv:
-            em = prof.get("buyer_email") or ""
             lines.append(f"Заказ #{inv}" + (f" · {em}" if em else ""))
         vt = prof.get("black_valid_till") or prof.get("subscription_expires_str")
         if vt:
@@ -7165,6 +7377,38 @@ class SubHubApp(ctk.CTk):
         gc[pos], gc[new_pos] = gc[new_pos], gc[pos]
         m._save_gift_cards(gc)
         self._sel_gift_idx = new_pos
+        self._refresh_cards()
+
+    def _gift_to_front(self) -> None:
+        """Поставить выбранную гифт-карту первой в очереди."""
+        import menu as m
+        gc = m._load_gift_cards()
+        if not gc or self._sel_gift_idx is None or not (0 <= self._sel_gift_idx < len(gc)):
+            messagebox.showinfo("Гифт-карты", "Выберите карту в списке")
+            return
+        i = self._sel_gift_idx
+        if i == 0:
+            return
+        card = gc.pop(i)
+        gc.insert(0, card)
+        m._save_gift_cards(gc)
+        self._sel_gift_idx = 0
+        self._refresh_cards()
+
+    def _gift_to_end(self) -> None:
+        """Поставить выбранную гифт-карту в конец очереди."""
+        import menu as m
+        gc = m._load_gift_cards()
+        if not gc or self._sel_gift_idx is None or not (0 <= self._sel_gift_idx < len(gc)):
+            messagebox.showinfo("Гифт-карты", "Выберите карту в списке")
+            return
+        i = self._sel_gift_idx
+        if i >= len(gc) - 1:
+            return
+        card = gc.pop(i)
+        gc.append(card)
+        m._save_gift_cards(gc)
+        self._sel_gift_idx = len(gc) - 1
         self._refresh_cards()
 
     def _toggle_gift_add_panel(self) -> None:
