@@ -1117,6 +1117,9 @@ class SubHubApp(ctk.CTk):
         except Exception as e:
             self._run_on_main( lambda: self._log(f"⚠ Зависимости: {e}"))
 
+        # Бэкенд и «SubHub готов» — сразу; проверка обновлений (сеть) уже не задерживает старт
+        self._run_on_main( self._finish_startup)
+
         self._run_on_main( lambda: self._log("🔄 Проверка обновлений…"))
         try:
             m._check_updates_bg()
@@ -1129,8 +1132,7 @@ class SubHubApp(ctk.CTk):
                 self._run_on_main( lambda: self._log("✓ Версия актуальна"))
         except Exception as e:
             self._run_on_main( lambda: self._log(f"⚠ Обновления: {e}"))
-
-        self._run_on_main( self._finish_startup)
+        self._run_on_main( self._refresh_update_badge)
 
     def _start_ticks(self) -> None:
         if getattr(self, "_ticks_started", False):
@@ -1298,7 +1300,7 @@ class SubHubApp(ctk.CTk):
         ).pack(anchor="w")
 
         self._vpn_status_lbl = ctk.CTkLabel(
-            self.sidebar, text="VPN…", font=_ui_font(FONT_SMALL),
+            self.sidebar, text="Сеть…", font=_ui_font(FONT_SMALL),
             text_color=TEXT_DIM, wraplength=210,
             fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP,
             border_width=1, border_color=BORDER_SUBTLE,
@@ -1342,7 +1344,6 @@ class SubHubApp(ctk.CTk):
         self._build_profiles()
         self._build_archive()
         self._build_cards()
-        self._build_vpn()
         self._build_tools()
         self._build_logs()
         self._build_settings()
@@ -1391,7 +1392,6 @@ class SubHubApp(ctk.CTk):
                 ("youtube_hub", "Обзор"),
                 ("profiles", "Профили"),
                 ("archive", "Архив"),
-                ("vpn", "VPN"),
                 ("tools", "Инструменты"),
             ]
         elif service == "ggsell":
@@ -1463,7 +1463,7 @@ class SubHubApp(ctk.CTk):
         if key == "__home__":
             self._go_home()
             return
-        if key in ("profiles", "archive", "vpn", "tools"):
+        if key in ("profiles", "archive", "tools"):
             self._current_service = "youtube"
         elif key == "cards":
             self._current_service = None
@@ -1740,7 +1740,7 @@ class SubHubApp(ctk.CTk):
         if name not in self._pages:
             self._log(f"Неизвестная страница: {name}")
             return
-        youtube_pages = {"run", "profiles", "archive", "vpn", "tools", "youtube_hub"}
+        youtube_pages = {"run", "profiles", "archive", "tools", "youtube_hub"}
         home_pages = {"home", "cards"}
         if name == "run":
             name = "youtube_hub"
@@ -1783,7 +1783,6 @@ class SubHubApp(ctk.CTk):
             "profiles": self._refresh_profiles,
             "cards": self._refresh_cards,
             "archive": self._refresh_archive,
-            "vpn": self._refresh_vpn_page,
             "tools": lambda: None,
             "logs": lambda: None,
             "deepseek": self._refresh_deepseek,
@@ -3454,36 +3453,6 @@ class SubHubApp(ctk.CTk):
 
         self._selected_gift: dict | None = None
 
-    def _build_vpn(self) -> None:
-        p = self._page_fill("vpn")
-        p.grid_rowconfigure(2, weight=1)
-
-        self._workspace_bar(p, "VPN", accent=ACCENT, row=0)
-
-        inner_wrap = ctk.CTkFrame(p, fg_color="transparent")
-        inner_wrap.grid(row=1, column=0, sticky="ew", pady=(0, _GAP_CARD))
-        inner = self._card(inner_wrap, "Статус", accent=ACCENT)
-        inner.pack(fill="x")
-        self.vpn_page_status = ctk.CTkLabel(
-            inner, text="Загрузка…", justify="left", anchor="w", font=_ui_font(FONT_SECTION),
-        )
-        self.vpn_page_status.pack(fill="x")
-        self.vpn_page_ext = ctk.CTkLabel(
-            inner, text="", justify="left", anchor="w", text_color=TEXT_DIM, font=_ui_font(FONT_BODY),
-        )
-        self.vpn_page_ext.pack(fill="x", pady=(4, 0))
-
-        btns = ctk.CTkFrame(p, fg_color="transparent")
-        btns.grid(row=2, column=0, sticky="ew")
-        self.vpn_check_btn = self._action_btn(
-            btns, "Проверить VPN", self._check_vpn, ACCENT,
-        )
-        self.vpn_check_btn.pack(side="left", padx=(0, 8))
-        self._toolbar_btn(btns, "Установить расширения", self._install_extensions_bg).pack(
-            side="left", padx=(0, 8),
-        )
-        self._toolbar_btn(btns, "Папка veepn_extension", self._open_vpn_folder).pack(side="left")
-
     def _build_tools(self) -> None:
         p = self._page_fill("tools")
         p.grid_rowconfigure(1, weight=1)
@@ -3622,10 +3591,11 @@ class SubHubApp(ctk.CTk):
         self._grizzly_active_total = 0
         self._grizzly_btn_shown = False
         self._set_grizzly_cancel_status("Сейчас активных номеров нет", active_total=0)
-        self._action_btn(
+        self.btn_purge_tmp = self._action_btn(
             gs, "Удалить временные профили",
             self._purge_temp_profiles_ui, ERROR,
-        ).pack(fill="x", pady=(4, 0))
+        )
+        self._refresh_purge_tmp_btn()
 
         # ── API-ключи ───────────────────────────────────────────────────────
         keys = self._settings_block(right, "API-ключи")
@@ -3674,6 +3644,10 @@ class SubHubApp(ctk.CTk):
             command=self._on_setting_proxy, height=22,
         )
         self.sw_proxy.pack(anchor="w", pady=1)
+        ctk.CTkLabel(
+            net, text="Выкл — личный VPN на ПК (напрямую)",
+            font=_ui_font(FONT_SMALL), text_color=TEXT_MUTED, anchor="w",
+        ).pack(anchor="w")
         try:
             import menu as _m_proxy
             if _m_proxy._proxy_enabled():
@@ -3784,6 +3758,7 @@ class SubHubApp(ctk.CTk):
                 sw_proxy.select()
             else:
                 sw_proxy.deselect()
+        self._refresh_purge_tmp_btn()
 
     def _sync_windows_startup(self) -> None:
         if not _sync_windows_startup_from_settings(self._app_settings):
@@ -3886,8 +3861,30 @@ class SubHubApp(ctk.CTk):
             return
         self._log(
             "Прокси для Flipkart: "
-            + ("включён (proxy-first)" if on else "выключён (VPN на ПК / напрямую)")
+            + ("включён (proxy-first)" if on else "выключен")
         )
+        self._log_network_mode()
+        if on:
+            # Прогрев пула живых прокси в фоне — первый вход не ждёт подбор
+            import threading as _thr
+            import menu as _m_pf
+            _thr.Thread(
+                target=_m_pf.prefetch_free_proxies, daemon=True,
+                name="proxy-prefetch-toggle",
+            ).start()
+
+    def _log_network_mode(self) -> None:
+        """Показывает итоговый режим сети по тумблеру прокси."""
+        try:
+            import menu as _m
+            p = _m._proxy_enabled()
+        except Exception:
+            return
+        mode = (
+            "прокси → личный VPN на ПК" if p
+            else "личный VPN на ПК (напрямую)"
+        )
+        self._log(f"Сеть Flipkart: {mode}")
 
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
@@ -4080,12 +4077,41 @@ class SubHubApp(ctk.CTk):
             if err:
                 msg += f", ошибок: {len(err)}"
             self._run_on_main(lambda: self._log(msg))
+            self._run_on_main(self._refresh_purge_tmp_btn)
             if n and hasattr(self, "_refresh_youtube_hub"):
                 self._run_on_main(self._refresh_youtube_hub)
             if n and hasattr(self, "_refresh_profiles"):
                 self._run_on_main(self._refresh_profiles)
 
         self._run_bg(_w, "Удаление временных профилей…")
+
+    def _refresh_purge_tmp_btn(self) -> None:
+        """Кнопка «Удалить временные профили»: скрыта, когда удалять нечего."""
+        btn = getattr(self, "btn_purge_tmp", None)
+        if btn is None or not btn.winfo_exists():
+            return
+
+        def _count() -> None:
+            try:
+                import menu as m
+                n = m.count_temp_profiles()
+            except Exception:
+                n = 0
+
+            def _apply() -> None:
+                if not btn.winfo_exists():
+                    return
+                if n > 0:
+                    btn.configure(text=f"Удалить временные профили ({n})")
+                    if not btn.winfo_ismapped():
+                        btn.pack(fill="x", pady=(4, 0))
+                else:
+                    btn.pack_forget()
+
+            self._run_on_main(_apply)
+
+        import threading as _thr
+        _thr.Thread(target=_count, daemon=True, name="tmp-profiles-count").start()
 
     def _apply_grizzly_startup(self, r: dict) -> None:
         summary = self._grizzly_cancel_summary(r)
@@ -4341,8 +4367,16 @@ class SubHubApp(ctk.CTk):
         if state == "error":
             short = (msg or "ошибка")[:36]
             return short, ERROR
+        if state == "disabled":
+            try:
+                import menu as _m
+                if _m._proxy_enabled():
+                    return "Сеть: прокси → личный VPN", TEXT_DIM
+            except Exception:
+                pass
+            return "Сеть: личный VPN на ПК", TEXT_DIM
         if state == "no_ext":
-            return "Нет veepn_extension/", TEXT_DIM
+            return "Сеть: личный VPN на ПК", TEXT_DIM
         if total and with_ext == total:
             return f"Расширение {with_ext}/{total}", SUCCESS
         return "VPN: ожидание", TEXT_DIM
@@ -6171,43 +6205,8 @@ class SubHubApp(ctk.CTk):
         self.after(2000, lambda: self._poll_vpn_bootstrap(attempt + 1))
 
     def _refresh_vpn_page(self) -> None:
-        import menu as m
-        vs = m.get_vpn_bg_status()
-        ext = m._vpn_extension_dir()
-        scan = m.scan_profiles_extension_status()
-        state = vs.get("state", "idle")
-        msg = vs.get("message", "")
-        state_ru = {
-            "ready": "Готово",
-            "error": "Ошибка",
-            "warming": "Подготовка",
-            "installing": "Установка",
-            "no_ext": "Нет расширения",
-            "idle": "Ожидание",
-        }
-        title = state_ru.get(state, state)
-        if scan["total"]:
-            if scan["missing"] == 0:
-                prof_line = f"Профили: {scan['with_ext']}/{scan['total']} — все с расширением"
-            else:
-                names = ", ".join(scan["missing_names"][:3])
-                if scan["missing"] > 3:
-                    names += "…"
-                prof_line = (
-                    f"Профили: {scan['with_ext']}/{scan['total']} с расширением"
-                    f" · без: {scan['missing']} ({names})"
-                )
-        else:
-            prof_line = "Профили: не найдены"
-        body = title
-        if msg:
-            body += f"\n{msg}"
-        body += f"\n{prof_line}"
-        if self._vpn_last_check:
-            body += f"\n\nПроверка: {self._vpn_last_check}"
-        self.vpn_page_status.configure(text=body)
-        self.vpn_page_ext.configure(
-            text=f"Расширение: {ext or 'не найдено (положите в veepn_extension/)'}")
+        """Страница VPN удалена (расширения убраны из проекта) — no-op."""
+        return
 
     def _sync_run_page_status(self) -> None:
         import menu as m
@@ -6790,12 +6789,17 @@ class SubHubApp(ctk.CTk):
                 self._log(f"   🔗 {link}")
         self._prof_run(phone, f"Проверка активации {phone}…", _w)
 
+    @staticmethod
+    def _ru_result(msg) -> str:
+        """Человекочитаемый результат сценария («CANCELLED» → «Отменено»)."""
+        return {"CANCELLED": "Отменено"}.get(str(msg), str(msg))
+
     def _prof_fill_data(self, phone: str, path) -> None:
         def _w():
             import menu as m
             addr = m._gen_indian_address()
             ok, msg = asyncio.run(m._do_fill_address(path, addr, stop_at_payment=True))
-            self._log(f"{'✓' if ok else '✗'} {phone}: {msg}")
+            self._log(f"{'✓' if ok else '✗'} {phone}: {self._ru_result(msg)}")
         self._prof_run(phone, f"До оплаты · +91 {phone}…", _w)
 
     def _prof_set_issued(self, phone: str, path) -> None:
@@ -6856,7 +6860,7 @@ class SubHubApp(ctk.CTk):
         def _w():
             import menu as m
             ok, msg = asyncio.run(m._do_buy_membership(path, months, card=None))
-            self._log(f"{'✓' if ok else '✗'} {msg}")
+            self._log(f"{'✓' if ok else '✗'} {self._ru_result(msg)}")
         self._prof_run(phone, f"Покупка {months} мес. · +91 {phone}…", _w)
 
     def _profile_fill_address(self) -> None:
@@ -7181,7 +7185,7 @@ class SubHubApp(ctk.CTk):
                 import menu as m
                 try:
                     ok, msg = asyncio.run(m._do_fill_address(profile_path, addr))
-                    self._log(f"{'✓' if ok else '✗'} {msg}")
+                    self._log(f"{'✓' if ok else '✗'} {self._ru_result(msg)}")
                 except Exception as e:
                     self._log(f"Ошибка: {e}")
 

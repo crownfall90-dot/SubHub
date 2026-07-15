@@ -60,54 +60,27 @@ def test_subprocess_log_stream() -> None:
 
 
 def test_vpn_helpers() -> None:
+    """VPN-расширения удалены: сеть — прокси или личный VPN на ПК (напрямую)."""
     import menu as m
 
-    js = m._veepn_connect_js(loops=2, sleep_ms=1000)
-    if "pickCountryId" not in js or "wantIso" not in js:
-        fail("vpn_country_js", "нет pickCountryId / USA")
-    if not hasattr(m, "_VPN_FLIPKART_COUNTRY_ORDER"):
-        fail("vpn_helpers", "нет _VPN_FLIPKART_COUNTRY_ORDER")
-    if m._VPN_FLIPKART_COUNTRY_ORDER[0] != "us":
-        fail("vpn_helpers", "USA не первый в порядке стран")
-    if not hasattr(m, "_vpn_connect_for_profile"):
-        fail("vpn_helpers", "нет _vpn_connect_for_profile")
+    if m._vpn_extension_dir() is not None:
+        fail("vpn_helpers", "_vpn_extension_dir должен быть None (расширения удалены)")
+    if m._vpn_extension_dir(ignore_toggle=True) is not None:
+        fail("vpn_helpers", "_vpn_extension_dir(ignore_toggle) должен быть None")
+    if m._vpn_enabled() is not False:
+        fail("vpn_helpers", "_vpn_enabled должен быть False")
+    if m._needs_load_extension(None) is not False:
+        fail("vpn_helpers", "_needs_load_extension должен быть False без расширения")
     if not hasattr(m, "_navigate_flipkart_resilient"):
         fail("vpn_helpers", "нет _navigate_flipkart_resilient")
     if not hasattr(m, "disconnect_vpn_on_shutdown"):
         fail("vpn_helpers", "нет disconnect_vpn_on_shutdown")
-    if not hasattr(m, "_vpn_toggle_reconnect_flipkart"):
-        fail("vpn_helpers", "нет _vpn_toggle_reconnect_flipkart")
     # sticky cancel после shutdown не должен ломать следующий fill/buy
     m._purchase_cancel.set()
     m.disconnect_vpn_on_shutdown()
     if m._purchase_cancel.is_set():
         fail("vpn_helpers", "_purchase_cancel залипает после disconnect_vpn_on_shutdown")
-    # VeepN только для успешных done (+ .profile_meta.json); вход/tmp — нет
-    from pathlib import Path as _P
-    sample = _P("chrome_profiles_done") / "profile_smokevpn"
-    sample.mkdir(parents=True, exist_ok=True)
-    meta = sample / ".profile_meta.json"
-    try:
-        if m._profile_allows_vpn(sample):
-            fail("vpn_helpers", "VPN allow без meta (ожидали False)")
-        meta.write_text('{"phone":"0000000000"}', encoding="utf-8")
-        if not m._profile_allows_vpn(sample):
-            fail("vpn_helpers", "VPN allow: успешный done+meta должен быть True")
-        tmp = _P("chrome_profiles_done") / "profile_0000000000_tmp_1"
-        tmp.mkdir(parents=True, exist_ok=True)
-        try:
-            (tmp / ".profile_meta.json").write_text("{}", encoding="utf-8")
-            if m._profile_allows_vpn(tmp):
-                fail("vpn_helpers", "VPN allow для _tmp_ (ожидали False)")
-        finally:
-            with contextlib.suppress(Exception):
-                (tmp / ".profile_meta.json").unlink(missing_ok=True)
-                tmp.rmdir()
-    finally:
-        with contextlib.suppress(Exception):
-            meta.unlink(missing_ok=True)
-            sample.rmdir()
-    ok("vpn_helpers", "USA + resilient navigate + VPN only for done+meta")
+    ok("vpn_helpers", "расширения удалены — прокси / личный VPN на ПК")
 
 
 def test_purge_temp_profiles() -> None:

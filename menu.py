@@ -1395,6 +1395,41 @@ def _vpn_provider() -> str:
     return "veepn"
 
 
+def _vpn_enabled() -> bool:
+    """VPN-расширения удалены из проекта — всегда False.
+
+    Сеть: прокси (тумблер в Настройках) или личный VPN на ПК (напрямую).
+    """
+    return False
+
+
+def _set_vpn_enabled(enabled: bool) -> bool:
+    """Пишет vpn.enabled в config.yaml точечно (сохраняет комментарии вокруг блока)."""
+    cfg_path = Path(__file__).resolve().parent / "config.yaml"
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    m = re.search(r"(?m)^(vpn:\s*\n)(.*?)(?=^[a-zA-Z_][\w]*:|\Z)", text, re.S)
+    if not m:
+        return False
+    head, body = m.group(1), m.group(2)
+    new_body, n = re.subn(
+        r"(?m)^([ \t]*enabled:\s*)(true|false|True|False)\s*$",
+        rf"\g<1>{'true' if enabled else 'false'}",
+        body,
+        count=1,
+    )
+    if n == 0:
+        new_body = f"  enabled: {'true' if enabled else 'false'}\n" + body
+    new_text = text[: m.start()] + head + new_body + text[m.end() :]
+    try:
+        cfg_path.write_text(new_text, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def _resolve_extension_base(base: Path) -> str | None:
     """manifest.json в base или в единственной подпапке."""
     if not base.exists():
@@ -1407,21 +1442,12 @@ def _resolve_extension_base(base: Path) -> str | None:
     return None
 
 
-def _vpn_extension_dir() -> str | None:
-    """Путь к распакованному VPN-расширению (veepn_extension/ или vpn_extension/)."""
-    try:
-        root = Path(__file__).parent
-        provider = _vpn_provider()
-        if provider == "vpnly":
-            candidates = [root / "vpn_extension", root / "veepn_extension"]
-        else:
-            candidates = [root / "veepn_extension", root / "vpn_extension"]
-        for base in candidates:
-            resolved = _resolve_extension_base(base)
-            if resolved:
-                return resolved
-    except Exception:
-        pass
+def _vpn_extension_dir(*, ignore_toggle: bool = False) -> str | None:
+    """VPN-расширения удалены из проекта — всегда None.
+
+    Весь VeepN/VPNLY-код в menu.py остаётся мёртвым (не вызывается):
+    сеть — прокси или личный VPN на ПК (напрямую).
+    """
     return None
 
 
@@ -1941,6 +1967,20 @@ def purge_temp_profiles() -> dict:
     }
 
 
+def count_temp_profiles() -> int:
+    """Сколько временных профилей сейчас на диске (для кнопки в Настройках)."""
+    n = 0
+    with contextlib.suppress(Exception):
+        for root in (PROFILES_DIR, DONE_PROFILES_DIR):
+            if not root.exists():
+                continue
+            for p in root.iterdir():
+                if (p.is_dir() and p.name.startswith("profile_")
+                        and _is_temp_profile_dir(p)):
+                    n += 1
+    return n
+
+
 def _profile_allows_vpn(
     profile_path: Path | str | None, *, ping_check: bool = False,
 ) -> bool:
@@ -2035,7 +2075,7 @@ async def _veepn_eval_js(context, eid: str, js: str):
 
 async def _vpn_disconnect(context) -> bool:
     """Отключает VeepN/VPNLY в расширении (перед закрытием Chrome / сменой страны)."""
-    if not _vpn_extension_dir() or context is None:
+    if not _vpn_extension_dir(ignore_toggle=True) or context is None:
         return True
     eid = await _vpn_ext_id(context)
     if not eid:
@@ -2096,7 +2136,7 @@ async def _close_browser_session(
     disconnect_vpn: bool = True,
 ) -> None:
     """Закрывает браузер; сначала выключает VPN в расширении (сценарий/ошибка/стоп)."""
-    if ctx and disconnect_vpn and _vpn_extension_dir():
+    if ctx and disconnect_vpn and _vpn_extension_dir(ignore_toggle=True):
         with contextlib.suppress(Exception):
             await _vpn_disconnect(ctx)
     if ctx:
@@ -2182,8 +2222,8 @@ async def _vpn_connect_on_use_impl(
     max_attempts: int = 3, quick: bool = False, ping_check: bool = False,
 ) -> bool:
     """Включает VPN при использовании профиля (расширение уже в профиле или только что загружено)."""
-    if _proxy_enabled():
-        print(f"  {DIM}Прокси вкл — VeepN/VPNLY не трогаем{RST}")
+    if getattr(context, "_subhub_via_proxy", False):
+        print(f"  {DIM}Браузер на прокси — VeepN/VPNLY не трогаем{RST}")
         return True
     if not _vpn_extension_dir():
         return True
@@ -2234,8 +2274,8 @@ async def _vpn_connect_for_profile_impl(
 
     Если proxy уже жив — не переподключаем (Flipkart мог открыться; рвать нельзя).
     """
-    if _proxy_enabled():
-        print(f"  {DIM}Прокси вкл — VeepN/VPNLY не трогаем{RST}")
+    if getattr(context, "_subhub_via_proxy", False):
+        print(f"  {DIM}Браузер на прокси — VeepN/VPNLY не трогаем{RST}")
         return True
     if not _vpn_extension_dir():
         return True
@@ -5489,7 +5529,7 @@ def sync_vpn_extension_status() -> dict:
         return cur
 
     if not _vpn_extension_dir():
-        _set_vpn_bg_status("no_ext", "veepn_extension/ не найдено")
+        _set_vpn_bg_status("disabled", "Сеть: прокси / личный VPN на ПК")
         return get_vpn_bg_status()
 
     scan = scan_profiles_extension_status()
@@ -5746,7 +5786,7 @@ async def _activate_vpn_extension_via_chrome_page(context) -> bool:
 
     Установка файлами уже сделана; здесь только UI выбора/включения.
     """
-    if _proxy_enabled():
+    if getattr(context, "_subhub_via_proxy", False) or not _vpn_extension_dir():
         return False
     eid = (await _vpn_ext_id(context)) or _vpn_ext_id_for_install() or ""
     names = _vpn_extension_ui_names()
@@ -14728,27 +14768,18 @@ def _set_proxy_enabled(enabled: bool) -> bool:
 async def _resolve_flipkart_launch_network(
     *, allow_proxy: bool = True, allow_vpn_extension: bool = False,
 ) -> tuple[bool, dict | None]:
-    """План сети для Flipkart: (use_vpn, proxy).
+    """План сети для Flipkart: (use_vpn, proxy). use_vpn всегда False —
+    VPN-расширения удалены из проекта.
 
-    Вход / поиск номеров: allow_vpn_extension=False — только прокси или прямой
-    доступ (VPN на ПК). VeepN-расширение не ставится и не подключается.
-    Успешные done-профили (заполнение/покупка): allow_vpn_extension=True
-    только если proxy.enabled выключен (иначе proxy-only, без VeepN).
+    Порядок: прокси (тумблер прокси ВКЛ) → direct (личный VPN на ПК).
+    Прокси ВЫКЛ → всегда direct (личный VPN на ПК).
     """
     want_proxy = allow_proxy and _proxy_enabled()
     if want_proxy:
         proxy = await _select_proxy_for_launch_async()
         if proxy:
             return False, proxy
-        # proxy.enabled — только прокси/direct, без fallback на VeepN
-        print(f"  {Y}⚠ Прокси включён, но живой не найден — без VeepN (direct / VPN на ПК){RST}")
-        return False, None
-    # Без публичного прокси: прямой доступ / VPN на ПК
-    with contextlib.suppress(Exception):
-        if await _flipkart_direct_accessible():
-            return False, None
-    if allow_vpn_extension and _vpn_extension_dir():
-        return True, None
+        print(f"  {Y}⚠ Прокси включён, но живой не найден — direct / VPN на ПК{RST}")
     return False, None
 
 
@@ -14767,8 +14798,8 @@ def _context_skip_vpn(context) -> bool:
     marked = getattr(context, "_subhub_skip_vpn", None)
     if marked is not None:
         return bool(marked)
-    # без метки: тумблер прокси ВКЛ → VeepN не трогаем
-    return _proxy_enabled()
+    # без метки: тумблер VPN ВЫКЛ или прокси ВКЛ → VeepN не трогаем
+    return _proxy_enabled() or not _vpn_enabled()
 
 
 async def _resolve_profile_scenario_network(
@@ -14778,33 +14809,22 @@ async def _resolve_profile_scenario_network(
 ) -> tuple[bool, dict | None, str | None]:
     """Сеть для сценариев готового профиля (Chrome / адрес / покупка / активация).
 
-    proxy.enabled → только прокси (без VeepN).
-    proxy выкл → проверка Flipkart через VPN на ПК;
-      доступен → без расширения;
-      нет → ставим расширение (файлы) и дальше chrome://extensions/ + connect.
+    Порядок: прокси (если тумблер прокси ВКЛ) → direct (личный VPN на ПК).
+    VPN-расширения удалены — use_vpn всегда False.
+    Если Flipkart доступен прокси или личным VPN — сценарий продолжается.
 
     Returns (use_vpn, proxy, err).
     """
-    # proxy.on → VeepN запрещён даже как fallback
-    allow_vpn = allow_vpn_extension and not _proxy_enabled()
-    use_vpn, proxy = await _resolve_flipkart_launch_network(
-        allow_vpn_extension=allow_vpn,
+    _, proxy = await _resolve_flipkart_launch_network(
+        allow_vpn_extension=allow_vpn_extension,
     )
     if proxy:
         print(f"  {G}Сеть: прокси {proxy.get('server')}{RST}")
         return False, proxy, None
-    if use_vpn:
-        if profile_path is not None:
-            print(f"  {DIM}Flipkart недоступен с VPN на ПК → ставлю расширение…{RST}")
-            if not await _ensure_extension_in_profile(profile_path):
-                return True, None, "VPN-расширение не установлено в профиль"
-            await _vpn_chrome_cooldown(extra=1.0)
-        print(f"  {DIM}Сеть: VPN-расширение (включим через chrome://extensions/){RST}")
-        return True, None, None
     if _proxy_enabled():
-        print(f"  {G}Сеть: без живого прокси (direct / VPN на ПК){RST}")
+        print(f"  {G}Сеть: без живого прокси — direct (личный VPN на ПК){RST}")
     else:
-        print(f"  {G}Сеть: Flipkart доступен (VPN на ПК / напрямую){RST}")
+        print(f"  {G}Сеть: direct (личный VPN на ПК / напрямую){RST}")
     return False, None, None
 
 
@@ -17792,12 +17812,36 @@ def _deps_ok() -> bool:
     return _deps_ok_full()
 
 
-def _chromium_ok() -> bool:
+_DEPS_OK_MARKER = Path(__file__).parent / "data" / "deps_ok.json"
+
+
+def _chromium_ok(fast: bool = True) -> bool:
+    """Проверка Chromium. fast=True — по кэшу пути exe, без запуска драйвера
+    Playwright (node-процесс, 1–3 с на каждый старт приложения)."""
+    if fast:
+        with contextlib.suppress(Exception):
+            import playwright as _pwpkg
+            raw = json.loads(_DEPS_OK_MARKER.read_text(encoding="utf-8"))
+            exe = raw.get("chromium_exe") or ""
+            same_ver = raw.get("playwright") == getattr(_pwpkg, "__version__", "")
+            if exe and same_ver and os.path.exists(exe):
+                return True
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as _pw:
             _exe = _pw.chromium.executable_path
-        return bool(_exe and os.path.exists(_exe))
+        ok = bool(_exe and os.path.exists(_exe))
+        if ok:
+            with contextlib.suppress(Exception):
+                import playwright as _pwpkg
+                _DEPS_OK_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                _DEPS_OK_MARKER.write_text(
+                    json.dumps({
+                        "chromium_exe": str(_exe),
+                        "playwright": getattr(_pwpkg, "__version__", ""),
+                    }),
+                    encoding="utf-8")
+        return ok
     except Exception:
         return False
 
@@ -17825,7 +17869,7 @@ def ensure_dependencies(log_fn=None) -> tuple[bool, str]:
         log_fn("Установка пакетов из requirements.txt…")
     pip_ok = run([sys.executable, "-m", "pip", "install", "-r", str(req)]) == 0
 
-    if not _chromium_ok():
+    if not _chromium_ok(fast=False):
         if log_fn:
             log_fn("Установка Chromium (Playwright)…")
         pw_ok = run([sys.executable, "-m", "playwright", "install", "chromium"]) == 0
