@@ -2182,6 +2182,9 @@ async def _vpn_connect_on_use_impl(
     max_attempts: int = 3, quick: bool = False, ping_check: bool = False,
 ) -> bool:
     """Включает VPN при использовании профиля (расширение уже в профиле или только что загружено)."""
+    if _proxy_enabled():
+        print(f"  {DIM}Прокси вкл — VeepN/VPNLY не трогаем{RST}")
+        return True
     if not _vpn_extension_dir():
         return True
     if profile_path is not None and not _profile_allows_vpn(profile_path, ping_check=ping_check):
@@ -2189,6 +2192,7 @@ async def _vpn_connect_on_use_impl(
         print(f"  {DIM}VPN: нет активного сценария для {tag} — подключение пропущено{RST}")
         return False
     await _close_junk_tabs(context)
+    await _activate_vpn_extension_via_chrome_page(context)
     wait = 3.0 if quick else (4.0 if profile_path and _profile_has_vpn_extension(profile_path) else 6.0)
     await asyncio.sleep(wait)
     for attempt in range(max_attempts):
@@ -2230,6 +2234,9 @@ async def _vpn_connect_for_profile_impl(
 
     Если proxy уже жив — не переподключаем (Flipkart мог открыться; рвать нельзя).
     """
+    if _proxy_enabled():
+        print(f"  {DIM}Прокси вкл — VeepN/VPNLY не трогаем{RST}")
+        return True
     if not _vpn_extension_dir():
         return True
     if profile_path is not None and not _profile_allows_vpn(profile_path, ping_check=ping_check):
@@ -2245,6 +2252,8 @@ async def _vpn_connect_for_profile_impl(
             wp = await _main_work_page(context)
             await wp.bring_to_front()
         return True
+    # Файлы уже в профиле → chrome://extensions/ выбрать и включить
+    await _activate_vpn_extension_via_chrome_page(context)
     wait = 2.5 if quick else (3.5 if profile_path and _profile_has_vpn_extension(profile_path) else 5.0)
     await asyncio.sleep(wait)
     deadline = time.monotonic() + timeout
@@ -5709,6 +5718,113 @@ async def _ensure_extension_in_profile(profile_path: Path) -> bool:
                 await pw.stop()
             except Exception:
                 pass
+
+
+def _vpn_extension_ui_names() -> list[str]:
+    """Имена VPN-расширения для поиска на chrome://extensions/."""
+    names = [
+        "VPNLY", "VeePN", "VeepN", "Бесплатный VPN", "Free VPN",
+        "Free VPN & Proxy", "VPN и прокси",
+    ]
+    ext = _vpn_extension_dir()
+    if not ext:
+        return names
+    for loc in ("ru", "en"):
+        msg = Path(ext) / "_locales" / loc / "messages.json"
+        if not msg.is_file():
+            continue
+        with contextlib.suppress(Exception):
+            data = json.loads(msg.read_text(encoding="utf-8"))
+            n = str((data.get("app_name") or {}).get("message") or "").strip()
+            if n and n not in names:
+                names.insert(0, n)
+    return names
+
+
+async def _activate_vpn_extension_via_chrome_page(context) -> bool:
+    """chrome://extensions/ → найти VPN в списке → включить → клик по карточке.
+
+    Установка файлами уже сделана; здесь только UI выбора/включения.
+    """
+    if _proxy_enabled():
+        return False
+    eid = (await _vpn_ext_id(context)) or _vpn_ext_id_for_install() or ""
+    names = _vpn_extension_ui_names()
+    page = None
+    try:
+        print(f"  {DIM}chrome://extensions/ → выбираю VPN в списке…{RST}")
+        page = await context.new_page()
+        await page.goto("chrome://extensions/", wait_until="domcontentloaded", timeout=20_000)
+        await page.wait_for_timeout(700)
+        result = await page.evaluate(
+            """async ({eid, names}) => {
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              const mgr = document.querySelector('extensions-manager');
+              if (!mgr || !mgr.shadowRoot) return {ok: false, err: 'no-manager'};
+              const toolbar = mgr.shadowRoot.querySelector('extensions-toolbar');
+              const dev = toolbar && toolbar.shadowRoot
+                && toolbar.shadowRoot.querySelector('#devMode');
+              if (dev && !dev.checked) {
+                dev.click();
+                await sleep(350);
+              }
+              const list = mgr.shadowRoot.querySelector('extensions-item-list');
+              const root = (list && list.shadowRoot) ? list.shadowRoot : mgr.shadowRoot;
+              const items = root.querySelectorAll('extensions-item');
+              const lowNames = names.map((n) => String(n).toLowerCase());
+              for (const item of items) {
+                const id = item.id || item.getAttribute('id') || '';
+                const sr = item.shadowRoot;
+                if (!sr) continue;
+                const nameEl = sr.querySelector('#name, .name, #name-and-version #name');
+                const name = ((nameEl && nameEl.textContent) || '').trim();
+                const hit = (eid && id === eid) || lowNames.some(
+                  (n) => n && name.toLowerCase().includes(n)
+                );
+                if (!hit) continue;
+                const toggle = sr.querySelector(
+                  '#enableToggle, cr-toggle#enableToggle, #enable-toggle, cr-toggle'
+                );
+                let enabled = true;
+                if (toggle) {
+                  enabled = !!(toggle.checked || toggle.hasAttribute('checked'));
+                  if (!enabled) {
+                    toggle.click();
+                    await sleep(450);
+                    enabled = !!(toggle.checked || toggle.hasAttribute('checked'));
+                  }
+                }
+                // Клик по имени / карточке — «зайти» в расширение
+                const clickTarget = nameEl || sr.querySelector('#card, .card, a#detailsButton');
+                if (clickTarget) {
+                  clickTarget.click();
+                  await sleep(500);
+                }
+                return {ok: true, id, name, enabled};
+              }
+              return {ok: false, err: 'not-found', count: items.length};
+            }""",
+            {"eid": eid, "names": names},
+        )
+        if not isinstance(result, dict) or not result.get("ok"):
+            err = (result or {}).get("err", "?") if isinstance(result, dict) else "?"
+            cnt = (result or {}).get("count", "?") if isinstance(result, dict) else "?"
+            print(f"  {Y}⚠ chrome://extensions/: VPN не найден ({err}, items={cnt}){RST}")
+            return False
+        print(
+            f"  {G}✔ chrome://extensions/: «{result.get('name') or result.get('id')}»"
+            f" · вкл={result.get('enabled')}{RST}"
+        )
+        # details URL иногда chrome://extensions/?id=...
+        await page.wait_for_timeout(400)
+        return True
+    except Exception as exc:
+        print(f"  {Y}⚠ chrome://extensions/: {exc}{RST}")
+        return False
+    finally:
+        if page is not None:
+            with contextlib.suppress(Exception):
+                await page.close()
 
 
 async def _prepare_profile_vpn(profile_path: Path | str, *, label: str = "") -> tuple[bool, str]:
@@ -14663,7 +14779,9 @@ async def _resolve_profile_scenario_network(
     """Сеть для сценариев готового профиля (Chrome / адрес / покупка / активация).
 
     proxy.enabled → только прокси (без VeepN).
-    proxy выкл → direct / VPN на ПК; fallback на расширение если allow_vpn.
+    proxy выкл → проверка Flipkart через VPN на ПК;
+      доступен → без расширения;
+      нет → ставим расширение (файлы) и дальше chrome://extensions/ + connect.
 
     Returns (use_vpn, proxy, err).
     """
@@ -14677,12 +14795,16 @@ async def _resolve_profile_scenario_network(
         return False, proxy, None
     if use_vpn:
         if profile_path is not None:
+            print(f"  {DIM}Flipkart недоступен с VPN на ПК → ставлю расширение…{RST}")
             if not await _ensure_extension_in_profile(profile_path):
                 return True, None, "VPN-расширение не установлено в профиль"
             await _vpn_chrome_cooldown(extra=1.0)
-        print(f"  {DIM}Сеть: VPN-расширение{RST}")
+        print(f"  {DIM}Сеть: VPN-расширение (включим через chrome://extensions/){RST}")
         return True, None, None
-    print(f"  {G}Сеть: без прокси (VPN на ПК / напрямую){RST}")
+    if _proxy_enabled():
+        print(f"  {G}Сеть: без живого прокси (direct / VPN на ПК){RST}")
+    else:
+        print(f"  {G}Сеть: Flipkart доступен (VPN на ПК / напрямую){RST}")
     return False, None, None
 
 
