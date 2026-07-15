@@ -1238,14 +1238,22 @@ def open_chrome(profile_path: Path) -> bool:
 
 
 async def _open_chrome_keep_alive(profile_path: Path) -> None:
-    """Запускает профиль, подключает VPN, открывает Flipkart; держит сессию до закрытия окна."""
+    """Запускает профиль, открывает Flipkart; держит сессию до закрытия окна.
+
+    proxy.enabled → через прокси; выкл → VPN на ПК / напрямую (расширение не включаем).
+    """
     profile_path = Path(profile_path)
     tag = _phone_from_path(profile_path) or profile_path.name
     url = _profile_url(profile_path)
     if _is_profile_locked(profile_path):
         _clear_stale_profile_locks(profile_path)
 
-    if _vpn_extension_dir():
+    # Ручной Chrome: прокси если включён; VeepN не поднимаем (только при автоматизации)
+    set_profile_op_stage(profile_path, "Открытие Chrome")
+    _, proxy, _ = await _resolve_profile_scenario_network(
+        profile_path, allow_vpn_extension=False,
+    )
+    if not proxy and _vpn_extension_dir():
         if not _profile_has_vpn_extension(profile_path):
             if not _install_extension_filesystem(profile_path):
                 print(f"  {Y}⚠ VPN-расширение не установлено в профиль{RST}")
@@ -1256,7 +1264,10 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
     ctx = None
     try:
         _pre_inject_chrome_prefs(profile_path)
-        launch_kw = _browser_launch_kw(phone=tag, profile_path=profile_path)
+        launch_kw = _browser_launch_kw(
+            phone=tag, profile_path=profile_path,
+            use_vpn=False if proxy else None, proxy=proxy,
+        )
         exe = launch_kw.get("executable_path")
         print(f"  {DIM}Браузер: {_browser_label(exe)}{RST}")
         ctx = await pw.chromium.launch_persistent_context(
@@ -1276,7 +1287,9 @@ async def _open_chrome_keep_alive(profile_path: Path) -> None:
         except Exception:
             pass
 
-        if _vpn_extension_dir():
+        if proxy:
+            print(f"  {DIM}Открываю Flipkart (+91 {tag}) через прокси → {url[:80]}…{RST}")
+        elif _vpn_extension_dir():
             print(f"  {DIM}Flipkart (+91 {tag}) → {url[:80]}…{RST}")
             print(f"  {DIM}VPN не включается — только во время автоматизации{RST}")
             with contextlib.suppress(Exception):
@@ -7072,29 +7085,32 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
     pw = None
     ctx = None
     try:
-        if _vpn_extension_dir():
-            if not await _ensure_extension_in_profile(profile_path):
-                result["status"] = "vpn_failed"
-                result["error"] = "VPN-расширение не установлено"
-                return result
-            await _vpn_chrome_cooldown(extra=0.5)
+        use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
+        if net_err:
+            result["status"] = "vpn_failed"
+            result["error"] = net_err
+            return result
+        set_profile_op_stage(profile_path or username, "Активация · браузер")
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
             str(profile_path.resolve()),
-            **_browser_launch_kw(headless=headless, phone=username,
-                                 profile_path=profile_path))
+            **_browser_launch_kw(
+                headless=headless, phone=username,
+                profile_path=profile_path, use_vpn=use_vpn, proxy=proxy,
+            ))
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         if not headless:
             await _maximize_window(ctx, page)
         _register_purchase_profile(profile_path)
-        if _vpn_extension_dir() and not await _vpn_connect_on_use(ctx, profile_path):
+        if use_vpn and not await _vpn_connect_on_use(ctx, profile_path):
             result["status"] = "vpn_failed"
             result["error"] = "VPN не подключился"
             return result
 
         store_url = "https://www.flipkart.com/flipkart-black-store"
-        if _vpn_extension_dir():
+        set_profile_op_stage(profile_path or username, "Активация · Black Store")
+        if use_vpn or proxy:
             ok_nav, page, nav_err = await _navigate_flipkart_resilient(
                 ctx, page, store_url, label=username, profile_path=profile_path,
             )
@@ -7105,7 +7121,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
                 )
                 result["status"] = "access_denied" if denied else "nav_failed"
                 result["error"] = (
-                    "Access Denied — смените страну VPN (USA)"
+                    "Access Denied — смените страну VPN (USA) или прокси"
                     if denied else (nav_err or "Не удалось открыть Flipkart")
                 )
                 return result
@@ -7524,6 +7540,7 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         result["error"] = str(e)
         return result
     finally:
+        set_profile_op_stage(profile_path or username, "")
         await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
 
 
@@ -8690,13 +8707,13 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _pay_method[0] = _load_pay_method()
     # Как bot.py: сброс sticky-cancel после предыдущего Stop/shutdown
     _purchase_cancel.clear()
-    if _vpn_extension_dir():
-        if not await _ensure_extension_in_profile(profile_path):
-            return False, "VPN-расширение не установлено в профиль"
-        await _vpn_chrome_cooldown(extra=1.0)
-    else:
+    use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
+    if net_err:
+        return False, net_err
+    set_profile_op_stage(profile_path, "Сеть / браузер")
+    if not use_vpn and not proxy:
         print(f"  {DIM}Проверка доступности Flipkart...{RST}")
-        if not await _check_flipkart_accessible():
+        if not await _flipkart_direct_accessible():
             _ping_msg = "Flipkart недоступен"
             print(f"\n  {R}⚠ {_ping_msg}{RST}")
             print(f"  {Y}Заполнение адреса невозможно. Повторите позже.{RST}")
@@ -8718,13 +8735,15 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
             str(profile_path.resolve()),
-            **_browser_launch_kw(phone=_phone_from_path(profile_path),
-                                 profile_path=profile_path))
+            **_browser_launch_kw(
+                phone=_phone_from_path(profile_path),
+                profile_path=profile_path, use_vpn=use_vpn, proxy=proxy,
+            ))
         await _close_extension_startup_tabs(ctx)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         page = await _main_work_page(ctx)
         await _maximize_window(ctx, page)
-        if _vpn_extension_dir():
+        if use_vpn:
             if not await _vpn_connect_for_profile(ctx, profile_path):
                 return False, "VPN не подключился — заполнение адреса отменено"
             await _dismiss_all_veepn_welcome(ctx)
@@ -8732,6 +8751,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             page = await _main_work_page(ctx)
             with contextlib.suppress(Exception):
                 await page.bring_to_front()
+        set_profile_op_stage(profile_path, "Открытие Flipkart")
         _stealth2 = _build_stealth_js_m()
         if _stealth2:
             await ctx.add_init_script(_stealth2)
@@ -8755,7 +8775,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             page = await _main_work_page(ctx)
             ok_nav, _nav_err = await _open_home()
         if not ok_nav:
-            return False, f"Не удалось открыть Flipkart после VPN: {_nav_err}"
+            return False, f"Не удалось открыть Flipkart: {_nav_err}"
         page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
         await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
         await page.wait_for_timeout(1_500)
@@ -8823,12 +8843,14 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             return False, _NOT_LOGGED_IN_MSG
 
         # Buy Now создаёт реальную сессию чекаута (прямой URL формы не работает)
+        set_profile_op_stage(profile_path, "Buy Now")
         err = await _click_buy_now(page, product_url, skip_goto=True)
         if err:
             return False, err
 
         # После нажатия Buy Now браузер всегда оставляем открытым
         _keep_open = True
+        set_profile_op_stage(profile_path, "Заполнение адреса")
 
         async def _fill_addr_and_wait():
             """Заполняет форму адреса и ждёт viewcheckout."""
@@ -8885,6 +8907,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 return False, "Кнопка Save Address не найдена в форме адреса"
 
         # ── Шаг B: viewcheckout → email → Continue → payments ───────────────
+        set_profile_op_stage(profile_path, "Чекаут / Continue")
         async def _oos_delete_return(retry_done: bool = False):
             """OOS — профиль НЕ удаляем сами. Закрываем браузер и сообщаем
             вызывающему кодом OUT_OF_STOCK; удаление — только после подтверждения."""
@@ -8980,6 +9003,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
 
         if stop_at_payment:
             import time as _t_sap
+            set_profile_op_stage(profile_path, "Страница оплаты")
             with contextlib.suppress(Exception):
                 page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
                 await _maximize_window(ctx, page)
@@ -9058,6 +9082,7 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _keep_open = False
         return False, msg
     finally:
+        set_profile_op_stage(profile_path, "")
         if not _keep_open:
             await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
         else:
@@ -10267,6 +10292,52 @@ def _to_gmail(email: str) -> str:
 # проверяют в долгих ожиданиях/циклах и сразу прерываются (с закрытием браузера).
 import threading as _threading_pc
 _purchase_cancel = _threading_pc.Event()
+
+# Этап текущего сценария по профилю (phone10 → текст) — GUI читает для блока «В процессе».
+_profile_op_stages: dict[str, str] = {}
+
+
+def _profile_stage_key(phone_or_path) -> str:
+    if phone_or_path is None:
+        return ""
+    with contextlib.suppress(Exception):
+        ph = _phone_from_path(Path(phone_or_path))
+        if ph:
+            digits = "".join(c for c in ph if c.isdigit())
+            return digits[-10:] if len(digits) >= 10 else digits
+    digits = "".join(c for c in str(phone_or_path) if c.isdigit())
+    return digits[-10:] if len(digits) >= 10 else (digits or str(phone_or_path))
+
+
+def set_profile_op_stage(phone_or_path, stage: str) -> None:
+    """Пишет этап сценария для GUI (пустая строка — сброс)."""
+    key = _profile_stage_key(phone_or_path)
+    if not key:
+        return
+    with _app_lock:
+        if stage:
+            _profile_op_stages[key] = stage
+        else:
+            _profile_op_stages.pop(key, None)
+
+
+def get_profile_op_stage(phone: str) -> str:
+    key = _profile_stage_key(phone)
+    if not key:
+        return ""
+    with _app_lock:
+        return _profile_op_stages.get(key, "")
+
+
+def stop_profile_op(profile_path) -> int:
+    """Стоп сценария по профилю: флаг отмены + kill Chrome этого профиля."""
+    _purchase_cancel.set()
+    killed = 0
+    with contextlib.suppress(Exception):
+        killed = int(_kill_chrome_for_profile(profile_path) or 0)
+    set_profile_op_stage(profile_path, "Остановка…")
+    return killed
+
 
 # Реестр профилей, по которым ПРЯМО СЕЙЧАС идёт покупка/заполнение (path → refcount).
 # Нужен чтобы кнопка «Остановить» могла мгновенно убить Chrome активной операции:
@@ -14534,6 +14605,35 @@ async def _resolve_flipkart_launch_network(
     return False, None
 
 
+async def _resolve_profile_scenario_network(
+    profile_path: Path | None = None,
+    *,
+    allow_vpn_extension: bool = True,
+) -> tuple[bool, dict | None, str | None]:
+    """Сеть для сценариев готового профиля (Chrome / адрес / покупка / активация).
+
+    proxy.enabled → прокси; если нет — fallback на VPN-расширение (если разрешено).
+    proxy выкл → direct / VPN на ПК; fallback на расширение только если allow_vpn.
+
+    Returns (use_vpn, proxy, err).
+    """
+    use_vpn, proxy = await _resolve_flipkart_launch_network(
+        allow_vpn_extension=allow_vpn_extension,
+    )
+    if proxy:
+        print(f"  {G}Сеть: прокси {proxy.get('server')}{RST}")
+        return False, proxy, None
+    if use_vpn:
+        if profile_path is not None:
+            if not await _ensure_extension_in_profile(profile_path):
+                return True, None, "VPN-расширение не установлено в профиль"
+            await _vpn_chrome_cooldown(extra=1.0)
+        print(f"  {DIM}Сеть: VPN-расширение{RST}")
+        return True, None, None
+    print(f"  {G}Сеть: без прокси (VPN на ПК / напрямую){RST}")
+    return False, None, None
+
+
 def _fetch_free_proxy_candidates() -> list[str]:
     """Скачивает списки публичных HTTP-прокси из нескольких источников (host:port)."""
     out: list[str] = []
@@ -14951,14 +15051,15 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
     with contextlib.suppress(Exception):
         _pay_method[0] = _load_pay_method()
     _purchase_cancel.clear()
+    use_vpn, proxy = False, None
     if not _skip_ping and _existing_ctx is None:
-        if _vpn_extension_dir():
-            if not await _ensure_extension_in_profile(profile_path):
-                return False, "VPN-расширение не установлено в профиль"
-            await _vpn_chrome_cooldown(extra=1.0)
-        else:
+        use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
+        if net_err:
+            return False, net_err
+        set_profile_op_stage(profile_path, "Покупка · сеть / браузер")
+        if not use_vpn and not proxy:
             print(f"  {DIM}Проверка доступности Flipkart...{RST}")
-            if not await _check_flipkart_accessible():
+            if not await _flipkart_direct_accessible():
                 _ping_msg = "Flipkart недоступен"
                 print(f"\n  {R}⚠ {_ping_msg}{RST}")
                 print(f"  {Y}Покупка Membership невозможна. Повторите позже.{RST}")
@@ -14983,13 +15084,15 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
             _pre_inject_chrome_prefs(profile_path)
             ctx = await pw.chromium.launch_persistent_context(
                 str(profile_path.resolve()),
-                **_browser_launch_kw(phone=_phone_from_path(profile_path),
-                                     profile_path=profile_path))
+                **_browser_launch_kw(
+                    phone=_phone_from_path(profile_path),
+                    profile_path=profile_path, use_vpn=use_vpn, proxy=proxy,
+                ))
             await _close_extension_startup_tabs(ctx)
             await ctx.grant_permissions(["geolocation"], origin="https://www.flipkart.com")
             page = await _main_work_page(ctx)
             await _maximize_window(ctx, page)
-            if _vpn_extension_dir():
+            if use_vpn:
                 if not await _vpn_connect_for_profile(ctx, profile_path):
                     return False, "VPN не подключился — покупка отменена (Flipkart недоступен без VPN)"
                 await _dismiss_all_veepn_welcome(ctx)
@@ -14997,16 +15100,17 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 page = await _main_work_page(ctx)
                 with contextlib.suppress(Exception):
                     await page.bring_to_front()
-                _product_url = _BLACK_URLS.get(months) or _BLACK_URLS[3]
-                print(f"  {DIM}VPN → страница {months} мес.…{RST}")
-                ok_nav, page, nav_err = await _navigate_flipkart_resilient(
-                    ctx, page, _product_url,
-                    label=_phone_from_path(profile_path), profile_path=profile_path,
-                )
-                if not ok_nav:
-                    return False, f"Flipkart недоступен после VPN — покупка отменена: {nav_err}"
-                page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
-                print(f"  {G}✔ Flipkart OK — VPN не трогаем, продолжаем покупку{RST}")
+            _product_url = _BLACK_URLS.get(months) or _BLACK_URLS[3]
+            _via = "прокси" if proxy else ("VPN" if use_vpn else "direct")
+            print(f"  {DIM}{_via} → страница {months} мес.…{RST}")
+            ok_nav, page, nav_err = await _navigate_flipkart_resilient(
+                ctx, page, _product_url,
+                label=_phone_from_path(profile_path), profile_path=profile_path,
+            )
+            if not ok_nav:
+                return False, f"Flipkart недоступен после {_via} — покупка отменена: {nav_err}"
+            page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
+            print(f"  {G}✔ Flipkart OK — {_via} не трогаем, продолжаем покупку{RST}")
         else:
             # Уже открытый браузер — всё равно идём на страницу тарифа (не зависаем на главной)
             page = _existing_page or await _main_work_page(ctx)
@@ -15101,6 +15205,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 return False, _NOT_LOGGED_IN_MSG
 
         # Уже на странице товара — Buy Now; иначе переход на тариф
+        set_profile_op_stage(profile_path, "Buy Now")
         _on_product = "flipkart-black" in (page.url or "") and "/p/" in (page.url or "")
         if _on_product:
             print(f"  {DIM}Уже на странице товара — Buy Now…{RST}")
@@ -15188,6 +15293,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 return False, "Кнопка Save Address не найдена"
 
         # ── Шаг B: viewcheckout → email → Continue → payments ───────────────
+        set_profile_op_stage(profile_path, "Чекаут / Continue")
         if "viewcheckout" in page.url or (
             "checkout" in (page.url or "") and "payments" not in (page.url or "")
         ):
@@ -15445,6 +15551,7 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         _keep_open = False
         return False, msg
     finally:
+        set_profile_op_stage(profile_path, "")
         if not _keep_open and _owns_ctx:
             await _close_browser_session(
                 ctx, pw, profile_path, disconnect_vpn=True,

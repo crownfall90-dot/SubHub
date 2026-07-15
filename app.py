@@ -921,6 +921,8 @@ class SubHubApp(ctk.CTk):
         self._ggs_templates_win = None
         self._profile_filter = "all"
         self._prof_busy: set[str] = set()
+        self._prof_labels: dict[str, str] = {}
+        self._prof_stage_tick: str | None = None
         self._profiles_sig: tuple | None = None
         self._profiles_filter_sig: str | None = None
         self._refresh_jobs: dict[str, str | None] = {}
@@ -2240,14 +2242,21 @@ class SubHubApp(ctk.CTk):
         return frame
 
     def _action_btn(self, parent, text: str, cmd: Callable, color: str = ACCENT, **kw) -> ctk.CTkButton:
-        solid = color in (ACCENT, SUCCESS, BTN_SUCCESS, ERROR, WARNING, TEXT_PRIMARY)
+        # Светлые заливки → тёмный текст; тёмные (secondary) → светлый.
+        light_solid = color in (ACCENT, SUCCESS, BTN_SUCCESS, ERROR, WARNING, TEXT_PRIMARY)
+        dark_solid = color == BTN_SECONDARY
+        solid = light_solid or dark_solid
+        on_fg = TEXT_ON_ACCENT if light_solid else TEXT_PRIMARY
+        # tuple (light, dark) — CTk иначе может подменить цвет темы и текст «пропадает»
+        fg_pair = (on_fg, on_fg)
         defaults: dict[str, Any] = dict(
             height=BTN_H, corner_radius=RADIUS_BTN,
             font=_ui_font(FONT_CAPTION, "bold"),
             fg_color=color if solid else "transparent",
             border_width=0 if solid else 1,
             border_color=BORDER_SUBTLE,
-            text_color=TEXT_ON_ACCENT if solid else TEXT_DIM,
+            text_color=fg_pair if solid else (TEXT_DIM, TEXT_DIM),
+            text_color_disabled=fg_pair if light_solid else (TEXT_MUTED, TEXT_MUTED),
             hover_color=self._btn_hover(color) if solid else BG_CARD_HOVER,
             command=cmd,
         )
@@ -3202,7 +3211,6 @@ class SubHubApp(ctk.CTk):
 
         self.profile_detail = self._detail_panel(body)
         self.profile_detail.grid(row=0, column=1, sticky="nsew")
-        self.profile_detail.grid_rowconfigure(2, weight=1)
         self.profile_detail.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -3219,10 +3227,33 @@ class SubHubApp(ctk.CTk):
         self.profile_detail_body.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
         self.profile_detail_body.configure(state="disabled")
 
+        # Блок «в процессе»: этап + стоп (показывается только при busy)
+        self.profile_busy_frame = ctk.CTkFrame(
+            self.profile_detail, fg_color=ACCENT_SOFT, corner_radius=RADIUS_SM,
+            border_width=1, border_color=WARNING,
+        )
+        self.profile_busy_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self.profile_busy_frame.grid_remove()
+        ctk.CTkLabel(
+            self.profile_busy_frame, text="В процессе",
+            font=_ui_font(FONT_SMALL, "bold"), text_color=WARNING, anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 0))
+        self.profile_busy_stage = ctk.CTkLabel(
+            self.profile_busy_frame, text="",
+            font=_ui_font(FONT_CAPTION), text_color=TEXT_PRIMARY, anchor="w",
+            wraplength=240, justify="left",
+        )
+        self.profile_busy_stage.pack(fill="x", padx=10, pady=(2, 6))
+        self.profile_busy_stop = self._action_btn(
+            self.profile_busy_frame, "Остановить", lambda: None, ERROR,
+        )
+        self.profile_busy_stop.pack(fill="x", padx=10, pady=(0, 10))
+
         self.profile_detail_actions = AutoHideScrollFrame(
             self.profile_detail, fg_color="transparent",
         )
-        self.profile_detail_actions.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 12))
+        self.profile_detail_actions.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 12))
+        self.profile_detail.grid_rowconfigure(3, weight=1)
 
     def _build_archive(self) -> None:
         p = self._page_fill("archive")
@@ -5506,6 +5537,8 @@ class SubHubApp(ctk.CTk):
         if not prof:
             self.profile_detail_body.insert("1.0", "Выберите профиль слева\n\nОдин клик — выбор и действия здесь.")
             self.profile_detail_body.configure(state="disabled")
+            if hasattr(self, "profile_busy_frame"):
+                self.profile_busy_frame.grid_remove()
             return
 
         import menu as m
@@ -5520,14 +5553,30 @@ class SubHubApp(ctk.CTk):
         busy = phone in self._prof_busy
 
         self.profile_detail_body.insert("1.0", self._profile_menu_info(prof))
-        if busy:
-            self.profile_detail_body.insert("end", "\n\nОперация выполняется…")
         self.profile_detail_body.configure(state="disabled")
 
+        # Отдельный блок этапа + стоп (не в textbox)
+        if hasattr(self, "profile_busy_frame"):
+            if busy:
+                stage = (
+                    m.get_profile_op_stage(phone)
+                    or self._prof_labels.get(phone)
+                    or "Операция выполняется…"
+                )
+                self.profile_busy_stage.configure(text=stage)
+                self.profile_busy_stop.configure(
+                    command=lambda p=path, ph=phone: self._prof_stop(ph, p),
+                )
+                self.profile_busy_frame.grid()
+            else:
+                self.profile_busy_frame.grid_remove()
+
+        if busy:
+            return  # только блок этапа / стоп — без бледных disabled-кнопок
+
         def _btn(txt: str, cmd: Callable, color: str = BTN_SECONDARY) -> None:
-            state = "disabled" if busy else "normal"
             self._action_btn(
-                self.profile_detail_actions, txt, cmd, color, state=state,
+                self.profile_detail_actions, txt, cmd, color,
             ).pack(fill="x", pady=3)
 
         _btn("Открыть Chrome", lambda: self._prof_chrome(phone, path), BTN_SECONDARY)
@@ -5729,12 +5778,35 @@ class SubHubApp(ctk.CTk):
         self.archive_detail_body.insert("1.0", self._archive_record_info(rec))
         if done_exists:
             self.archive_detail_body.insert("end", "\n\n✓ Профиль уже в chrome_profiles_done")
-        if busy:
-            self.archive_detail_body.insert("end", "\n\nОперация выполняется…")
         self.archive_detail_body.configure(state="disabled")
 
+        if busy:
+            stage = (
+                m.get_profile_op_stage(phone)
+                or self._prof_labels.get(phone)
+                or "Операция…"
+            )
+            card = ctk.CTkFrame(
+                self.archive_detail_actions, fg_color=ACCENT_SOFT,
+                corner_radius=RADIUS_SM, border_width=1, border_color=WARNING,
+            )
+            card.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(
+                card, text="В процессе", font=_ui_font(FONT_SMALL, "bold"),
+                text_color=WARNING, anchor="w",
+            ).pack(fill="x", padx=10, pady=(8, 0))
+            ctk.CTkLabel(
+                card, text=stage, font=_ui_font(FONT_CAPTION),
+                text_color=TEXT_PRIMARY, anchor="w", wraplength=220,
+            ).pack(fill="x", padx=10, pady=(2, 6))
+            self._action_btn(
+                card, "Остановить",
+                lambda: self._prof_stop(phone, None), ERROR,
+            ).pack(fill="x", padx=10, pady=(0, 10))
+            return
+
         def _btn(txt: str, cmd: Callable, color: str = BTN_SECONDARY, enabled: bool = True) -> None:
-            state = "normal" if enabled and not busy else "disabled"
+            state = "normal" if enabled else "disabled"
             self._action_btn(
                 self.archive_detail_actions, txt, cmd, color, state=state,
             ).pack(fill="x", pady=3)
@@ -6609,11 +6681,17 @@ class SubHubApp(ctk.CTk):
             self._log(f"⚠ {phone}: уже выполняется")
             return
         self._prof_busy.add(phone)
+        self._prof_labels[phone] = label
         self._log(label)
+        with contextlib.suppress(Exception):
+            import menu as m
+            m.set_profile_op_stage(phone, label)
+            m._purchase_cancel.clear()
         if self._selected_profile and str(self._selected_profile.get("username", "")) == phone:
             self._render_profile_detail(self._selected_profile)
         if self._selected_archive and str(self._selected_archive.get("username", "")) == phone:
             self._render_archive_detail(self._selected_archive)
+        self._ensure_prof_stage_tick()
 
         def _w():
             try:
@@ -6623,6 +6701,10 @@ class SubHubApp(ctk.CTk):
             finally:
                 def _ui():
                     self._prof_busy.discard(phone)
+                    self._prof_labels.pop(phone, None)
+                    with contextlib.suppress(Exception):
+                        import menu as m
+                        m.set_profile_op_stage(phone, "")
                     if self._selected_profile and str(self._selected_profile.get("username", "")) == phone:
                         self._render_profile_detail(self._selected_profile)
                     if self._selected_archive and str(self._selected_archive.get("username", "")) == phone:
@@ -6635,6 +6717,56 @@ class SubHubApp(ctk.CTk):
                 self._run_on_main(_ui)
 
         threading.Thread(target=_w, daemon=True, name=f"prof-{phone}").start()
+
+    def _ensure_prof_stage_tick(self) -> None:
+        """Обновляет текст этапа в блоке «В процессе», пока есть busy-профили."""
+        if self._prof_stage_tick is not None:
+            return
+
+        def _tick() -> None:
+            self._prof_stage_tick = None
+            if not self._prof_busy:
+                return
+            sel = self._selected_profile
+            if sel and str(sel.get("username", "")) in self._prof_busy:
+                phone = str(sel.get("username", ""))
+                with contextlib.suppress(Exception):
+                    import menu as m
+                    stage = m.get_profile_op_stage(phone) or self._prof_labels.get(phone, "")
+                    if stage and hasattr(self, "profile_busy_stage"):
+                        cur = self.profile_busy_stage.cget("text")
+                        if stage != cur:
+                            self.profile_busy_stage.configure(text=stage)
+            self._prof_stage_tick = self.after(500, _tick)
+
+        self._prof_stage_tick = self.after(500, _tick)
+
+    def _prof_stop(self, phone: str, path) -> None:
+        """Остановить сценарий выбранного профиля (флаг + kill Chrome)."""
+        self._log(f"■ Стоп профиля +91 {phone}…")
+        if hasattr(self, "profile_busy_stage"):
+            with contextlib.suppress(Exception):
+                self.profile_busy_stage.configure(text="Остановка…")
+
+        def _w() -> None:
+            try:
+                import menu as m
+                if path is not None:
+                    killed = m.stop_profile_op(path)
+                else:
+                    m._purchase_cancel.set()
+                    killed = m._stop_active_purchases()
+                    # иначе следующий сценарий сразу CANCELLED
+                    m._purchase_cancel.clear()
+                    m.set_profile_op_stage(phone, "Остановка…")
+                self._log(
+                    f"■ Остановлено +91 {phone}"
+                    + (f" (Chrome: {killed})" if killed else "")
+                )
+            except Exception as e:
+                self._log(f"✗ Стоп: {e}")
+
+        threading.Thread(target=_w, daemon=True, name=f"stop-{phone}").start()
 
     def _prof_chrome(self, phone: str, path) -> None:
         def _w():
