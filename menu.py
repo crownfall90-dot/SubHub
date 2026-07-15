@@ -13634,19 +13634,21 @@ async def _click_place_order(page) -> bool:
 
 
 async def _select_gift_cards_pay_method(page) -> bool:
-    """Кликает «Gift Cards» в левой панели способов оплаты.
+    """Кликает слева «Have a Flipkart Gift Card?» (или «Gift Cards»).
 
-    Открывает секцию с полями voucher/PIN. Не кликает «Use Gift Cards»
-    (галочка баланса) и не строки сводки с ₹.
+    На payments без баланса на аккаунте пункт выглядит именно так
+    («Have a Flipkart Gift Card?» + иконка подарка) — не «Gift Cards».
     """
     try:
         await page.wait_for_function(
             """() => {
                 for (const el of document.querySelectorAll('*')) {
                     const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                    if (t === 'gift cards' || t === 'gift card' || t === 'pay by gift card') {
+                    if (t.includes('have a flipkart gift card')
+                        || t === 'gift cards' || t === 'gift card'
+                        || t === 'pay by gift card') {
                         const r = el.getBoundingClientRect();
-                        if (r.width > 30) return true;
+                        if (r.width > 30 && r.height > 8) return true;
                     }
                 }
                 return false;
@@ -13659,27 +13661,50 @@ async def _select_gift_cards_pay_method(page) -> bool:
     bbox = None
     try:
         bbox = await page.evaluate(r"""() => {
+            const isSummary = (t) => /[₹]|rs\.?\s*\d|−|–/.test(t) && /\d/.test(t);
+            const pick = (el) => {
+                const r = el.getBoundingClientRect();
+                if (r.width < 40 || r.height < 10 || el.offsetParent === null) return null;
+                // Левая панель payment options — обычно x < 40% ширины окна
+                if (r.x > window.innerWidth * 0.45) return null;
+                return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+            };
+            // 1) Точный текст со скриншота
+            const prefer = [
+                'have a flipkart gift card?',
+                'have a flipkart gift card',
+            ];
+            for (const want of prefer) {
+                for (const el of document.querySelectorAll(
+                    'span, div, li, a, button, label, [role="button"], p'
+                )) {
+                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (t !== want && !t.startsWith(want)) continue;
+                    if (t.length > 60 || isSummary(t)) continue;
+                    if (/^use\s+gift/.test(t)) continue;
+                    const bb = pick(el);
+                    if (bb) return bb;
+                }
+            }
+            // 2) Короткий пункт слева «Gift Cards»
             const exact = [
                 'gift cards', 'gift card', 'pay by gift card', 'pay with gift card',
             ];
-            const isSummary = (t) => /[₹]|rs\.?\s*\d|−|–/.test(t) && /\d/.test(t);
             for (const el of document.querySelectorAll('*')) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                if (!exact.includes(t) || isSummary(t)) continue;
-                if (/^use\s+gift/.test(t)) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width >= 40 && r.height >= 10 && el.offsetParent !== null)
-                    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+                if (!exact.includes(t) || isSummary(t) || /^use\s+gift/.test(t)) continue;
+                const bb = pick(el);
+                if (bb) return bb;
             }
+            // 3) Fallback: содержит have a flipkart gift card
             for (const el of document.querySelectorAll(
-                'span, li, div, a, button, [role="button"], label'
+                'span, div, li, a, button, label, [role="button"]'
             )) {
                 const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                if (!/gift\s*cards?/.test(t) || t.length > 40 || isSummary(t)) continue;
-                if (/use gift|add gift|have a flipkart|apply gift|redeem/.test(t)) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width >= 40 && r.height >= 10 && el.offsetParent !== null)
-                    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+                if (!t.includes('have a flipkart gift card')) continue;
+                if (t.length > 80 || isSummary(t)) continue;
+                const bb = pick(el);
+                if (bb) return bb;
             }
             return null;
         }""")
@@ -13784,9 +13809,9 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     else:
         # Галочки нет — открываем способ оплаты Gift Cards слева
         if await _select_gift_cards_pay_method(page):
-            print(f"  {G}✔ Gift Cards (слева) — открываю поля ввода{RST}")
+            print(f"  {G}✔ Have a Flipkart Gift Card? (слева) — открываю поля{RST}")
         else:
-            print(f"  {Y}⚠ Gift Cards слева не найдена — пробую поля напрямую{RST}")
+            print(f"  {Y}⚠ «Have a Flipkart Gift Card?» слева не найдена — пробую поля напрямую{RST}")
 
     _rem = await _read_order_total(page)
     if (await _gift_place_order_bbox(page)) or _rem <= 0:
@@ -13809,22 +13834,22 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     _total_bal = _bal_of(lambda d: d > 0)
     _allow_big = False
 
-    if total <= 0:
-        pass
-    elif _small_bal >= total:
-        print(f"  {G}Мелких гифт-карт достаточно (₹{_small_bal}) — крупные (≥₹{GIFT_CONFIRM_THRESHOLD}) не трогаю{RST}")
-    elif _total_bal >= total:
-        _big = sorted({int(c.get("denom") or 0) for c in _all_gc
+    async def _ask_big_gift_confirm(need_amt: int, small_now: int) -> bool:
+        """Спросить в TG разрешение на карты ≥ GIFT_CONFIRM_THRESHOLD. True = да."""
+        _all_now = _load_gift_cards()
+        _big = sorted({int(c.get("denom") or 0) for c in _all_now
                        if not c.get("used") and c.get("number") and c.get("pin")
                        and int(c.get("denom") or 0) >= GIFT_CONFIRM_THRESHOLD}, reverse=True)
-        _big_lbl = ", ".join(f"₹{d}" for d in _big) or f"≥₹{GIFT_CONFIRM_THRESHOLD}"
-        print(f"  {Y}Мелких не хватает (₹{_small_bal} из ₹{total}). Спрашиваю подтверждение на крупные…{RST}")
+        if not _big:
+            return False
+        _big_lbl = ", ".join(f"₹{d}" for d in _big)
+        print(f"  {Y}Мелких не хватает (₹{small_now} из ₹{need_amt}). Спрашиваю подтверждение на крупные…{RST}")
         _gift_big_ev.clear()
         _gift_big_choice[0] = None
         _tg_send_direct_kb(
             f"🎁 *Не хватает мелких гифт-карт*\n\n"
-            f"Сумма заказа: *₹{total}*\n"
-            f"Мелкими (до ₹{GIFT_CONFIRM_THRESHOLD}) есть только: *₹{_small_bal}*\n\n"
+            f"Осталось покрыть: *₹{need_amt}*\n"
+            f"Мелкими (до ₹{GIFT_CONFIRM_THRESHOLD}) есть: *₹{small_now}*\n\n"
             f"Использовать карты от *₹{GIFT_CONFIRM_THRESHOLD}*?  ({_big_lbl})",
             {"inline_keyboard": [[
                 {"text": "✅ Да, использовать", "callback_data": "gift:big_yes"},
@@ -13836,7 +13861,14 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             if _gift_big_ev.is_set():
                 break
             await asyncio.sleep(1)
-        if _gift_big_choice[0] is True:
+        return _gift_big_choice[0] is True
+
+    if total <= 0:
+        pass
+    elif _small_bal >= total:
+        print(f"  {G}Мелких гифт-карт достаточно (₹{_small_bal}) — крупные (≥₹{GIFT_CONFIRM_THRESHOLD}) не трогаю{RST}")
+    elif _total_bal >= total:
+        if await _ask_big_gift_confirm(total, _small_bal):
             _allow_big = True
             print(f"  {G}✔ Разрешено использовать крупные гифт-карты{RST}")
         else:
@@ -13982,13 +14014,52 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
             _avail.sort(key=lambda x: int(x.get("denom") or 0), reverse=True)
             _sel = [_avail[0]] if _avail else []
         if not _sel:
+            # Частый кейс: мелкие уже потрачены, осталась ₹500+ — спроси крупную снова
+            _big_left = [
+                gc for gc in _load_gift_cards()
+                if not gc.get("used")
+                and str(gc.get("number") or "").strip()
+                and str(gc.get("pin") or "").strip()
+                and int(gc.get("denom") or 0) >= GIFT_CONFIRM_THRESHOLD
+                and str(gc.get("number")).strip() not in _tried_bad
+            ]
+            _big_bal = sum(int(c.get("denom") or 0) for c in _big_left)
+            if not _allow_big and _big_bal >= max(1, _need):
+                _small_now = sum(
+                    int(c.get("denom") or 0) for c in _load_gift_cards()
+                    if not c.get("used") and c.get("number") and c.get("pin")
+                    and 0 < int(c.get("denom") or 0) < GIFT_CONFIRM_THRESHOLD
+                    and str(c.get("number")).strip() not in _tried_bad
+                )
+                if await _ask_big_gift_confirm(_need, _small_now):
+                    _allow_big = True
+                    print(f"  {G}✔ Крупные разрешены — продолжаю на остаток ₹{_need}{RST}")
+                    continue
+                print(f"  {Y}✘ На остаток ₹{_need} остались только крупные (₹{_big_bal}) — не подтверждены{RST}")
+                _tg_send_direct(
+                    f"🎁 *Остаток ₹{_need}*\n\n"
+                    f"Мелких карт больше нет. В хранилище крупные: *₹{_big_bal}*.\n"
+                    f"Подтверждение не получено — оплата остановлена."
+                )
+                break
             _rep2, _b2, _n2, _s2 = _gift_shortage_report(_need)
-            print(f"  {R}✘ Гифт-карт не хватает на остаток:{RST}")
-            for _ln in _rep2.split("\n"):
-                print(f"  {R}  {_ln}{RST}")
-            _msg2 = (f"🎁 *Не хватает гифт-карт*\n\nПрименено на ₹{applied_sum}, "
-                     f"осталось покрыть ₹{_need}.\n\n{_rep2}")
-            _tg_send_direct(_msg2)
+            # Не вводим в заблуждение: если short==0, но выбрать нечего — явная причина
+            if _s2 <= 0 and _b2 > 0:
+                print(f"  {R}✘ Карты в хранилище есть (₹{_b2}), но применить не удалось{RST}")
+                _tg_send_direct(
+                    f"🎁 *Не удалось применить гифт-карты*\n\n"
+                    f"Применено на ₹{applied_sum}, осталось покрыть ₹{_need}.\n"
+                    f"В хранилище: ₹{_b2}, но подходящих для авто-оплаты нет "
+                    f"(крупные без подтверждения / отклонённые).\n\n{_rep2}"
+                )
+            else:
+                print(f"  {R}✘ Гифт-карт не хватает на остаток:{RST}")
+                for _ln in _rep2.split("\n"):
+                    print(f"  {R}  {_ln}{RST}")
+                _tg_send_direct(
+                    f"🎁 *Не хватает гифт-карт*\n\nПрименено на ₹{applied_sum}, "
+                    f"осталось покрыть ₹{_need}.\n\n{_rep2}"
+                )
             break
         c = _sel[0]
         _num = str(c.get("number") or "").strip()
@@ -18592,8 +18663,9 @@ def _select_gift_cards(total: int, cards: list | None = None):
 
 
 def _gift_shortage_report(need_amount: int):
-    """Подробный отчёт о нехватке гифт-карт под сумму need_amount.
-    Возвращает (текст, баланс, округл_нужно, нехватка)."""
+    """Отчёт по складу vs остатку заказа.
+    «Не хватает» = сколько ДОБАВИТЬ в хранилище (need − bal), не «осталось покрыть».
+    Возвращает (текст, баланс, округл_нужно, нехватка_на_складе)."""
     cards = [c for c in _load_gift_cards()
              if not c.get("used") and c.get("number") and c.get("pin")
              and int(c.get("denom") or 0) > 0]
@@ -18606,11 +18678,22 @@ def _gift_shortage_report(need_amount: int):
         by[d] = by.get(d, 0) + 1
     breakdown = "  ·  ".join(f"₹{d}×{by[d]}" for d in sorted(by, reverse=True)) or "карт нет"
     lines = [
-        f"Нужно: ₹{need}" + (f"  (цена ₹{need_amount}, гифт-картами кратно 50)"
-                             if need != need_amount else ""),
+        f"Осталось покрыть: ₹{need}" + (
+            f"  (цена ₹{need_amount}, гифт-картами кратно 50)"
+            if need != need_amount else ""
+        ),
         f"В хранилище: ₹{bal}  →  {breakdown}",
-        f"Не хватает: ₹{short}  (добавьте карт на эту сумму, напр. {short // 50}×₹50)",
     ]
+    if short > 0:
+        lines.append(
+            f"Не хватает на складе: ₹{short}  "
+            f"(добавьте карт на эту сумму, напр. {max(1, short // 50)}×₹50)"
+        )
+    else:
+        # bal >= need: сумма карт ок, но оплата могла встать (крупные без ОК / брак)
+        lines.append(
+            f"На складе хватает (₹{bal} ≥ ₹{need}) — дело не в сумме карт"
+        )
     return "\n".join(lines), bal, need, short
 
 

@@ -9,7 +9,11 @@ MENU = (ROOT / "menu.py").read_text(encoding="utf-8", errors="replace")
 
 REQUIRED = [
     "Add Gift Card",
-    "use gift card",
+    "Have a Flipkart Gift Card",
+    "Use Gift Cards",
+    "_use_gift_cards_checkbox_state",
+    "_select_gift_cards_pay_method",
+    "_ensure_voucher_fields",
     "voucher number",
     "Place Order",
     "Buy Now",

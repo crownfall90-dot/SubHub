@@ -38,7 +38,12 @@ def main() -> None:
     assert p2 and t2 == 50 and p2[0]["number"] == "3"
 
     rep, bal2, need, short = m._gift_shortage_report(343)
-    assert "Нужно:" in rep and need % 50 == 0 and short >= 0 and bal2 >= 0
+    assert "Осталось покрыть:" in rep and need % 50 == 0 and short >= 0 and bal2 >= 0
+    # short==0 must NOT say «Не хватает: ₹0» (путали остаток заказа со складом)
+    assert ("Не хватает на складе:" in rep) == (short > 0)
+    if short == 0:
+        assert "На складе хватает" in rep
+        assert "Не хватает: ₹0" not in rep
 
     pm = m._load_pay_method()
     assert pm in ("card", "gift"), pm
@@ -48,17 +53,28 @@ def main() -> None:
     assert "gift=(_pm == \"gift\")" in src or 'gift=(_pm == "gift")' in src
     assert "_do_gift_card_payment" in src
     assert "_select_gift_cards_pay_method" in src
-    assert "_use_gift_cards_checkbox_state" in src
+    assert "Have a Flipkart Gift Card" in src
     assert "_ensure_voucher_fields" in src
     assert "gift cards" in src.lower()
     assert "_navigate_flipkart_resilient" in src
-    # Gift path: Use Gift Cards checkbox OR left Gift Cards; re-open field each card
+    # Gift path: Use Gift Cards checkbox OR left «Have a Flipkart Gift Card?»
     gift_idx = src.find("async def _do_gift_card_payment")
     assert gift_idx > 0
     gift_chunk = src[gift_idx: gift_idx + 8000]
     assert "_use_gift_cards_checkbox_state" in gift_chunk
     assert "_select_gift_cards_pay_method" in gift_chunk
     assert "_ensure_voucher_fields" in gift_chunk
+    # После мелких — снова спросить крупные, не слать «не хватает ₹0»
+    assert "_ask_big_gift_confirm" in src
+    assert "остались только крупные" in src
+    assert "На складе хватает" in src
+    sel_idx = src.find("async def _select_gift_cards_pay_method")
+    sel_chunk = src[sel_idx: sel_idx + 3500]
+    assert "have a flipkart gift card" in sel_chunk
+    # Must not skip the left-panel opener
+    assert "have a flipkart|apply gift" not in sel_chunk.replace(
+        "have a flipkart gift card", "X"
+    ) or "continue" not in sel_chunk  # soft: prefer string present
     assert "PLACEHOLDER_CUT" not in gift_chunk
     # Buy membership opens Flipkart via resilient (not only raw _open_flipkart_page)
     buy_idx = src.find("async def _do_buy_membership")

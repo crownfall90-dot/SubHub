@@ -1392,7 +1392,7 @@ class SubHubApp(ctk.CTk):
                 ("youtube_hub", "Обзор"),
                 ("profiles", "Профили"),
                 ("archive", "Архив"),
-                ("tools", "Инструменты"),
+                ("cards", "Карты"),
             ]
         elif service == "ggsell":
             items = [
@@ -1463,16 +1463,18 @@ class SubHubApp(ctk.CTk):
         if key == "__home__":
             self._go_home()
             return
-        if key in ("profiles", "archive", "tools"):
+        if key in ("profiles", "archive", "youtube_hub", "run"):
             self._current_service = "youtube"
         elif key == "cards":
-            self._current_service = None
-            self._render_sidebar(None)
+            # Карты доступны и с главной, и из YouTube — контекст не ломаем
+            pass
         self.show_page(key)
 
     def _open_cards_page(self) -> None:
-        self._current_service = None
-        self._render_sidebar(None)
+        # С хаба YouTube — остаёмся в разделе YouTube
+        if self._current_service != "youtube":
+            self._current_service = "youtube"
+        self._render_sidebar("youtube")
         self.show_page("cards")
 
     def _enter_service(self, service: str) -> None:
@@ -1740,11 +1742,18 @@ class SubHubApp(ctk.CTk):
         if name not in self._pages:
             self._log(f"Неизвестная страница: {name}")
             return
-        youtube_pages = {"run", "profiles", "archive", "tools", "youtube_hub"}
-        home_pages = {"home", "cards"}
+        youtube_pages = {"run", "profiles", "archive", "youtube_hub", "tools"}
+        home_pages = {"home"}
         if name == "run":
             name = "youtube_hub"
-        if name in home_pages:
+        if name == "cards":
+            # Карты: сайдбар главной ИЛИ YouTube — как сейчас открыт раздел
+            if self._current_service == "youtube":
+                self._render_sidebar("youtube")
+            else:
+                self._current_service = None
+                self._render_sidebar(None)
+        elif name in home_pages:
             if self._current_service is not None:
                 self._current_service = None
                 self._render_sidebar(None)
@@ -5969,8 +5978,8 @@ class SubHubApp(ctk.CTk):
                 ("Файл", self._upload_gift_file, BTN_SECONDARY),
                 ("Изменить", self._edit_selected_gift_card, BTN_SECONDARY),
                 ("Удалить", self._delete_gift_card, ERROR),
-                ("Вверх", lambda: self._move_gift_card(-1), BTN_SECONDARY),
-                ("Вниз", lambda: self._move_gift_card(1), BTN_SECONDARY),
+                ("↑ Выше", lambda: self._move_gift_card(-1), BTN_SECONDARY),
+                ("↓ Ниже", lambda: self._move_gift_card(1), BTN_SECONDARY),
                 ("Способ оплаты", self._toggle_pay_method, WARNING),
             ]
         else:
@@ -6018,6 +6027,89 @@ class SubHubApp(ctk.CTk):
             _bind(w)
             for ch in w.winfo_children():
                 _bind(ch)
+        return row
+
+    def _gift_queue_row(
+        self, parent, idx: int, total: int, denom: int,
+        series: str, pin: str, selected: bool, on_select: Callable,
+    ) -> ctk.CTkFrame:
+        """Строка гифт-карты: № в очереди, номинал, ↑↓ для перестановки."""
+        is_next = idx == 0
+        bg = BG_CARD_HOVER if selected else BG_CARD
+        border = SUCCESS if is_next and not selected else (ACCENT if selected else BORDER_SUBTLE)
+        row = ctk.CTkFrame(
+            parent, fg_color=bg, corner_radius=RADIUS_CHIP,
+            border_width=2 if (selected or is_next) else 1,
+            border_color=border,
+        )
+        row.pack(fill="x", pady=3, padx=4)
+        if not selected:
+            self._bind_row_hover(row)
+
+        def _bind(widget) -> None:
+            widget.bind("<Button-1>", lambda _e: on_select())
+
+        # № очереди
+        pos_bg = SUCCESS if is_next else BG_ELEVATED
+        pos_fg = "#0B1020" if is_next else TEXT_PRIMARY
+        pos = ctk.CTkLabel(
+            row, text=str(idx + 1), width=36, height=36,
+            font=_ui_font(FONT_BODY, "bold"),
+            fg_color=pos_bg, corner_radius=RADIUS_CHIP,
+            text_color=pos_fg,
+        )
+        pos.pack(side="left", padx=(10, 8), pady=8)
+
+        mid = ctk.CTkFrame(row, fg_color="transparent")
+        mid.pack(side="left", fill="x", expand=True, pady=6)
+        title = f"₹{denom}"
+        if is_next:
+            title += "  ·  следующая"
+        ctk.CTkLabel(
+            mid, text=title, font=_ui_font(FONT_BODY, "bold"),
+            anchor="w", text_color=TEXT_PRIMARY,
+        ).pack(anchor="w")
+        ser = f"…{str(series)[-6:]}" if series else "—"
+        pin_s = f"…{str(pin)[-4:]}" if pin else "—"
+        ctk.CTkLabel(
+            mid, text=f"серия {ser}  ·  PIN {pin_s}",
+            font=ctk.CTkFont(family="Consolas", size=FONT_MONO),
+            anchor="w", text_color=TEXT_DIM,
+        ).pack(anchor="w", pady=(2, 0))
+
+        # ↑↓ прямо в строке — меняют местами с соседней
+        moves = ctk.CTkFrame(row, fg_color="transparent")
+        moves.pack(side="right", padx=(4, 8), pady=6)
+
+        def _up() -> None:
+            self._sel_gift_idx = idx
+            self._move_gift_card(-1)
+
+        def _down() -> None:
+            self._sel_gift_idx = idx
+            self._move_gift_card(1)
+
+        up = ctk.CTkButton(
+            moves, text="↑", width=32, height=28,
+            fg_color=BG_ELEVATED, hover_color=BG_NAV_ACTIVE,
+            text_color=TEXT_PRIMARY, font=_ui_font(FONT_BODY, "bold"),
+            command=_up, state="normal" if idx > 0 else "disabled",
+        )
+        up.pack(side="top", pady=(0, 2))
+        down = ctk.CTkButton(
+            moves, text="↓", width=32, height=28,
+            fg_color=BG_ELEVATED, hover_color=BG_NAV_ACTIVE,
+            text_color=TEXT_PRIMARY, font=_ui_font(FONT_BODY, "bold"),
+            command=_down, state="normal" if idx < total - 1 else "disabled",
+        )
+        down.pack(side="top")
+
+        for w in (row, mid, pos):
+            _bind(w)
+            if hasattr(w, "winfo_children"):
+                for ch in w.winfo_children():
+                    if ch not in (up, down) and not isinstance(ch, ctk.CTkButton):
+                        _bind(ch)
         return row
 
     def _set_cards_detail(self, text: str) -> None:
@@ -6125,40 +6217,60 @@ class SubHubApp(ctk.CTk):
                 breakdown = "  ·  ".join(
                     f"₹{d}×{by_denom[d]}" for d in sorted(by_denom, reverse=True)
                 )
-                for pos, c in enumerate(gc, 1):
-                    denom = int(c.get("denom") or 0)
-                    series = c.get("number", "")
-                    pin = c.get("pin", "")
-                    added = m._fmt_msk(c["added_ts"]) if c.get("added_ts") else "—"
-                    sel = (pos - 1) == self._sel_gift_idx
+                queue_line = " → ".join(
+                    f"₹{int(c.get('denom') or 0)}" for c in gc[:8]
+                )
+                if len(gc) > 8:
+                    queue_line += " → …"
 
-                    def _pick(p=pos - 1, card=c):
+                hint = ctk.CTkFrame(
+                    self.cards_list, fg_color=BG_SURFACE, corner_radius=RADIUS_CHIP,
+                    border_width=1, border_color=BORDER_SUBTLE,
+                )
+                hint.pack(fill="x", pady=(2, 6), padx=4)
+                ctk.CTkLabel(
+                    hint,
+                    text="Очередь применения — сверху первая. ↑↓ в строке меняют местами.",
+                    font=_ui_font(FONT_CAPTION), text_color=TEXT_DIM, anchor="w",
+                ).pack(fill="x", padx=10, pady=6)
+
+                for idx, c in enumerate(gc):
+                    denom = int(c.get("denom") or 0)
+                    series = str(c.get("number", "") or "")
+                    pin = str(c.get("pin", "") or "")
+                    sel = idx == self._sel_gift_idx
+
+                    def _pick(p=idx, card=c):
                         self._sel_gift_idx = p
                         self._selected_gift = card
                         self._refresh_cards()
 
-                    self._cards_row(
-                        self.cards_list, pos, f"₹{denom}",
-                        f"серия …{series[-6:]}  ·  PIN …{pin[-4:]}",
-                        added[:10] if added != "—" else "",
-                        sel, _pick,
+                    self._gift_queue_row(
+                        self.cards_list, idx, len(gc), denom,
+                        series, pin, sel, _pick,
                     )
                 if self._sel_gift_idx is not None:
                     c = gc[self._sel_gift_idx]
+                    pos = self._sel_gift_idx + 1
+                    role = "следующая к применению" if self._sel_gift_idx == 0 else f"позиция {pos}"
                     self._set_cards_detail(
                         f"Номинал: ₹{int(c.get('denom') or 0)}\n"
                         f"Серия: {c.get('number', '—')}\n"
                         f"PIN: {c.get('pin', '—')}\n"
                         f"Добавлена: {m._fmt_msk(c['added_ts']) if c.get('added_ts') else '—'}\n\n"
-                        f"Позиция в очереди: {self._sel_gift_idx + 1} из {len(gc)}\n"
+                        f"В очереди: {pos} из {len(gc)} ({role})\n"
+                        f"Порядок: {queue_line}\n"
                         f"Сводка: {breakdown}\n"
-                        f"Способ оплаты: {pm_txt}"
+                        f"Способ оплаты: {pm_txt}\n\n"
+                        "↑↓ в строке или «↑ Выше» / «↓ Ниже» — переставить."
                     )
                 else:
                     self._set_cards_detail(
-                        f"Всего: {len(gc)} шт.  ·  Баланс ₹{bal}\n{breakdown}\n\n"
+                        f"Всего: {len(gc)} шт.  ·  Баланс ₹{bal}\n"
+                        f"Порядок: {queue_line}\n{breakdown}\n\n"
                         f"Способ оплаты: {pm_txt}\n"
-                        "Выберите карту слева. ↑ ↓ меняют порядок применения."
+                        "Зелёный №1 — первая карта при оплате.\n"
+                        "Стрелки ↑↓ в строке меняют соседние карты местами."
                     )
 
         else:
