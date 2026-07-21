@@ -7083,10 +7083,11 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         import os, signal
         creationflags = 0
         if os.name == "nt":
-            creationflags = (
-                subprocess.CREATE_NEW_PROCESS_GROUP
-                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            )
+            # CREATE_NEW_PROCESS_GROUP — чтобы Ctrl+C консоли не убивал сразу,
+            # а мы слали CTRL_BREAK адресно. Без CREATE_NO_WINDOW: процесс наследует
+            # консоль и его вывод (покупка номеров, OTP, вход) виден в реальном
+            # времени — иначе автоматизация «молчит» и кажется, что не работает.
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = subprocess.Popen(args, creationflags=creationflags)
         set_automation_proc(proc.pid, "login", "console")
         proc.wait()
