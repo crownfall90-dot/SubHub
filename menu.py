@@ -15358,6 +15358,75 @@ def _proxy_enabled() -> bool:
     return bool(_proxy_config().get("enabled"))
 
 
+_SMS_PROVIDER_ORDER = ("grizzly", "pvapins", "auto")
+_SMS_PROVIDER_LABEL = {
+    "grizzly": "GrizzlySMS ✓  · PVAPins выкл",
+    "pvapins": "PVAPins ✓  · Grizzly выкл",
+    "auto":    "Auto: Grizzly → PVAPins",
+}
+
+
+def _sms_provider() -> str:
+    """Текущий SMS-провайдер из config.yaml → sms.provider."""
+    try:
+        from sms_failover import _sms_provider_mode
+        import yaml as _y
+        cfg = _y.safe_load((_HERE / "config.yaml").read_text(encoding="utf-8")) or {}
+        return _sms_provider_mode(cfg)
+    except Exception:
+        return "auto"
+
+
+def _set_sms_provider(mode: str) -> bool:
+    """Пишет sms.provider в config.yaml (grizzly | pvapins | auto) точечно."""
+    mode = str(mode).strip().lower()
+    if mode not in _SMS_PROVIDER_ORDER:
+        return False
+    cfg_path = _HERE / "config.yaml"
+    try:
+        text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+    except Exception:
+        return False
+    # Уже есть sms.provider — заменить значение
+    new_text, n = re.subn(
+        r"(?m)^([ \t]*provider:\s*)(grizzly|pvapins|auto)\s*(#.*)?$",
+        rf"\g<1>{mode}\g<3>",
+        text,
+        count=1,
+    )
+    if n == 0:
+        # Есть секция sms: — вставить provider после неё
+        m = re.search(r"(?m)^(sms:\s*\n)", text)
+        if m:
+            new_text = text[: m.end()] + f"  provider: {mode}\n" + text[m.end() :]
+        else:
+            # Секции нет — добавить в конец
+            sep = "" if text.endswith("\n") or not text else "\n"
+            new_text = text + f"{sep}sms:\n  provider: {mode}\n"
+    try:
+        cfg_path.write_text(new_text, encoding="utf-8")
+        return True
+    except Exception as exc:
+        print(f"  {Y}⚠ Не удалось сохранить sms.provider: {exc}{RST}")
+        return False
+
+
+def _cycle_sms_provider() -> str:
+    """Цикл: Grizzly → PVAPins → Auto → …"""
+    cur = _sms_provider()
+    try:
+        idx = _SMS_PROVIDER_ORDER.index(cur)
+    except ValueError:
+        idx = -1
+    nxt = _SMS_PROVIDER_ORDER[(idx + 1) % len(_SMS_PROVIDER_ORDER)]
+    _set_sms_provider(nxt)
+    return nxt
+
+
+def _sms_provider_menu_label() -> str:
+    return _SMS_PROVIDER_LABEL.get(_sms_provider(), _SMS_PROVIDER_LABEL["auto"])
+
+
 def _set_proxy_enabled(enabled: bool) -> bool:
     """Пишет proxy.enabled в config.yaml точечно (сохраняет комментарии вокруг блока)."""
     cfg_path = Path(__file__).resolve().parent / "config.yaml"
@@ -19914,6 +19983,7 @@ def screen_main():
         opt("7", "🛒 Панель продавца  (баланс · заказы · переписка)", C)
 
         section("НАСТРОЙКИ", B)
+        opt("М", f"SMS-провайдер: {_sms_provider_menu_label()}", Y)
         opt("С", "🛑 Остановить процессы / отменить все номера", R)
         opt("0", "Карты для оплаты (добавить / удалить)", C)
         _gc_bal = _gift_balance()
@@ -19962,6 +20032,10 @@ def screen_main():
                 screen_used()
             elif choice == "7":
                 screen_ggsell()
+            elif choice in ("М", "M"):
+                nxt = _cycle_sms_provider()
+                print(f"\n  {G}✓ SMS: {_SMS_PROVIDER_LABEL.get(nxt, nxt)}{RST}")
+                time.sleep(0.8)
             elif choice in ("С", "C", "S"):
                 screen_stop_all()
             elif choice == "9":

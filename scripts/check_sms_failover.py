@@ -4,12 +4,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pvapins_sms import PVAPinsSMSClient
-from sms_failover import FailoverSMSClient
+from sms_failover import FailoverSMSClient, _sms_provider_mode
 
 aid = PVAPinsSMSClient.make_aid("Flipkart22", "india", "9876543210")
 assert PVAPinsSMSClient.is_aid(aid)
 app, country, number = PVAPinsSMSClient.parse_aid(aid)
 assert (app, country, number) == ("Flipkart22", "india", "9876543210")
+
+assert _sms_provider_mode({"sms": {"provider": "grizzly"}}) == "grizzly"
+assert _sms_provider_mode({"sms": {"provider": "pvapins"}}) == "pvapins"
+assert _sms_provider_mode({"sms": {"provider": "auto"}}) == "auto"
+assert _sms_provider_mode({}) == "auto"
 
 # Failover routes by id prefix without network
 class _Stub:

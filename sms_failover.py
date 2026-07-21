@@ -198,11 +198,29 @@ def _real_key(val) -> bool:
     return bool(s) and not s.upper().startswith(("YOUR_", "ВАШ_"))
 
 
+def _sms_provider_mode(cfg: dict | None = None) -> str:
+    """grizzly | pvapins | auto — из config.yaml → sms.provider."""
+    if cfg is None:
+        cfg = {}
+    mode = str(((cfg.get("sms") or {}).get("provider") or "auto")).strip().lower()
+    if mode in ("grizzly", "grizzlysms", "g"):
+        return "grizzly"
+    if mode in ("pvapins", "pva", "p"):
+        return "pvapins"
+    return "auto"
+
+
 def build_sms_client(
     secrets: dict,
     cfg: dict,
 ) -> FailoverSMSClient | GrizzlySMSClient | PVAPinsSMSClient:
-    """Собирает клиент из secrets.yaml + config.yaml."""
+    """Собирает клиент из secrets.yaml + config.yaml.
+
+    sms.provider:
+      grizzly — только GrizzlySMS
+      pvapins — только PVAPins
+      auto    — Grizzly → PVAPins failover (по умолчанию)
+    """
     gs = (secrets.get("grizzlysms") or {})
     ps = (secrets.get("pvapins") or {})
     g_key = str(gs.get("api_key") or "").strip()
@@ -210,12 +228,16 @@ def build_sms_client(
     g_cfg = cfg.get("grizzlysms") or {}
     p_cfg = cfg.get("pvapins") or {}
     http_timeout = int(g_cfg.get("http_timeout") or p_cfg.get("http_timeout") or 30)
+    mode = _sms_provider_mode(cfg)
+
+    want_g = mode in ("grizzly", "auto")
+    want_p = mode in ("pvapins", "auto")
 
     primary = None
     fallback = None
-    if _real_key(g_key):
+    if want_g and _real_key(g_key):
         primary = GrizzlySMSClient(g_key, http_timeout=http_timeout)
-    if _real_key(p_key):
+    if want_p and _real_key(p_key):
         apps = p_cfg.get("apps")
         fallback = PVAPinsSMSClient(
             p_key,
@@ -226,6 +248,16 @@ def build_sms_client(
             buy_interval_seconds=float(p_cfg.get("buy_interval_seconds") or 10),
             min_reject_seconds=float(p_cfg.get("min_reject_seconds") or 180),
         )
+
+    # Режим «только X», но ключа нет — не молча падаем на другой
+    if mode == "grizzly":
+        if primary is None:
+            raise ValueError("sms.provider=grizzly, но нет grizzlysms.api_key в secrets.yaml")
+        return primary
+    if mode == "pvapins":
+        if fallback is None:
+            raise ValueError("sms.provider=pvapins, но нет pvapins.api_key в secrets.yaml")
+        return fallback
 
     if primary and fallback:
         return FailoverSMSClient(primary, fallback)

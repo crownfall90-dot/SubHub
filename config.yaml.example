@@ -48,6 +48,8 @@ pvapins:
   max_price: 0.30
   buy_interval_seconds: 10   # Standard: max 6 new numbers/min
   min_reject_seconds: 180    # reject того же номера не раньше 3 мин
+sms:
+  provider: auto             # grizzly | pvapins | auto (Grizzly→PVAPins)
 telegram_otp:
   wait_timeout: 90
 auto_accounts: 10
