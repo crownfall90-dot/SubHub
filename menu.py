@@ -923,6 +923,103 @@ def _console_offer_restore(profile_path, username: str) -> bool:
     return False
 
 
+def _profile_login_check_flow(selected: dict, *, quiet_ok: bool = False) -> bool:
+    """Проверяет вход профиля на Flipkart. Если сессия слетела — предлагает
+    восстановить из куков; если восстановить не удалось — предлагает удалить
+    профиль или перенести в архив.
+
+    quiet_ok=True — при активной сессии не делать pause() (для пакетной проверки).
+    Возвращает True, если профиль был удалён или перенесён в архив (вызвавшему
+    нужно обновить список и выйти из подменю).
+    """
+    path = Path(selected["path"])
+    username = str(selected.get("username", ""))
+    print(f"\n  {DIM}Проверяю сессию +91 {_disp_phone(username)} на Flipkart (headless)…{RST}")
+    # Профиль может быть открыт в Chrome — тогда папка занята
+    _kill_chrome_for_profile(path)
+    try:
+        logged = asyncio.run(_flipkart_is_logged_in(path))
+    except Exception as e:
+        print(f"  {R}Ошибка проверки: {e}{RST}")
+        pause()
+        return False
+
+    if logged:
+        print(f"  {G}✅ Залогинен — сессия активна.{RST}")
+        if not quiet_ok:
+            pause()
+        return False
+
+    print(f"  {Y}🔒 НЕ залогинен — вход слетел.{RST}")
+
+    # ── 1. Пытаемся восстановить из бэкапа куков ────────────────────────────
+    phone = "".join(ch for ch in username if ch.isdigit())[-10:] or username
+    bk = _cookies_backup_for_phone(phone)
+    if bk:
+        print(f"  {DIM}Пробую восстановить из {bk.name}…{RST}")
+        try:
+            ok, msg = asyncio.run(_restore_profile_from_cookies(bk, phone, path))
+        except Exception as e:
+            ok, msg = False, str(e)
+        if ok:
+            _kill_chrome_for_profile(path)
+            try:
+                really = asyncio.run(_flipkart_is_logged_in(path))
+            except Exception:
+                really = True  # при ошибке считаем восстановленным, не удаляем
+            if really:
+                print(f"  {G}✅ Сессия восстановлена — профиль снова залогинен.{RST}")
+                pause()
+                return False
+            print(f"  {Y}Куки применились, но вход не подтвердился "
+                  f"(сессия, вероятно, мертва на сервере).{RST}")
+        else:
+            print(f"  {R}❌ Восстановить не удалось: {msg}{RST}")
+    else:
+        print(f"  {DIM}Бэкапа куков нет (cookies_backup/cookies_{phone}.json).{RST}")
+
+    # ── 2. Восстановить не вышло → удалить или в архив ──────────────────────
+    print()
+    print(f"  {Y}Восстановить вход не удалось. Что сделать с профилем?{RST}")
+    opt("А", "Перенести в архив  (сохранить запись, удалить папку)", M)
+    opt("У", "Удалить профиль навсегда", R)
+    opt("0", "Оставить как есть", DIM)
+    ans = input(f"\n  {BLD}Выбор [А/У/0]: {RST}").strip().upper()
+
+    if ans in ("А", "A"):
+        ok_arch = _archive_profile(path, used_ts=time.time())
+        if ok_arch:
+            print(f"\n  {M}✅ Перенесён в архив, папка удалена.{RST}")
+        else:
+            print(f"\n  {R}Ошибка архивирования.{RST}")
+        pause()
+        return bool(ok_arch)
+
+    if ans in ("У", "U"):
+        confirm = input(f"  {R}Точно удалить безвозвратно? [Д/Н]: {RST}").strip().lower()
+        if confirm in ("д", "y"):
+            _kill_chrome_for_profile(path)
+            try:
+                shutil.rmtree(str(path), ignore_errors=True)
+            except Exception as e:
+                print(f"  {R}Ошибка удаления: {e}{RST}")
+                pause()
+                return False
+            if not path.exists():
+                print(f"\n  {M}🗑 Профиль удалён.{RST}")
+                pause()
+                return True
+            print(f"\n  {R}Не удалось удалить (файлы заняты Chrome).{RST}")
+        else:
+            print(f"\n  {DIM}Удаление отменено.{RST}")
+        pause()
+        return False
+
+    print(f"\n  {DIM}Оставлено без изменений.{RST}")
+    pause()
+    return False
+
+
 def _read_profile_meta(p: Path) -> dict:
     """Читает .profile_meta.json профиля и возвращает обогащённый dict."""
     _raw = p.name[len("profile_"):] if p.name.startswith("profile_") else p.name
@@ -7961,13 +8058,26 @@ def screen_profiles():
             opt("А", f"Заполнить все доступные [{len(noaddr_profiles)} шт.]  (адрес → чекаут → до оплаты)", G)
         if no_data_count:
             opt("9", f"Удалить все {no_data_count} профиля без данных (нет мета-файла)", R)
+        opt("Л", "Проверить вход у ВСЕХ профилей  (восстановить / удалить / архив)", C)
         print()
         opt("0", "Назад", R)
         print()
 
-        choice = input(f"  {BLD}Выберите профиль [1-{len(profiles)}], А, 9 или 0: {RST}").strip().upper()
+        choice = input(f"  {BLD}Выберите профиль [1-{len(profiles)}], А, Л, 9 или 0: {RST}").strip().upper()
         if choice == "0" or choice == "":
             return
+
+        if choice in ("Л", "L"):
+            cls()
+            header("ПРОВЕРКА ВХОДА — ВСЕ ПРОФИЛИ", C)
+            print(f"  {DIM}Проверяю {len(profiles)} профил(ей). Залогиненные пропускаю,{RST}")
+            print(f"  {DIM}по слетевшим предложу восстановить / удалить / архив.{RST}")
+            for _bi, _bp in enumerate(profiles, 1):
+                print(f"\n  {BLD}[{_bi}/{len(profiles)}]{RST} +91 {_disp_phone(_bp['username'])}", end="")
+                _profile_login_check_flow(_bp, quiet_ok=True)
+            print(f"\n  {G}✅ Проверка всех профилей завершена.{RST}")
+            pause()
+            continue
 
         if choice == "А" and noaddr_profiles:
             print(f"\n  {G}⚡ Заполняю все доступные профили ({len(noaddr_profiles)} шт.)...{RST}")
@@ -8098,6 +8208,7 @@ def screen_profiles():
                 opt("2 / В", "Пометить «Выдан»        (активен, передан клиенту)", B)
             opt("3 / И", "Пометить «Использован»   (завершён, перенести в архив)", M)
             opt("К",     "Восстановить сессию из JSON куков (cookies_backup/)", C)
+            opt("Л",     "Проверить вход  →  восстановить / удалить / архив", C)
             opt("Н",     f"Примечание{'  «' + _sel_note[:30] + '»' if _sel_note else '  (нет)'}", Y)
             opt("9",     "Удалить профиль навсегда", R)
             print()
@@ -8347,6 +8458,13 @@ def screen_profiles():
                         print(f"  {R}❌ Не удалось восстановить: {msg}{RST}")
                 pause()
                 break
+
+            elif action in ("Л", "L"):
+                cls()
+                header("ПРОВЕРКА ВХОДА", C)
+                print(f"  Профиль : {W}{BLD}{_disp_phone(selected['username'])}{RST}")
+                if _profile_login_check_flow(selected):
+                    break   # профиль удалён / в архиве — обновить список
 
             elif action == "9":
                 cls()
@@ -19297,6 +19415,254 @@ def screen_cards():
             time.sleep(1.0)
 
 
+# ── GGSell: панель продавца ──────────────────────────────────────────────────
+
+def _ggs_keys() -> tuple[str, int]:
+    gs = (_read_secrets().get("ggsel") or {})
+    try:
+        sid = int(gs.get("seller_id") or 0)
+    except Exception:
+        sid = 0
+    return gs.get("api_key", "").strip(), sid
+
+
+def _ggs_st(status: str) -> str:
+    """Цветная метка статуса заказа."""
+    s = str(status or "").lower()
+    if not s:
+        return ""
+    col = (G if s in ("paid", "success", "complete", "completed", "delivered", "sent")
+           else (R if s in ("refund", "refunded", "canceled", "cancelled", "error")
+                 else Y))
+    return f"{col}{status}{RST}"
+
+
+def _ggs_parse_order(order: dict) -> dict:
+    import re as _re
+    product = order.get("product") or {}
+    name = (order.get("product_name") or order.get("name") or order.get("offer_title")
+            or product.get("name") or "YouTube Premium")
+    buyer = order.get("buyer") or order.get("buyer_info") or {}
+    email = (buyer.get("email") or order.get("buyer_email") or order.get("email") or "")
+    # цена покупателя: из product (last-orders) или полей заказа
+    price = ""
+    _pu = product.get("price_usd") or order.get("price_usd")
+    _pr = product.get("price_rub") or order.get("price_rub")
+    if _pu:
+        price = f"${_pu}"
+    elif _pr:
+        price = f"{_pr}₽"
+    sum_buy = (order.get("sum_t") or order.get("sum") or order.get("amount_t")
+               or order.get("amount") or order.get("total") or price)
+    sum_sell = (order.get("sum_seller") or order.get("seller_sum")
+                or order.get("seller_reward_amount") or order.get("payout") or "")
+    status = str(order.get("status") or order.get("state") or "")
+    date = str(order.get("date") or order.get("created_at") or "").replace("T", " ")[:16]
+    try:
+        inv = int(order.get("invoice_id") or order.get("id") or 0)
+    except Exception:
+        inv = 0
+    opts: list[tuple[str, str]] = []
+    for s in (order.get("selected_options") or []):
+        s = str(s).strip()
+        if ": " in s:
+            k, v = s.split(": ", 1)
+            v = _re.sub(r"\s*\(\+[\d.]+\s*RUB\)", "", v).strip()
+            if k.strip() and v:
+                opts.append((k.strip(), v))
+    if not opts:
+        for o in (order.get("options") or []):
+            k = (o.get("name") or o.get("title") or "").strip()
+            v = (o.get("user_data") or o.get("value") or "").strip()
+            if k and v:
+                opts.append((k, v))
+    ns = str(name)
+    if len(ns) > 46:
+        ns = ns[:45] + "…"
+    return {"inv": inv, "name": ns, "email": str(email), "sum_buy": sum_buy,
+            "sum_sell": sum_sell, "status": status, "date": date, "options": opts,
+            "price": price}
+
+
+async def _ggs_overview(api_key: str, seller_id: int):
+    from ggsell.client import GGSellClient
+    async with GGSellClient(api_key, seller_id) as cli:
+        try:
+            bal = await cli.get_balance_info()
+        except Exception:
+            bal = {"free": 0.0, "lock": 0.0, "plus": 0.0}
+        orders: list = []
+        try:
+            orders = await cli.get_orders_v1(limit=25)
+        except Exception:
+            orders = []
+        if not orders:
+            try:
+                orders = await cli.get_last_orders()
+            except Exception:
+                orders = []
+        return bal, orders
+
+
+async def _ggs_order_full(api_key: str, seller_id: int, order_id: int):
+    """Детали заказа (buyer_email, status, options, reward) + сообщения."""
+    from ggsell.client import GGSellClient
+    async with GGSellClient(api_key, seller_id) as cli:
+        try:
+            v2 = await cli.get_order_info_v2(order_id)
+        except Exception:
+            v2 = {}
+        try:
+            msgs = await cli.get_messages(order_id)
+        except Exception:
+            msgs = []
+        return v2, msgs
+
+
+async def _ggs_send_msg(api_key: str, seller_id: int, order_id: int, text: str) -> bool:
+    from ggsell.client import GGSellClient
+    async with GGSellClient(api_key, seller_id) as cli:
+        return await cli.send_message(order_id, text)
+
+
+def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
+    inv = int(order.get("invoice_id") or order.get("id") or 0)
+    while True:
+        cls()
+        header(f"GGSELL — ЗАКАЗ #{inv}", C)
+        print(f"  {DIM}Загружаю детали заказа…{RST}")
+        try:
+            v2, msgs = asyncio.run(_ggs_order_full(api_key, seller_id, inv))
+        except Exception as e:
+            v2, msgs = {}, []
+            print(f"  {R}Не удалось загрузить детали: {e}{RST}")
+        # объединяем тонкий заказ из списка с богатыми полями v2
+        merged = dict(order)
+        if isinstance(v2, dict):
+            merged.update({k: val for k, val in v2.items() if val not in (None, "")})
+        p = _ggs_parse_order(merged)
+        cls()
+        header(f"GGSELL — ЗАКАЗ #{inv}", C)
+        print(f"  Покупатель: {C}{p['email'] or '—'}{RST}")
+        print(f"  Товар     : {W}{p['name']}{RST}")
+        print(f"  Статус    : {p['status'] or '—'}   {DIM}{p['date']}{RST}")
+        if p["sum_buy"] or p["sum_sell"]:
+            print(f"  Суммы     : покупка {p['sum_buy'] or '—'}  ·  "
+                  f"{G}продавцу {p['sum_sell'] or '—'}{RST}")
+        for k, v in p["options"]:
+            print(f"  {DIM}{k}:{RST} {W}{v}{RST}")
+        section("Переписка с покупателем")
+        print()
+        if not msgs:
+            print(f"  {DIM}Сообщений нет.{RST}")
+        try:
+            from ggsell.monitor import is_own_sent as _own_sent
+        except Exception:
+            _own_sent = None
+        for m in (msgs[-15:] if isinstance(msgs, list) else []):
+            txt = str(m.get("message") or m.get("text") or m.get("content") or "").strip()
+            ts = str(m.get("date_written") or m.get("date")
+                     or m.get("created_at") or "")[:16].replace("T", " ")
+            is_seller = bool(m.get("is_seller") or m.get("is_seller_msg")
+                             or m.get("sender") == "seller" or m.get("type") == "seller")
+            if not is_seller and _own_sent is not None and txt:
+                try:
+                    is_seller = _own_sent(inv, txt)
+                except Exception:
+                    pass
+            tag = f"{G}🏪 Вы{RST}" if is_seller else f"{C}👤 Покупатель{RST}"
+            print(f"  [{tag}{DIM} {ts}{RST}]")
+            if txt:
+                print(f"    {W}{txt}{RST}")
+        print()
+        opt("С", "Написать сообщение покупателю", G)
+        opt("R", "Обновить", C)
+        opt("0", "Назад", R)
+        print()
+        ch = input(f"  {BLD}Действие [С/R/0]: {RST}").strip().upper()
+        if ch in ("0", ""):
+            return
+        if ch in ("R", "К", "K"):
+            continue
+        if ch in ("С", "C", "S"):
+            try:
+                text = input("  Текст сообщения (Enter — отмена): ").strip()
+            except EOFError:
+                text = ""
+            if not text:
+                continue
+            try:
+                ok = asyncio.run(_ggs_send_msg(api_key, seller_id, inv, text))
+            except Exception as e:
+                ok = False
+                print(f"  {R}Ошибка отправки: {e}{RST}")
+            print(f"  {G}✅ Отправлено покупателю{RST}" if ok
+                  else f"  {R}❌ Не отправлено{RST}")
+            time.sleep(1.3)
+
+
+def screen_ggsell() -> None:
+    """Панель продавца GGSell: баланс, заказы, переписка с покупателями."""
+    api_key, seller_id = _ggs_keys()
+    if not api_key or not seller_id:
+        cls()
+        header("GGSELL — ПАНЕЛЬ ПРОДАВЦА", C)
+        print(f"\n  {Y}GGSell не настроен.{RST}")
+        print(f"  {DIM}Заполните secrets.yaml → ggsel.api_key и ggsel.seller_id{RST}")
+        pause()
+        return
+
+    while True:
+        cls()
+        header("GGSELL — ПАНЕЛЬ ПРОДАВЦА", C)
+        print(f"  {DIM}Загружаю данные GGSell…{RST}")
+        try:
+            bal, orders = asyncio.run(_ggs_overview(api_key, seller_id))
+        except Exception as e:
+            print(f"\n  {R}Ошибка GGSell API: {e}{RST}")
+            pause()
+            return
+
+        cls()
+        header("GGSELL — ПАНЕЛЬ ПРОДАВЦА", C)
+        free = float(bal.get("free") or 0.0)
+        lock = float(bal.get("lock") or 0.0)
+        plus = float(bal.get("plus") or 0.0)
+        print(f"  💵 Баланс: {G}{BLD}${free:,.2f}{RST}    "
+              f"{DIM}холд ${lock:,.2f}   ·   плюс ${plus:,.2f}{RST}")
+        shown = orders[:20] if isinstance(orders, list) else []
+        section(f"Последние заказы  [{len(orders) if isinstance(orders, list) else 0}]")
+        print()
+        if not shown:
+            print(f"  {DIM}Заказов нет.{RST}")
+        for i, o in enumerate(shown, 1):
+            p = _ggs_parse_order(o)
+            # список (last-orders) тонкий: показываем покупателя если есть, иначе цену
+            mid = p["email"] or p["price"] or "—"
+            print(f"  {BLD}{Y}[{i:>2}]{RST}  {W}#{p['inv']}{RST}  "
+                  f"{DIM}{p['date']:<16}{RST}  {C}{mid}{RST}"
+                  + (f"   {_ggs_st(p['status'])}" if p["status"] else "")
+                  + (f"   {G}+${p['sum_sell']}{RST}" if p["sum_sell"] else ""))
+            if p["name"]:
+                print(f"        {DIM}{p['name']}{RST}")
+        print()
+        opt("R / Enter", "Обновить", C)
+        opt("0", "Назад", R)
+        print()
+        ch = input(f"  {BLD}Заказ [1-{len(shown)}], R или 0: {RST}").strip().upper()
+        if ch == "0":
+            return
+        if ch in ("", "R", "К", "K"):
+            continue
+        try:
+            oi = int(ch) - 1
+            if not (0 <= oi < len(shown)):
+                raise ValueError
+        except ValueError:
+            continue
+        _ggs_order_detail(api_key, seller_id, shown[oi])
+
+
 def screen_main():
     """Главное меню."""
     while True:
@@ -19319,6 +19685,9 @@ def screen_main():
         opt("П", "Проверить активацию всех выданных", G)
         opt("К", "Восстановить профиль из JSON куков (cookies_backup/)", C)
         opt("6", "🟡 Архив профилей", M)
+
+        section("GGSELL", C)
+        opt("7", "🛒 Панель продавца  (баланс · заказы · переписка)", C)
 
         section("НАСТРОЙКИ", B)
         opt("0", "Карты для оплаты (добавить / удалить)", C)
@@ -19366,6 +19735,8 @@ def screen_main():
                 screen_install()
             elif choice == "6":
                 screen_used()
+            elif choice == "7":
+                screen_ggsell()
             elif choice == "9":
                 screen_all_in_one()
             elif choice in ("П", "P"):
