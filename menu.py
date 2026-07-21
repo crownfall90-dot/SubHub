@@ -15387,22 +15387,22 @@ def _set_sms_provider(mode: str) -> bool:
         text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
     except Exception:
         return False
-    # Уже есть sms.provider — заменить значение
-    new_text, n = re.subn(
-        r"(?m)^([ \t]*provider:\s*)(grizzly|pvapins|auto)\s*(#.*)?$",
-        rf"\g<1>{mode}\g<3>",
-        text,
-        count=1,
-    )
-    if n == 0:
-        # Есть секция sms: — вставить provider после неё
-        m = re.search(r"(?m)^(sms:\s*\n)", text)
-        if m:
-            new_text = text[: m.end()] + f"  provider: {mode}\n" + text[m.end() :]
-        else:
-            # Секции нет — добавить в конец
-            sep = "" if text.endswith("\n") or not text else "\n"
-            new_text = text + f"{sep}sms:\n  provider: {mode}\n"
+    # Только внутри секции sms: … до следующего корневого ключа
+    m = re.search(r"(?m)^(sms:\s*\n)(.*?)(?=^[a-zA-Z_][\w]*:|\Z)", text, re.S)
+    if m:
+        head, body = m.group(1), m.group(2)
+        new_body, n = re.subn(
+            r"(?m)^([ \t]*provider:\s*)(grizzly|pvapins|auto)\s*(#.*)?$",
+            rf"\g<1>{mode}\g<3>",
+            body,
+            count=1,
+        )
+        if n == 0:
+            new_body = f"  provider: {mode}\n" + body
+        new_text = text[: m.start()] + head + new_body + text[m.end() :]
+    else:
+        sep = "" if text.endswith("\n") or not text else "\n"
+        new_text = text + f"{sep}sms:\n  provider: {mode}\n"
     try:
         cfg_path.write_text(new_text, encoding="utf-8")
         return True
@@ -15419,7 +15419,8 @@ def _cycle_sms_provider() -> str:
     except ValueError:
         idx = -1
     nxt = _SMS_PROVIDER_ORDER[(idx + 1) % len(_SMS_PROVIDER_ORDER)]
-    _set_sms_provider(nxt)
+    if not _set_sms_provider(nxt):
+        return cur
     return nxt
 
 
