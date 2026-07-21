@@ -31,10 +31,17 @@ class GrizzlySMSClient:
     STATUS_CANCEL   = -1  # отмена
 
     def __init__(self, api_key: str, http_timeout: int = 30) -> None:
-        self.api_key = api_key
+        self.api_key = api_key.strip()
+        if not self.api_key or self.api_key.upper().startswith(("YOUR_", "ВАШ_")):
+            raise ValueError("Не задан API-ключ GrizzlySMS")
         # Один persistent client на весь сеанс — повторное использование TCP-соединений
         self._client = httpx.AsyncClient(
-            timeout=http_timeout,
+            timeout=httpx.Timeout(
+                connect=min(10.0, http_timeout),
+                read=float(http_timeout),
+                write=min(10.0, http_timeout),
+                pool=5.0,
+            ),
             headers={"Accept": "text/plain"},
             follow_redirects=True,
             trust_env=False,
@@ -306,7 +313,7 @@ class GrizzlySMSClient:
 
         for attempt in range(1, retries + 1):
             raw = await self._get(params)
-            logger.debug(f"getNumber ответ: {raw[:200]}")
+            logger.debug(f"getNumber ответ: {raw.split(':', 1)[0][:40]}")
 
             # Успех — JSON ответ
             try:
@@ -407,7 +414,7 @@ class GrizzlySMSClient:
             status = await self.get_status(activation_id)
 
             if status["type"] == "OK":
-                logger.success(f"SMS получена! Код: {status['code']}")
+                logger.success("SMS получена")
                 return status["code"]
 
             if status["type"] == "CANCEL":

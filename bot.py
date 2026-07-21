@@ -122,8 +122,8 @@ def stop_tg_bot() -> None:
 
 
 def ensure_tg_bot(owner: str = "console") -> str:
-    """Запускает Telegram-бот (один экземпляр). Приоритет: app > console.
-    Возвращает: started | active | blocked_by_app | no_token."""
+    """Запускает Telegram-бот (один экземпляр в консоли).
+    Возвращает: started | active | no_token."""
     global _tg_thread, _tg_owner, _tg_status
     try:
         token = (_m("_read_secrets")().get("telegram") or {}).get("token", "").strip()
@@ -133,27 +133,17 @@ def ensure_tg_bot(owner: str = "console") -> str:
         _tg_status = "not_configured"
         return "no_token"
 
-    active = _m("active_host")()
-    if owner == "console" and active == "app":
-        _tg_status = "ok:app"
-        return "blocked_by_app"
-
     if _tg_thread and not _tg_thread.is_alive():
         _tg_thread = None
 
     if _tg_thread and _tg_thread.is_alive():
         return "active"
 
-    st = _m("_read_runtime_state")()
-    bot_pid = int(st.get("tg_bot_pid") or 0)
-    bot_owner = st.get("tg_bot_owner") or ""
-    if bot_pid and _m("_pid_alive")(bot_pid) and bot_owner and bot_owner != owner:
-        if owner == "console" and bot_owner == "app":
-            _tg_status = "ok:app"
-            return "blocked_by_app"
-
     _m("_patch_runtime_state")(tg_bot_owner=owner, tg_bot_pid=os.getpid())
     _tg_owner = owner
+    # «запускается…» — пока первый цикл getUpdates не подтвердит связь (иначе
+    # статус-строка показывала бы «не настроен», хотя бот подключается).
+    _tg_status = "starting"
     _tg_thread = threading.Thread(
         target=_menu_tg_bot_thread, daemon=True, name=f"tg-{owner}")
     _tg_thread.start()
@@ -190,7 +180,9 @@ def _menu_tg_bot_thread() -> None:
     try:
         _tg_cfg = (_m("_read_secrets")().get("telegram") or {})
         _server_mode = bool(_tg_cfg.get("server_mode", False))
+        _owner_chat_id = int(_tg_cfg.get("owner_chat_id") or 0)
     except Exception:
+        _owner_chat_id = 0
         pass
 
     _HEARTBEAT_FILE = Path(__file__).resolve().parent / "data" / "console_heartbeat.json"
@@ -240,12 +232,15 @@ def _menu_tg_bot_thread() -> None:
     # ═════════════════════════════════════════════════════════════════════════
     async def _poll():
         global _tg_status, _update_available, _update_commits, \
-               _update_checked, _notified_update_hashes
+               _update_checked, _notified_update_hashes, _ggsel_status
         api    = f"https://api.telegram.org/bot{token}"
         subs, cfg = _load_subs()
-        offset    = 0
+        offset_file = _HERE / "data" / "tg_offset.json"
+        try:
+            offset = int(json.loads(offset_file.read_text(encoding="utf-8")).get("offset", 0))
+        except Exception:
+            offset = 0
         cons_err  = 0
-        _first    = True
 
         # ── Состояние процесса ────────────────────────────────────────────────
         _proc    = [None]   # subprocess.Popen | None
@@ -2606,6 +2601,9 @@ def _menu_tg_bot_thread() -> None:
             cid  = int(cbq["message"]["chat"]["id"])
             mid  = cbq["message"]["message_id"]
             data = cbq.get("data", "")
+            if cid not in subs:
+                await _ack(qid, "Доступ запрещён")
+                return
 
             # noop ─────────────────────────────────────────────────────────────
             if data == "noop":
@@ -2638,9 +2636,8 @@ def _menu_tg_bot_thread() -> None:
                 await _ack(qid)
                 if _server_mode and not _is_console_running():
                     await _edit(cid, mid,
-                        "❌ *Хост не запущен*\n\n"
-                        "_Запустите_ `app.bat` _или_ `menu.bat` _локально._\n"
-                        "_Приоритет у десктоп-приложения._",
+                        "❌ *Консоль не запущена*\n\n"
+                        "_Запустите_ `menu.bat` _локально._",
                         {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "go:main"}]]})
                     return
                 await _edit(cid, mid, _launch_text(), _launch_kb())
@@ -3561,9 +3558,6 @@ def _menu_tg_bot_thread() -> None:
                 return
 
             if data == "update:pull":
-                if _first:
-                    await _ack(qid)
-                    return
                 await _ack(qid, "Применяю обновление...")
                 await _edit(cid, mid, "⏳ *Загружаю обновление...*", {"inline_keyboard": []})
                 try:
@@ -3625,9 +3619,6 @@ def _menu_tg_bot_thread() -> None:
                 return
 
             if data == "action:restart":
-                if _first:
-                    await _ack(qid)
-                    return
                 _tgt = _m("restart_target_label")()
                 await _ack(qid, f"Перезапускаю {_tgt}...")
                 result = f"⏳ *Перезапуск {_tgt}...*\n\n⚡ _Перезапускаю активный процесс..._"
@@ -4068,6 +4059,18 @@ def _menu_tg_bot_thread() -> None:
         async def _handle_msg(client, msg):
             cid  = int(msg["chat"]["id"])
             text = (msg.get("text") or "").strip()
+            is_new_owner = False
+            if cid not in subs:
+                if not subs and _owner_chat_id and cid == _owner_chat_id:
+                    subs.add(cid)
+                    _save_subs(subs, cfg)
+                    is_new_owner = True
+                else:
+                    await client.post(
+                        f"{api}/sendMessage",
+                        json={"chat_id": cid, "text": "⛔ Доступ к SubHub не разрешён."},
+                    )
+                    return
 
             # ── Гифт-карты: приём текста или файла (ДО OTP-перехвата, иначе
             #    цифры карт улетят в 3DS-OTP) ──────────────────────────────────
@@ -4325,10 +4328,7 @@ def _menu_tg_bot_thread() -> None:
                                                                     "callback_data": "sales:config"}]]})
                 return
 
-            is_new = cid not in subs
-            if is_new:
-                subs.add(cid)
-                _save_subs(subs, cfg)
+            is_new = is_new_owner
 
             tl = text.lower()
             if tl == "/start" or is_new:
@@ -4428,6 +4428,7 @@ def _menu_tg_bot_thread() -> None:
                 try:
                     _ggs_sec = (_m("_read_secrets")().get("ggsel") or {})
                     _wh_port = int(_ggs_sec.get("webhook_port") or 0)
+                    _wh_host = str(_ggs_sec.get("webhook_host") or "127.0.0.1")
                     if _wh_port:
                         _wh_handler = _ggsel_handler[0].make_webhook_handler(
                             _webhook_queue, _aio_web)
@@ -4436,9 +4437,11 @@ def _menu_tg_bot_thread() -> None:
                         _wh_app.router.add_post("/ggsel/notify", _wh_handler)
                         _webhook_runner[0] = _aio_web.AppRunner(_wh_app)
                         await _webhook_runner[0].setup()
-                        await _aio_web.TCPSite(_webhook_runner[0], "0.0.0.0", _wh_port).start()
-                except Exception:
-                    pass
+                        await _aio_web.TCPSite(
+                            _webhook_runner[0], _wh_host, _wh_port,
+                        ).start()
+                except Exception as exc:
+                    _ggsel_status = f"error:webhook {exc}"
 
             asyncio.ensure_future(_bg_update_loop())
 
@@ -4477,7 +4480,7 @@ def _menu_tg_bot_thread() -> None:
                     resp = await client.get(
                         f"{api}/getUpdates",
                         params={"offset": offset,
-                                "timeout": 0 if _first else 5,
+                                "timeout": 5,
                                 "allowed_updates": ["message", "callback_query"]},
                     )
                     cons_err = 0
@@ -4499,16 +4502,17 @@ def _menu_tg_bot_thread() -> None:
                     _tg_status = f"ok:{len(subs)}"
 
                     for upd in data.get("result", []):
-                        offset = upd["update_id"] + 1
                         cbq    = upd.get("callback_query")
                         if cbq:
                             await _handle_cbq(client, cbq)
-                            continue
-                        msg = upd.get("message") or upd.get("edited_message")
-                        if msg:
-                            await _handle_msg(client, msg)
-
-                    _first = False
+                        else:
+                            msg = upd.get("message") or upd.get("edited_message")
+                            if msg:
+                                await _handle_msg(client, msg)
+                        offset = upd["update_id"] + 1
+                        _m("_atomic_write_text")(
+                            offset_file, json.dumps({"offset": offset}),
+                        )
 
                     # Drain GGSell monitor queue → уведомляем о новых заказах/сообщениях
                     try:
@@ -4544,6 +4548,9 @@ def _menu_tg_bot_thread() -> None:
                     cons_err += 1
                     _tg_status = f"error:{exc}"
                     await asyncio.sleep(min(30, 3 * cons_err))
+
+            if _webhook_runner[0] is not None:
+                await _webhook_runner[0].cleanup()
 
     # Windows: принудительно ProactorEventLoop для subprocess в executor
     if sys.platform == "win32":

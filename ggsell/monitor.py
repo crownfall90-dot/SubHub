@@ -12,6 +12,7 @@ GGSell order monitor — следит за новыми заказами и до
 import asyncio
 import json
 import queue as _queue
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,14 @@ YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
 notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
 # Копия событий для десктопного GUI SubHub
 gui_notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+_STATE_LOCK = threading.RLock()
+
+
+def _atomic_json_write(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def emit_ggs_notify(item: dict) -> None:
@@ -185,16 +194,16 @@ def get_template(name: str) -> str:
 
 def save_template(name: str, text: str) -> None:
     """Сохранить шаблон в файл."""
-    _DATA.mkdir(parents=True, exist_ok=True)
-    try:
+    with _STATE_LOCK:
         try:
-            raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            raw = {}
-        raw[name] = text
-        _TEMPLATES_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+            try:
+                raw = json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+            raw[name] = text
+            _atomic_json_write(_TEMPLATES_FILE, raw)
+        except Exception as exc:
+            logger.warning(f"GGSell: не удалось сохранить шаблон {name}: {exc}")
 
 
 # ── Хранение обработанных заказов ────────────────────────────────────────────
@@ -215,18 +224,14 @@ def _load_seen_msgs() -> dict:
 
 
 def _save_seen_msgs(seen: dict) -> None:
-    _DATA.mkdir(parents=True, exist_ok=True)
-    _SEEN_MSGS_FILE.write_text(
-        json.dumps(seen, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    with _STATE_LOCK:
+        _atomic_json_write(_SEEN_MSGS_FILE, seen)
 
 
 def _save_processed(ids: Set[int]) -> None:
-    _DATA.mkdir(parents=True, exist_ok=True)
-    _ORDERS_FILE.write_text(
-        json.dumps({"processed": sorted(ids)}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with _STATE_LOCK:
+        ids = set(ids) | _load_processed()
+        _atomic_json_write(_ORDERS_FILE, {"processed": sorted(ids)})
 
 
 def _load_seen_reviews() -> Set[str]:
@@ -239,11 +244,8 @@ def _load_seen_reviews() -> Set[str]:
 
 
 def _save_seen_reviews(seen: Set[str]) -> None:
-    _DATA.mkdir(parents=True, exist_ok=True)
-    _SEEN_REVIEWS_FILE.write_text(
-        json.dumps({"seen": sorted(seen)}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with _STATE_LOCK:
+        _atomic_json_write(_SEEN_REVIEWS_FILE, {"seen": sorted(seen)})
 
 
 # ── Монитор ───────────────────────────────────────────────────────────────────
@@ -402,8 +404,10 @@ class GGSellMonitor:
                 msg_id = int(msg.get("id") or msg.get("message_id") or 0)
                 if msg_id <= last_id:
                     continue
-                # Диагностика: логируем КАЖДОЕ новое сообщение до фильтров
-                logger.debug(f"GGSell raw msg #{msg_id} в заказе #{id_i}: {msg}")
+                logger.debug(
+                    f"GGSell msg #{msg_id} в заказе #{id_i}: "
+                    f"поля={list(msg.keys())}"
+                )
                 # Системные сообщения поддержки GGSell — пропускаем.
                 # (По order_id НЕ фильтруем: у обычных сообщений его может не быть.)
                 if msg.get("system"):
@@ -673,10 +677,11 @@ def start_monitor(
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(_monitor_instance.run())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(f"GGSell монитор остановлен с ошибкой: {exc}")
         finally:
             try:
+                loop.run_until_complete(client.close())
                 pending = asyncio.all_tasks(loop)
                 for t in pending:
                     t.cancel()

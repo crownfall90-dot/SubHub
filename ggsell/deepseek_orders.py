@@ -44,6 +44,8 @@ STALE_RUN_SECONDS = 1800
 
 # Одновременно только одна оплата (одна карта, меньше сюрпризов)
 _pay_lock = asyncio.Lock()
+# Webhook и monitor могут одновременно увидеть один invoice.
+_order_claim_lock = asyncio.Lock()
 
 
 # ── Состояние ────────────────────────────────────────────────────────────────
@@ -51,15 +53,24 @@ _pay_lock = asyncio.Lock()
 def _load_state() -> dict:
     try:
         raw = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        changed = False
+        for item in raw.values():
+            if isinstance(item, dict) and item.pop("password", None) is not None:
+                changed = True
+        if changed:
+            _save_state(raw)
+        return raw
     except Exception:
         return {}
 
 
 def _save_state(state: dict) -> None:
     _DATA.mkdir(parents=True, exist_ok=True)
-    _STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = _STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_STATE_FILE)
 
 
 def has_pending(invoice_id: int) -> bool:
@@ -238,6 +249,19 @@ def _fmt_amount(amount: float) -> str:
 
 async def handle_new_order(client, invoice_id: int, order: dict) -> None:
     """Новый заказ DeepSeek: определить сумму и данные, при нехватке — спросить в чате."""
+    key = str(invoice_id)
+    async with _order_claim_lock:
+        state = _load_state()
+        if key in state:
+            logger.info(f"DeepSeek #{invoice_id}: повторная доставка заказа пропущена")
+            return
+        state[key] = {
+            "status": "new",
+            "created_ts": time.time(),
+            "product": _product_name(order)[:80],
+        }
+        _save_state(state)
+
     info_content, info_v2 = {}, {}
     try:
         info = await client.get_order_info(invoice_id)
@@ -253,15 +277,11 @@ async def handle_new_order(client, invoice_id: int, order: dict) -> None:
     email, password = _extract_creds(order, info_content, info_v2)
 
     state = _load_state()
-    st = {
-        "status": "new",
+    st = state[key]
+    st.update({
         "amount": amount,
         "email": email,
-        "password": password,
-        "created_ts": time.time(),
-        "product": _product_name(order)[:80],
-    }
-    state[str(invoice_id)] = st
+    })
 
     if amount is None or amount <= 0 or amount > MAX_AUTO_AMOUNT:
         st["status"] = "failed"
@@ -282,7 +302,7 @@ async def handle_new_order(client, invoice_id: int, order: dict) -> None:
 
     if email and password:
         _save_state(state)
-        await _start_topup(client, invoice_id)
+        await _start_topup(client, invoice_id, password)
         return
 
     # Данных нет — спрашиваем в чате
@@ -310,17 +330,15 @@ async def on_buyer_message(client, invoice_id: int, text: str) -> None:
     email, password = _parse_creds_from_message(text)
     if email:
         st["email"] = email
-        if password:
-            st["password"] = password
     elif st.get("email") and _looks_like_password(text):
-        st["password"] = str(text).strip()
+        password = str(text).strip()
 
-    if st.get("email") and st.get("password"):
+    if st.get("email") and password:
         _save_state(state)
-        await _start_topup(client, invoice_id)
+        await _start_topup(client, invoice_id, password)
         return
 
-    if st.get("email") and not st.get("password"):
+    if st.get("email"):
         if st["status"] != "waiting_password":
             st["status"] = "waiting_password"
             _save_state(state)
@@ -333,16 +351,14 @@ async def on_buyer_message(client, invoice_id: int, text: str) -> None:
     # ничего полезного в сообщении — молчим, покупатель может писать что угодно
 
 
-async def _start_topup(client, invoice_id: int) -> None:
+async def _start_topup(client, invoice_id: int, password: str) -> None:
     state = _load_state()
     st = state.get(str(invoice_id)) or {}
     amount = float(st.get("amount") or 0)
     email = str(st.get("email") or "")
-    password = str(st.get("password") or "")
 
     card = _pick_card()
     if card is None:
-        ...
         st["status"] = "failed"
         st["result"] = "Нет сохранённых карт"
         state[str(invoice_id)] = st
@@ -404,7 +420,6 @@ async def _start_topup(client, invoice_id: int) -> None:
     st["result"] = msg
     if login_failed:
         st["status"] = "waiting_creds"
-        st["password"] = ""
         state[str(invoice_id)] = st
         _save_state(state)
         try:
@@ -423,4 +438,4 @@ async def _start_topup(client, invoice_id: int) -> None:
             pass
         _notify(invoice_id,
                 f"❌ DeepSeek #{invoice_id}: пополнение не удалось — {msg}\n"
-                f"Данные для ручного запуска: `{email}` / `{password}` / ${amount:g}")
+                f"Ручная обработка: `{email}` / ${amount:g}")

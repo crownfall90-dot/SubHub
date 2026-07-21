@@ -346,9 +346,7 @@ _runtime_lock = threading.Lock()
 
 
 def _host_kind() -> str:
-    base = os.path.basename(sys.argv[0] or "").lower()
-    if base == "app.py" or any("app.py" in (a or "") for a in sys.argv):
-        return "app"
+    # Десктоп-приложение удалено — единственный хост теперь консоль.
     return "console"
 
 
@@ -411,15 +409,10 @@ def _read_host_heartbeat(host: str) -> dict:
 
 
 def active_host() -> str:
-    """Кто сейчас хост: app (приоритет) или console."""
+    """Кто сейчас хост. После удаления GUI остаётся только консоль."""
     now = time.time()
-    app_hb = _read_host_heartbeat("app")
     con_hb = _read_host_heartbeat("console")
-    app_ok = now - float(app_hb.get("ts") or 0) < 90
-    con_ok = now - float(con_hb.get("ts") or 0) < 90
-    if app_ok:
-        return "app"
-    if con_ok:
+    if now - float(con_hb.get("ts") or 0) < 90:
         return "console"
     return ""
 
@@ -438,38 +431,19 @@ def register_host_restart(callback) -> None:
 
 
 def restart_target_label() -> str:
-    h = active_host()
-    if h == "app":
-        return "приложение"
-    if h == "console":
-        return "консоль"
-    st = _read_runtime_state()
-    owner = st.get("tg_bot_owner") or st.get("host") or ""
-    if owner == "app":
-        return "приложение"
-    if owner == "console":
-        return "консоль"
-    return "процесс"
+    return "консоль"
 
 
 def request_host_restart(source: str = "telegram") -> str:
-    """Перезапускает активный хост: приложение (GUI) или консоль (menu.py)."""
+    """Перезапускает консоль (menu.py)."""
     global _shutting_down
-    host = active_host()
-    if not host:
-        st = _read_runtime_state()
-        host = st.get("tg_bot_owner") or st.get("host") or _host_kind()
-
+    host = active_host() or "console"
     _patch_runtime_state(restart_requested=True, restart_source=source, restart_host=host)
-
-    if host == "app" and _host_restart_cb is not None:
-        try:
-            _host_restart_cb()
-            return "app"
-        except Exception:
-            pass
-
     _shutting_down = True
+    with contextlib.suppress(Exception):
+        grizzly_mod = globals().get("_grizzly_module")
+        if grizzly_mod is not None:
+            grizzly_mod.cleanup_all_rentals_on_exit()
     os._exit(42)
     return "console"  # unreachable
 
@@ -566,13 +540,11 @@ _GH_REPO  = "SubHub"  # GitHub-репозиторий (OTA / raw master)
 # Файлы, которые скачиваются при «Обновить» в SubHub (коллеги получают то же через git pull)
 _UPDATE_FILES = [
     "README.md",
-    "menu.py", "bot.py", "main.py", "app.py",
-    "menu.bat", "app.bat", "app_launch.vbs", "create_shortcut.bat", "create_shortcut.vbs",
-    "grizzly_sms.py", "proxy.py", "grizzly.py", "deepseek.py", "requirements.txt", ".gitignore",
+    "menu.py", "bot.py", "main.py",
+    "menu.bat",
+    "grizzly_sms.py", "proxy.py", "grizzly.py", "bg_login.py", "deepseek.py", "requirements.txt", ".gitignore",
     "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
-    "assets/app.ico",
-    "assets/subhub_icon.png",
-    "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py", "ggsell/gui_orders.py",
+    "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py",
     "ggsell/monitor.py", "ggsell/deepseek_orders.py",
 ]
 
@@ -664,6 +636,7 @@ def _http_do_update() -> tuple[bool, str]:
         _here = Path(__file__).parent
         _FILES = list(_UPDATE_FILES)
         updated = []
+        failed = []
         for fname in _FILES:
             try:
                 url  = f"https://raw.githubusercontent.com/{owner}/{repo}/master/{fname}"
@@ -675,20 +648,19 @@ def _http_do_update() -> tuple[bool, str]:
                         if fname.endswith(".bat") else data)
                 if tgt.exists() and tgt.read_bytes() == save:
                     continue
-                tgt.write_bytes(save)
+                _atomic_write_bytes(tgt, save)
                 updated.append(fname)
-            except Exception:
-                pass
+            except Exception as exc:
+                failed.append(f"{fname}: {exc}")
+        if failed:
+            return False, "Не удалось обновить файлы:\n" + "\n".join(failed)
         # Обновляем локальный SHA чтобы следующий check показал 0 коммитов
         try:
             ref  = _j.loads(_gh_get(
                 f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/master", token))
             sha  = ref["object"]["sha"]
-            # Пишем в ._update_sha (ZIP-установки) и в .git если есть
-            (_here / "._update_sha").write_text(sha)
-            head = _here / ".git" / "refs" / "heads" / "master"
-            if head.exists():
-                head.write_text(sha + "\n")
+            # Не подменяем refs git вручную: HTTP OTA ведёт собственный SHA.
+            _atomic_write_text(_here / "._update_sha", sha)
         except Exception:
             pass
         _update_available = False
@@ -710,7 +682,6 @@ from proxy import _phone_from_path
 import grizzly as _grizzly_module
 from grizzly import (
     _get_bg_loop, _submit_bg_cancel, _submit_bg_login,
-    _bg_login_with_otp,
 )
 
 import bot as _bot_module
@@ -738,8 +709,10 @@ def pause(msg: str = "  Нажмите Enter для продолжения..."):
         pass
 
 
-def run(cmd: list[str], *, hidden: bool | None = None) -> int:
-    """Запускает команду. В GUI (pythonw / SubHub.exe) — без окна консоли."""
+def run(
+    cmd: list[str], *, hidden: bool | None = None, timeout: float | None = 300,
+) -> int:
+    """Запускает команду. Без консольного окна при запуске под pythonw."""
     import winproc
     kw: dict = {}
     use_hidden = winproc.is_gui_host() if hidden is None else hidden
@@ -748,7 +721,7 @@ def run(cmd: list[str], *, hidden: bool | None = None) -> int:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    proc = subprocess.run(cmd, **kw)
+    proc = subprocess.run(cmd, timeout=timeout, **kw)
     return proc.returncode
 
 
@@ -763,6 +736,18 @@ def _atomic_write_text(path, text: str) -> None:
         _f.write(text)
         _f.flush()
         os.fsync(_f.fileno())
+    os.replace(tmp, path)
+
+
+def _atomic_write_bytes(path, data: bytes) -> None:
+    """Атомарная запись бинарного OTA-файла рядом с целевым."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as file:
+        file.write(data)
+        file.flush()
+        os.fsync(file.fileno())
     os.replace(tmp, path)
 
 
@@ -6971,11 +6956,8 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
                 | getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
         proc = subprocess.Popen(args, creationflags=creationflags)
-        while proc.poll() is None:
-            try:
-                proc.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                pass
+        set_automation_proc(proc.pid, "login", "console")
+        proc.wait()
         code = proc.returncode
     except KeyboardInterrupt:
         print(f"\n\n{Y}  [!] Остановка по Ctrl+C...{RST}")
@@ -6992,6 +6974,8 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
     except Exception as exc:
         print(f"\n{R}  Ошибка запуска: {exc}{RST}")
         code = -1
+    finally:
+        clear_automation_proc()
 
     print()
     if code == 0:
@@ -8428,7 +8412,12 @@ def archive_record_file(record: dict) -> Path:
 
 
 def restore_archive_record(record: dict) -> tuple[bool, str]:
-    """Восстанавливает метаданные профиля в chrome_profiles_done/."""
+    """Восстанавливает метаданные профиля в chrome_profiles_done/.
+
+    Убирает метки использования (used_ts/used_str) — восстановленный профиль
+    снова «живой», а не архивный. Куки-сессия заливается отдельно
+    (_restore_profile_from_cookies) — тогда Chrome откроется уже залогиненным.
+    """
     phone = str(record.get("username", "?"))
     rec_path = archive_record_file(record)
     if (DONE_PROFILES_DIR / f"profile_{phone}").exists():
@@ -8440,9 +8429,10 @@ def restore_archive_record(record: dict) -> tuple[bool, str]:
     try:
         profile_dir = DONE_PROFILES_DIR / f"profile_{phone}"
         profile_dir.mkdir(parents=True, exist_ok=True)
+        meta = {k: v for k, v in record.items() if k not in ("used_ts", "used_str")}
         _atomic_write_text(
             profile_dir / ".profile_meta.json",
-            json.dumps(record, ensure_ascii=False, indent=2),
+            json.dumps(meta, ensure_ascii=False, indent=2),
         )
         rec_path.unlink()
         return True, f"Восстановлен → chrome_profiles_done/profile_{phone}"
@@ -11983,7 +11973,7 @@ async def _handle_paytm_currency_page(page) -> bool:
                 _3ds_otp = await _get_3ds_otp_from_telegram()
 
                 if _3ds_otp:
-                    print(f"  {G}✅ OTP из Telegram: {_3ds_otp} — ввожу автоматически{RST}")
+                    print(f"  {G}✅ OTP из Telegram получен — ввожу автоматически{RST}")
                     _otp_inp_sel = (
                         "input[name*='otp' i], input[name*='code' i], "
                         "input[placeholder*='otp' i], input[placeholder*='code' i], "
@@ -12594,7 +12584,7 @@ async def _handle_3ds_verification(page) -> bool:
             return "switch_card"
 
         if otp_code:
-            print(f"  3DS OTP из Telegram: {otp_code}")
+            print(f"  3DS OTP из Telegram: ***{otp_code[-2:]}")
 
             # OTP-поле уже найдено выше (_otp_frame_found / otp_inp)
             _otp_inp_all = otp_inp
@@ -12663,7 +12653,7 @@ async def _handle_3ds_verification(page) -> bool:
                     if _codes:
                         _nc = _codes.pop(0)
                         _OTP_FILE_3D.write_text(_json3d.dumps(_codes, ensure_ascii=False), encoding="utf-8")
-                        print(f"  {G}✅ OTP из Telegram: {_nc} — ввожу...{RST}")
+                        print(f"  {G}✅ OTP из Telegram получен — ввожу...{RST}")
                         _tg_send_direct(f"🔑 *OTP* `{_nc}` *— ввожу в форму...*")
                         for _frl in [page] + list(page.frames):
                             try:
@@ -12789,7 +12779,7 @@ async def _get_3ds_otp_from_telegram() -> str | None:
                 code = codes.pop(0)
                 # Обновляем файл (убираем использованный код)
                 _OTP_FILE.write_text(_json.dumps(codes, ensure_ascii=False), encoding="utf-8")
-                print(f"  3DS OTP получен: {code}")
+                print("  3DS OTP получен")
                 _tg_send_direct(f"🔑 *OTP получен:* `{code}` — ввожу на странице...")
                 return code
         except Exception:
@@ -17413,13 +17403,13 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                     if _est.get("type") == "OK" and _est.get("code"):
                                         _grizzly_module.mark_otp_received(e_id)
                                         if intercept_mode:
-                                            print(f"  {G}+91 {e_ph}: таймаут OTP={_est['code']} (перехват) → завершаю{RST}")
+                                            print(f"  {G}+91 {e_ph}: OTP на таймауте получен (перехват) → завершаю{RST}")
                                             await _send_tg_otp(e_ph, _est['code'], " (перехват)")
                                             try: await sms_client.complete(e_id)
                                             except Exception: pass
                                             _grizzly_module.mark_completed(e_id)
                                         else:
-                                            print(f"  {G}+91 {e_ph}: таймаут OTP={_est['code']} → фон{RST}")
+                                            print(f"  {G}+91 {e_ph}: OTP на таймауте получен → фон{RST}")
                                             _submit_bg_login(api_key, e_id, _est["code"], login_url, months,
                                                              phone_10=e_ph)
                                             _grizzly_module.mark_completed(e_id)
@@ -17476,7 +17466,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 _grizzly_module.mark_otp_received(a_id)
                                 win_id, win_ph, win_page = a_id, a_ph, a_pg
                                 win_ctx = next((e[4] for e in _active if e[0] == a_id), None)
-                                print(f"  {G}OTP для +91 {a_ph}: {otp_code}{RST}")
+                                print(f"  {G}OTP для +91 {a_ph}: ***{otp_code[-2:]}{RST}")
                                 await _send_tg_otp(a_ph, otp_code)
                             elif rtype == "CANCEL":
                                 print(f"  {DIM}+91 {a_ph}: отменён GrizzlySMS{RST}")
@@ -17509,7 +17499,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                         if _lst.get("type") == "OK" and _lst.get("code"):
                                             has_otp = True
                                             if intercept_mode:
-                                                print(f"  {G}[BG] +91 {o_ph} OTP={_lst['code']} (перехват) → завершаю{RST}")
+                                                print(f"  {G}[BG] +91 {o_ph}: OTP получен (перехват) → завершаю{RST}")
                                                 await _send_tg_otp(o_ph, _lst['code'], " (перехват)")
                                                 try: await sms_client.complete(o_id)
                                                 except Exception: pass
@@ -17517,7 +17507,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                                 _loser_login_ok = True
                                             else:
                                                 _loser_otp = _lst["code"]
-                                                print(f"  {G}[BG] +91 {o_ph}: OTP {_loser_otp} — вхожу{RST}")
+                                                print(f"  {G}[BG] +91 {o_ph}: OTP получен — вхожу{RST}")
                                                 try:
                                                     _loser_login_ok = await _enter_otp_on_page(
                                                         o_pg, _loser_otp, timeout_redirect=22.0)
@@ -17599,13 +17589,13 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                     _fin_otp = True
                                     _grizzly_module.mark_otp_received(o_id)
                                     if intercept_mode:
-                                        print(f"  {G}+91 {o_ph}: финал OTP={_fst['code']} (перехват) → завершаю{RST}")
+                                        print(f"  {G}+91 {o_ph}: финальный OTP получен (перехват) → завершаю{RST}")
                                         await _send_tg_otp(o_ph, _fst['code'], " (перехват)")
                                         try: await sms_client.complete(o_id)
                                         except Exception: pass
                                         _grizzly_module.mark_completed(o_id)
                                     else:
-                                        print(f"  {G}+91 {o_ph}: финал OTP={_fst['code']} → фон{RST}")
+                                        print(f"  {G}+91 {o_ph}: финальный OTP получен → фон{RST}")
                                         _submit_bg_login(api_key, o_id, _fst["code"], login_url, months, phone_10=o_ph)
                                         _grizzly_module.mark_completed(o_id)
                             except Exception: pass
@@ -17672,7 +17662,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
                 if intercept_mode:
                     # В режиме перехвата (Подбор аккаунта TG)
-                    print(f"  {G}✔ OTP получен для +91 {phone_10}: {otp_code} (отправлено в TG){RST}")
+                    print(f"  {G}✔ OTP получен для +91 {phone_10} (отправлено в TG){RST}")
                     try:
                         await sms_client.complete(phone_id)
                     except Exception:
@@ -17707,7 +17697,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     ctx = win_ctx
 
                 # ── 3c. Вводим OTP и завершаем вход ──────────────────────────
-                print(f"  {DIM}Ввожу OTP {otp_code} для +91 {phone_10}...{RST}")
+                print(f"  {DIM}Ввожу OTP для +91 {phone_10}...{RST}")
                 _login_ok = await _enter_otp_on_page(page, otp_code)
 
                 if not _login_ok:
@@ -18320,11 +18310,11 @@ def screen_logs():
         pause()
         return
 
-    # Показываем последние 60 строк
+    # Показываем последние 250 строк
     cls()
-    header("ЛОГИ  (последние 60 строк)", B)
+    header("ЛОГИ  (последние 250 строк)", B)
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    recent = lines[-60:]
+    recent = lines[-250:]
 
     for line in recent:
         # Окрашиваем по уровню
@@ -18357,8 +18347,17 @@ _DEPS_OK_MARKER = Path(__file__).parent / "data" / "deps_ok.json"
 
 
 def _chromium_ok(fast: bool = True) -> bool:
-    """Проверка Chromium. fast=True — по кэшу пути exe, без запуска драйвера
-    Playwright (node-процесс, 1–3 с на каждый старт приложения)."""
+    """Проверка браузера для автоматизации.
+
+    Приложение запускает Playwright с channel="chrome" — то есть на обычном
+    Google Chrome. Если Chrome установлен, бандл-Chromium от Playwright скачивать
+    не нужно (иначе стартовая проверка каждый раз тянула бы ~150 МБ и вешала старт).
+    fast=True — быстрый путь по кэшу пути exe, без запуска node-драйвера Playwright.
+    """
+    # Google Chrome достаточно — этого хватает для channel="chrome"
+    with contextlib.suppress(Exception):
+        if _find_chrome():
+            return True
     if fast:
         with contextlib.suppress(Exception):
             import playwright as _pwpkg
@@ -18391,7 +18390,6 @@ def _deps_ok_full() -> bool:
     """Все пакеты из requirements.txt + Chromium."""
     try:
         import httpx, loguru, yaml  # noqa: F401
-        import customtkinter, pystray  # noqa: F401
         from PIL import Image  # noqa: F401
         import openpyxl  # noqa: F401
         import playwright  # noqa: F401
@@ -19401,8 +19399,7 @@ def _init_secrets() -> None:
     """secrets.yaml — единственный источник API-ключей.
 
     При первом запуске извлекает ключи из config.yaml в secrets.yaml.
-    При каждом запуске подставляет ключи из secrets.yaml в config.yaml,
-    чтобы даже после пересоздания config.yaml ключи восстановились.
+    После миграции config.yaml больше не содержит секреты.
     """
     import yaml as _yaml
 
@@ -19416,6 +19413,8 @@ def _init_secrets() -> None:
         ("grizzlysms", "api_key"),
         ("telegram", "token"),
         ("proxy6", "api_key"),
+        ("github", "token"),
+        ("ggsel", "api_key"),
     ]
     _PLACEHOLDERS = {
         "", "YOUR_GRIZZLYSMS_API_KEY", "YOUR_TELEGRAM_BOT_TOKEN",
@@ -19426,7 +19425,11 @@ def _init_secrets() -> None:
         if val is None:
             return False
         s = str(val).strip()
-        return bool(s) and s not in _PLACEHOLDERS
+        return (
+            bool(s)
+            and not s.upper().startswith(("YOUR_", "ВАШ_"))
+            and s not in _PLACEHOLDERS
+        )
 
     if not cfg_path.exists() and example_path.exists():
         shutil.copy(example_path, cfg_path)
@@ -19477,6 +19480,39 @@ def _init_secrets() -> None:
             except Exception: pass
             print(f"  {Y}[Секреты] Не удалось обновить secrets.yaml: {_we}{RST}")
 
+    # После успешной миграции удаляем секреты из legacy config.yaml.
+    try:
+        with open(secrets_path, encoding="utf-8") as f:
+            _disk_secrets = _yaml.safe_load(f) or {}
+    except Exception:
+        _disk_secrets = {}
+    _cfg_changed = False
+    for section, key in _SECRET_KEYS:
+        section_data = cfg.get(section)
+        cfg_value = section_data.get(key) if isinstance(section_data, dict) else None
+        disk_value = (_disk_secrets.get(section) or {}).get(key)
+        if (
+            isinstance(section_data, dict)
+            and key in section_data
+            and (not _real(cfg_value) or _real(disk_value))
+        ):
+            section_data.pop(key, None)
+            if not section_data:
+                cfg.pop(section, None)
+            _cfg_changed = True
+    if _cfg_changed:
+        _tmp_c = cfg_path.with_suffix(".yaml.tmp")
+        try:
+            with open(_tmp_c, "w", encoding="utf-8") as f:
+                _yaml.dump(cfg, f, allow_unicode=True,
+                           default_flow_style=False, sort_keys=False)
+            _tmp_c.replace(cfg_path)
+            print(f"  {G}[Секреты] Ключи удалены из config.yaml после миграции.{RST}")
+        except Exception as _we:
+            with contextlib.suppress(Exception):
+                _tmp_c.unlink(missing_ok=True)
+            print(f"  {Y}[Секреты] Не удалось очистить config.yaml: {_we}{RST}")
+
     # Кэшируем secrets в глобальной переменной — единственный источник ключей
     global _SECRETS
     _SECRETS = secrets
@@ -19495,7 +19531,11 @@ def _check_setup() -> None:
         if val is None:
             return False
         s = str(val).strip()
-        return bool(s) and not s.upper().startswith("YOUR_") and s not in {"", "null", "~"}
+        return (
+            bool(s)
+            and not s.upper().startswith(("YOUR_", "ВАШ_"))
+            and s not in {"", "null", "~"}
+        )
 
     secrets: dict = {}
     if secrets_path.exists():
@@ -20034,10 +20074,8 @@ if __name__ == "__main__":
                     _ggsel_start(_gs_key, _gs_sid)
                 except Exception as _e:
                     pass  # GGSell не обязателен
-                # TG-бот: консоль стартует только если приложение не запущено
+                # TG-бот запускается вместе с консолью
                 _tg_started = ensure_tg_bot("console")
-                if _tg_started == "blocked_by_app":
-                    print(f"  {DIM}Telegram-бот работает в десктоп-приложении (app.bat){RST}")
                 # Фоновая проверка обновлений (один раз при старте)
                 threading.Thread(target=_check_updates_bg, daemon=True, name="update-check").start()
                 screen_install(auto=True)

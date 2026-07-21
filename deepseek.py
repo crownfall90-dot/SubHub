@@ -900,7 +900,6 @@ async def topup(email: str, password: str, amount: float, card: dict,
                 "--disable-notifications",
             ],
             "locale": "en-US",
-            "ignore_https_errors": True,
         }
         if headless:
             kw["viewport"] = {"width": 1440, "height": 900}

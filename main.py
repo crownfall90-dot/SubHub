@@ -61,7 +61,9 @@ def _load_stats() -> dict:
 
 def _save_stats(s: dict) -> None:
     try:
-        STATS_FILE.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = STATS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(STATS_FILE)
     except Exception:
         pass
 
@@ -1017,7 +1019,7 @@ class LoginAutomation:
                 recovery_tab = await self._ready_login_page(recovery_context)
                 logger.info(f"[{index}] Восстановление: фаза 1 для +{short_phone} в новом профиле")
                 if await self._login_phase1(recovery_tab, phone, index):
-                    logger.info(f"[{index}] Восстановление: фаза 2 — ввожу код {code}")
+                    logger.info(f"[{index}] Восстановление: фаза 2 — ввожу OTP")
                     phase2 = await self._login_phase2(recovery_tab, code, index, phone=short_phone)
                     if phase2:
                         winning_tab = recovery_tab
@@ -1061,7 +1063,6 @@ class LoginAutomation:
 
             self.profile_manager.write_meta(
                 done_path, phone,
-                otp_code=code,
                 site_url=self.config.site_url.split("?")[0],
             )
             self._all_pending.pop(act_id, None)
@@ -1157,7 +1158,7 @@ class LoginAutomation:
                 stype = status["type"]
                 logger.debug(f"Monitor [{activation_id}] #{polls}: {stype}")
                 if stype == "OK":
-                    logger.success(f"Monitor [{activation_id}] КОД: {status['code']}")
+                    logger.success(f"Monitor [{activation_id}] код получен")
                     await queue.put((activation_id, phone, status["code"]))
                     return
                 if stype in ("CANCEL", "UNKNOWN"):
@@ -1250,7 +1251,7 @@ class LoginAutomation:
         logger.success(f"[{index}] ╔═════════════════════════════════════════")
         logger.success(f"[{index}] ║  SMS ПОЛУЧЕНА!")
         logger.success(f"[{index}] ║  НОМЕР : +{phone}")
-        logger.success(f"[{index}] ║  КОД   : {code}")
+        logger.success(f"[{index}] ║  КОД   : ***{code[-2:]}")
         logger.success(f"[{index}] ╚═════════════════════════════════════════")
 
     async def _get_balance(self) -> Optional[float]:
@@ -1343,7 +1344,7 @@ class LoginAutomation:
                 if status["type"] == "OK":
                     code = status["code"]
                     _update_stat("otp_received", delta=1)
-                    logger.info(f"[{index}] [фон] OTP +{short_phone}: {code}")
+                    logger.info(f"[{index}] [фон] OTP для +{short_phone} получен")
                     if self.tg_client:
                         asyncio.create_task(self.tg_client.notify_filtered(
                             f"📨 [Фон] Код для `+91{short_phone}`: `{code}`\n"
@@ -1982,11 +1983,9 @@ class LoginAutomation:
                 """, otp_info["boxes"])
 
             if otp_code not in combined:
-                logger.warning(
-                    f"[{index}] Split OTP: собрано '{combined}', ожидали '{otp_code}'"
-                )
+                logger.warning(f"[{index}] Split OTP введён не полностью")
             else:
-                logger.info(f"[{index}] Split OTP '{combined}' введён для +{phone}")
+                logger.info(f"[{index}] Split OTP введён для +{phone}")
         else:
             # Одиночное поле
             await self._human_move_click(page, otp_info["x"], otp_info["y"])
@@ -2006,7 +2005,7 @@ class LoginAutomation:
                 }
             """, [otp_info["x"], otp_info["y"]])
             if otp_code not in actual:
-                logger.warning(f"[{index}] В поле '{actual}' — ожидали '{otp_code}', пробую fill...")
+                logger.warning(f"[{index}] OTP не совпал с ожидаемым, пробую fill...")
                 await page.evaluate("""
                     ([x, y, val]) => {
                         const el = document.elementFromPoint(x, y);
@@ -2019,7 +2018,7 @@ class LoginAutomation:
                     }
                 """, [otp_info["x"], otp_info["y"], otp_code])
                 await asyncio.sleep(0.1)
-            logger.info(f"[{index}] OTP '{otp_code}' введён в поле для +{phone}")
+            logger.info(f"[{index}] OTP введён в поле для +{phone}")
         await asyncio.sleep(0.2)
 
         # Отправляем Enter
@@ -2623,7 +2622,7 @@ class LoginAutomation:
             if not otp_code:
                 logger.error(f"[{index}] SMS не получена для {username}")
                 return False
-            logger.info(f"[{index}] Получен OTP: {otp_code}")
+            logger.info(f"[{index}] Получен OTP: ***{otp_code[-2:]}")
 
         else:
             logger.error(f"[{index}] Неизвестный режим OTP: {mode}")
@@ -2987,6 +2986,10 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 await asyncio.get_running_loop().run_in_executor(None, input)
     finally:
         kb_stop.set()
+
+        for context in list(getattr(automation, "_kept_contexts", []) if automation else []):
+            with contextlib.suppress(Exception):
+                await context.close()
 
         # Гарантированная отмена всех купленных номеров, по которым нет успешного входа.
         # Это страховка: _run_auto.finally уже пытается отменить через to_cancel,

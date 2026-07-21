@@ -3136,26 +3136,49 @@ class GGSellBotHandler:
                     logger.warning("GGSell webhook rejected: {}", _err)
                     return aio_web.Response(text="Forbidden", status=403)
 
-                # Добавляем в processed чтобы монитор не продублировал
-                try:
-                    from ggsell.monitor import _load_processed, _save_processed
-                    _proc_set = _load_processed()
-                    if invoice_id not in _proc_set:
-                        _proc_set.add(invoice_id)
-                        _save_processed(_proc_set)
-                except Exception:
-                    pass
-
-                order = {
+                cli = handler.get_client()
+                if cli is None:
+                    return aio_web.Response(text="Service Unavailable", status=503)
+                info = await cli.get_order_info(invoice_id)
+                info_v2 = await cli.get_order_info_v2(invoice_id)
+                order = dict((info.get("content") if isinstance(info, dict) else {}) or {})
+                order.update({
                     "invoice_id": invoice_id,
-                    "id":         invoice_id,
-                    "product":    {"id": product_id, "name": "YouTube Premium"},
-                    "sum_t":      amount,
-                    "email":      email,
-                    "date":       date_s,
-                    "buyer":      {"email": email},
-                    "currency":   currency,
-                }
+                    "id": invoice_id,
+                    "product_id": product_id,
+                    "sum_t": amount,
+                    "email": email,
+                    "date": date_s,
+                    "buyer": {"email": email},
+                    "currency": currency,
+                })
+                product_name = str(
+                    info_v2.get("product_name")
+                    or info_v2.get("name")
+                    or info_v2.get("title")
+                    or order.get("product_name")
+                    or order.get("name")
+                    or ""
+                )
+                product = order.get("product")
+                if not isinstance(product, dict):
+                    product = {"id": product_id, "name": product_name}
+                    order["product"] = product
+                else:
+                    product.setdefault("id", product_id)
+                    product.setdefault("name", product_name)
+
+                from ggsell import deepseek_orders as _ds
+                if _ds.is_deepseek_order(order):
+                    await _ds.handle_new_order(cli, invoice_id, order)
+
+                # Помечаем обработанным только после успешной маршрутизации.
+                from ggsell.monitor import _load_processed, _save_processed
+                _proc_set = _load_processed()
+                if invoice_id not in _proc_set:
+                    _proc_set.add(invoice_id)
+                    _save_processed(_proc_set)
+
                 webhook_queue.put_nowait({
                     "type":        "new_order",
                     "invoice_id":  invoice_id,

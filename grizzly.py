@@ -95,7 +95,6 @@ _STATS: dict = {
     "balance_end":       None,
     "profiles_saved":    0,
 }
-
 def reset_run_stats() -> None:
     _STATS["numbers_bought"]    = 0
     _STATS["numbers_cancelled"] = 0
@@ -682,7 +681,7 @@ async def _rental_monitor_loop():
                                 otp = st["code"]
                                 if aid not in _RENTALS:
                                     continue
-                                print(f"\n  {_G}📲 OTP для +91 {r['phone_10']}: {otp} — вход в фоне...{_RST}")
+                                print(f"\n  {_G}📲 OTP для +91 {r['phone_10']} получен — вход в фоне...{_RST}")
                                 login_url = ""
                                 months = 3
                                 try:
@@ -768,7 +767,7 @@ async def _cancel_rental_task(aid):
                     mark_completed(aid)  # добавляет в _COMPLETED_IDS, не даёт сканеру переподхватить
                     await client.close()
                     return
-                print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} пришёл в последний момент: {otp}. Вход...{_RST}")
+                print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} пришёл в последний момент. Вход...{_RST}")
                 login_url = ""
                 months = 3
                 try:
@@ -870,7 +869,7 @@ async def _tg_login_fail_notify(phone_10: str, otp_code: str, error_msg: str) ->
         _msg = (
             f"⚠️ *Ошибка фонового входа*\n\n"
             f"📞 Номер: `{phone_10}`\n"
-            f"🔑 OTP: `{otp_code}`\n"
+            f"🔑 OTP: `***{otp_code[-2:]}`\n"
             f"📝 Статус: _{error_msg}_"
         )
         async with _hx_c.AsyncClient(timeout=8, trust_env=False) as _hcn:
@@ -909,88 +908,8 @@ async def _tg_login_ok_notify(phone_10: str) -> None:
 
 
 async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = "") -> None:
-    """Отправляет куки из фонового контекста в Telegram (файл и текст)."""
-    try:
-        import json as _jo, io, httpx as _hx
-        _tok = _get_telegram_token_standalone()
-        _nc = _get_tg_subscribers_standalone()
-        if not _tok or not _nc:
-            return
-
-        raw = await ctx2.cookies()
-        if not raw:
-            return
-
-        ss_map = {"Lax": "lax", "Strict": "strict", "None": "no_restriction", "": "no_restriction"}
-        allowed_names = {"T", "ULSN", "at", "rt", "vd", "ud", "S", "SN"}
-        all_fk = [c for c in raw if "flipkart.com" in (c.get("domain") or "").lower() and c.get("name") in allowed_names]
-        if not all_fk:
-            return
-
-        cookies_out = [
-            {
-                "name":           c["name"],
-                "value":          c["value"],
-                "domain":         c.get("domain", ".flipkart.com"),
-                "path":           c.get("path", "/"),
-                "secure":         bool(c.get("secure", True)),
-                "httpOnly":       bool(c.get("httpOnly", False)),
-                "expirationDate": c.get("expires", -1),
-                "sameSite":       ss_map.get(c.get("sameSite") or "", "no_restriction"),
-            }
-            for c in all_fk
-        ]
-
-        cookies_json = _jo.dumps(cookies_out, ensure_ascii=False, indent=2)
-        cookies_json_compact = _jo.dumps(cookies_out, ensure_ascii=False, separators=(",", ":"))
-
-        # Локальный бэкап куков на диск
-        try:
-            _bk_dir = Path("cookies_backup")
-            _bk_dir.mkdir(exist_ok=True)
-            _bk_name = f"cookies_{phone_10}.json"
-            (_bk_dir / _bk_name).write_text(cookies_json, encoding="utf-8")
-        except Exception:
-            pass
-
-        otp_line = f"\n🔑 OTP: <code>{otp_code}</code>" if otp_code else ""
-        label_phone = phone_10
-        phone_code = f"<code>{label_phone}</code>"
-        caption = f"🍪 Файл кук <code>{label_phone}</code> (фон){otp_line} ({len(cookies_out)} шт.)"
-        fname = f"cookies_{phone_10}.json"
-
-        def escape_html(t: str) -> str:
-            return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        safe_json = escape_html(cookies_json_compact)
-        MAX_CHUNK = 4000
-        json_chunks = [safe_json[i:i+MAX_CHUNK] for i in range(0, len(safe_json), MAX_CHUNK)]
-
-        async with _hx.AsyncClient(timeout=15, trust_env=False) as _client:
-            for _chat in _nc:
-                try:
-                    # 1. Отправка файла
-                    await _client.post(
-                        f"https://api.telegram.org/bot{_tok}/sendDocument",
-                        data={"chat_id": str(_chat), "caption": caption, "parse_mode": "HTML"},
-                        files={"document": (fname, io.BytesIO(cookies_json.encode("utf-8")), "application/json")}
-                    )
-
-                    # 2. Отправка JSON кук текстом
-                    for i, chunk in enumerate(json_chunks):
-                        otp_header = f"🔑 OTP: <code>{otp_code}</code>\n" if (otp_code and i == 0) else ""
-                        header = f"Куки {label_phone} (фон) ({len(cookies_out)} шт.)"
-                        if len(json_chunks) > 1:
-                            header += f" (часть {i+1}/{len(json_chunks)})"
-                        msg = f"{otp_header}<b>{header}:</b>\n<pre><code class=\"language-json\">{chunk}</code></pre>"
-                        await _client.post(
-                            f"https://api.telegram.org/bot{_tok}/sendMessage",
-                            json={"chat_id": _chat, "text": msg, "parse_mode": "HTML"}
-                        )
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    """Deprecated: cookie export now runs in bg_login.py."""
+    return None
 
 
 def _submit_bg_cancel(activation_ids: list, api_key: str,
@@ -1006,11 +925,16 @@ def _submit_bg_cancel(activation_ids: list, api_key: str,
 def _submit_bg_login(api_key: str, activation_id: str, otp_code: str,
                      login_url: str, months: int, phone_10: str = "") -> None:
     """Fire-and-forget: фоновый вход на _BG_LOOP (переживает asyncio.run() exit)."""
-    fut = asyncio.run_coroutine_threadsafe(
-        _bg_login_with_otp(api_key, activation_id, otp_code, login_url, months, phone_10),
+    if str(activation_id) in _COMPLETED_IDS:
+        return
+    _BG_FUTURES[:] = [item for item in _BG_FUTURES if not item.done()]
+    from bg_login import submit_bg_login
+    fut = submit_bg_login(
+        api_key, activation_id, otp_code, login_url, months, phone_10,
         _get_bg_loop(),
     )
-    _BG_FUTURES.append(fut)
+    if fut is not None:
+        _BG_FUTURES.append(fut)
 
 
 def cleanup_all_rentals_on_exit():
@@ -1094,13 +1018,11 @@ def cleanup_all_rentals_on_exit():
                     try:
                         _st = await client.get_status(aid)
                         if _st.get("type") == "OK" and _st.get("code"):
-                            print(f"  {_G}[Выход✓] Код {_st['code']} обнаружен — вход в фоне{_RST}")
-                            fut = asyncio.run_coroutine_threadsafe(
-                                _bg_login_with_otp(api_key, aid, _st["code"],
-                                                   r.get("login_url", ""), r.get("months", 3), r["phone_10"]),
-                                _get_bg_loop(),
+                            print(f"  {_G}[Выход✓] Код обнаружен — вход в фоне{_RST}")
+                            _submit_bg_login(
+                                api_key, aid, _st["code"], r.get("login_url", ""),
+                                r.get("months", 3), r["phone_10"],
                             )
-                            _BG_FUTURES.append(fut)
                             r["status"] = "completed"
                             _RENTALS.pop(aid, None)
                             continue
@@ -1137,295 +1059,5 @@ def cleanup_all_rentals_on_exit():
 
 async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                               login_url: str, months: int, phone_10: str = "") -> None:
-    """
-    Фоновый вход в Flipkart с OTP «проигравшего» номера.
-    Создаёт отдельный браузер (headless), выполняет вход, сохраняет профиль.
-    Использует динамический import menu только для функций Playwright (безопасно,
-    т.к. к моменту вызова menu уже полностью импортирован).
-    """
-    import importlib
-    _menu = importlib.import_module("menu")
-
-    from playwright.async_api import async_playwright
-    from grizzly_sms import GrizzlySMSClient
-    import random as _rbg
-
-    DONE_PROFILES_DIR        = _menu.DONE_PROFILES_DIR
-    _pre_inject_chrome_prefs = _menu._pre_inject_chrome_prefs
-    _browser_launch_kw       = _menu._browser_launch_kw
-    _flipkart_phase1         = _menu._flipkart_phase1
-    _OTP_SEL                 = _menu._OTP_SEL
-
-    client = GrizzlySMSClient(api_key, http_timeout=15)
-    _bg_del_profile = False
-    ctx2 = None
-    profile_path = None
-    pw = await async_playwright().start()
-    try:
-        try:
-            # Если phone_10 не передан — ищем через активные активации
-            if not phone_10:
-                try:
-                    acts = await client.get_active_activations()
-                    for a in acts:
-                        aid_s = str(a.get("activationId") or a.get("id") or "")
-                        if aid_s == str(activation_id):
-                            raw_ph = str(a.get("phoneNumber") or a.get("phone") or "")
-                            raw_ph = raw_ph.lstrip("+")
-                            if raw_ph.startswith("91") and len(raw_ph) > 10:
-                                raw_ph = raw_ph[2:]
-                            phone_10 = raw_ph[-10:]
-                            break
-                except Exception:
-                    pass
-
-            if not phone_10:
-                print(f"  [BG] Не удалось определить номер для id={activation_id}")
-                return
-
-            profile_path = DONE_PROFILES_DIR / f"profile_{phone_10}"
-            if profile_path.exists():
-                print(f"  [BG] Профиль +91 {phone_10} уже существует, пропускаю")
-                try:
-                    await client.complete(activation_id)
-                except Exception:
-                    pass
-                mark_completed(activation_id)
-                try:
-                    await pw.stop()
-                except Exception:
-                    pass
-                return
-            # Также проверяем профили с другим форматом имени (напр. profile_0004_919850389594)
-            try:
-                phone_variants = (phone_10, "91" + phone_10)
-                if any(
-                    any(v in p.name for v in phone_variants)
-                    for p in DONE_PROFILES_DIR.iterdir() if p.is_dir()
-                ):
-                    print(f"  [BG] Профиль +91 {phone_10} уже существует (другое имя), пропускаю")
-                    try:
-                        await client.complete(activation_id)
-                    except Exception:
-                        pass
-                    mark_completed(activation_id)
-                    try:
-                        await pw.stop()
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
-
-            profile_path.mkdir(parents=True, exist_ok=True)
-            _pre_inject_chrome_prefs(profile_path)
-
-            ctx2 = await pw.chromium.launch_persistent_context(
-                str(profile_path.resolve()),
-                **_browser_launch_kw(headless=True, phone=phone_10,
-                                     profile_path=profile_path)
-            )
-            page2 = ctx2.pages[0] if ctx2.pages else await ctx2.new_page()
-            r2 = await _flipkart_phase1(page2, login_url, phone_10)
-            if r2 != "ok":
-                print(f"  [BG] Фаза1 не прошла: {r2}")
-                await _tg_login_fail_notify(phone_10, otp_code, f"Фаза 1 не прошла (ввод номера): {r2}")
-                _bg_del_profile = True
-                return
-
-            # Вводим OTP (посимвольно — триггерит React onChange)
-            # GrizzlySMS не отдаёт новый код после статуса OK, поэтому используем
-            # исходный OTP — он ещё действителен сразу после Phase 1.
-            print(f"  [BG] +91 {phone_10}: OTP {otp_code} — ввожу")
-            otp_el = page2.locator(_OTP_SEL).first
-            _auto_submitted = False
-            try:
-                await otp_el.wait_for(state="visible", timeout=15_000)
-                _bb_e = await otp_el.bounding_box()
-                if _bb_e:
-                    await page2.mouse.click(_bb_e["x"] + _bb_e["width"] / 2,
-                                            _bb_e["y"] + _bb_e["height"] / 2)
-                else:
-                    await otp_el.click()
-                await page2.wait_for_timeout(150)
-                await page2.keyboard.press("Control+a")
-                await page2.keyboard.press("Delete")
-                for ch in otp_code:
-                    await page2.keyboard.type(ch)
-                    await asyncio.sleep(_rbg.uniform(0.05, 0.10))
-                    try:
-                        if "login" not in page2.url.lower():
-                            _auto_submitted = True
-                            break
-                    except Exception:
-                        _auto_submitted = True
-                        break
-                await page2.wait_for_timeout(400)
-            except Exception as e:
-                print(f"  [BG] Ошибка ввода OTP: {e}. Fallback keyboard...")
-                try:
-                    await page2.keyboard.type(otp_code, delay=80)
-                except Exception:
-                    pass
-
-            # Цикл верификации OTP (до 120 секунд)
-            try:
-                login_success = _auto_submitted and "login" not in page2.url.lower()
-            except Exception:
-                login_success = _auto_submitted  # соединение потеряно, доверяем _auto_submitted
-            deadline = time.time() + 30.0
-            _btn_clicked = False
-
-            try:
-                await page2.wait_for_timeout(300)
-            except Exception: pass
-
-            while time.time() < deadline:
-                # Проверяем редирект в начале каждой итерации
-                try:
-                    _cur_url = page2.url.lower()
-                except Exception:
-                    if _auto_submitted:
-                        login_success = True
-                    break
-                if "login" not in _cur_url:
-                    login_success = True
-                    break
-
-                # Если кнопку ещё не нажали — проверяем и переводим OTP
-                if not _btn_clicked:
-                    try:
-                        otp_val = await page2.eval_on_selector(_OTP_SEL, "el => el.value")
-                        if not otp_val:
-                            print(f"  [BG] Поле OTP пустое, ввожу заново для +91 {phone_10}...")
-                            otp_el = page2.locator(_OTP_SEL).first
-                            await otp_el.click()
-                            await page2.keyboard.type(otp_code, delay=80)
-                            await page2.wait_for_timeout(200)
-                    except Exception:
-                        pass
-
-                # Нажимаем кнопку VERIFY (trusted click через координаты)
-                if not _btn_clicked:
-                    _verify_sels = [
-                        "button:has-text('VERIFY')", "button:has-text('Verify')",
-                        "button:has-text('LOGIN')",  "button:has-text('Login')",
-                        "button:has-text('CONTINUE')", "button:has-text('Continue')",
-                        "button:has-text('Signup')",   "button:has-text('SIGNUP')",
-                    ]
-                    _clicked = False
-                    for _sel in _verify_sels:
-                        try:
-                            _btn = page2.locator(_sel).first
-                            if await _btn.is_visible():
-                                _bb = await _btn.bounding_box()
-                                if _bb:
-                                    await page2.mouse.click(
-                                        _bb["x"] + _bb["width"] / 2,
-                                        _bb["y"] + _bb["height"] / 2,
-                                    )
-                                else:
-                                    await _btn.click()
-                                _clicked = True
-                                _btn_clicked = True
-                                break
-                        except Exception:
-                            pass
-                    if not _clicked:
-                        # Fallback: Enter на OTP-поле
-                        try:
-                            _otp_loc = page2.locator(_OTP_SEL).first
-                            if await _otp_loc.count() > 0:
-                                await _otp_loc.press("Enter")
-                            else:
-                                await page2.keyboard.press("Enter")
-                        except Exception:
-                            try:
-                                await page2.keyboard.press("Enter")
-                            except Exception:
-                                pass
-
-                await page2.wait_for_timeout(1000)
-
-            if login_success:
-                try:
-                    (profile_path / ".profile_meta.json").write_text(
-                        json.dumps({
-                            "username": phone_10,
-                            "login_ts": time.time(),
-                            "otp_code": otp_code,
-                            "source": "bg_loser",
-                        }, ensure_ascii=False), encoding="utf-8"
-                    )
-                    _STATS["profiles_saved"] += 1
-                except Exception:
-                    pass
-                try:
-                    await client.complete(activation_id)
-                except Exception:
-                    pass
-                print(f"  [BG✓] Профиль +91 {phone_10} сохранён (фоновый вход)")
-                try:
-                    await _tg_login_ok_notify(phone_10)
-                except Exception:
-                    pass
-                # TG: отправка кук
-                try:
-                    await _send_cookies_to_tg_standalone(ctx2, phone_10, otp_code)
-                except Exception as _bgcke:
-                    print(f"  [BG] Ошибка отправки кук в TG: {_bgcke}")
-            else:
-                print(f"  [BG] Фоновый вход +91 {phone_10} не прошёл в течение 30 секунд")
-                await _tg_login_fail_notify(phone_10, otp_code, "Таймаут входа (30 секунд истекло, сайт не перенаправил)")
-                _bg_del_profile = True
-        except BaseException as e:
-            _err_str = str(e).lower()
-            _conn_closed = any(k in _err_str for k in ("connection", "closed", "driver", "disconnected", "target closed"))
-            if _conn_closed and _auto_submitted:
-                print(f"  [BG] Соединение с браузером потеряно для +91 {phone_10}, но страница уже перешла с логина — профиль сохраняем")
-                try:
-                    _meta_path = profile_path / ".profile_meta.json"
-                    if profile_path and not _meta_path.exists():
-                        _meta_path.write_text(
-                            json.dumps({"username": phone_10, "login_ts": time.time(),
-                                        "otp_code": otp_code, "source": "bg_loser"},
-                                       ensure_ascii=False), encoding="utf-8"
-                        )
-                        _STATS["profiles_saved"] += 1
-                except Exception:
-                    pass
-                try:
-                    await client.complete(activation_id)
-                except Exception:
-                    pass
-                try:
-                    await _tg_login_ok_notify(phone_10)
-                except Exception:
-                    pass
-                _bg_del_profile = False
-            else:
-                if not isinstance(e, Exception):
-                    print(f"  [BG] Прервано ({type(e).__name__}) для +91 {phone_10} — профиль удаляется")
-                else:
-                    print(f"  [BG] Ошибка при фоновом входе +91 {phone_10}: {e}")
-                try:
-                    await _tg_login_fail_notify(phone_10, otp_code, f"{type(e).__name__}: {e}")
-                except Exception:
-                    pass
-                _bg_del_profile = True
-        finally:
-            if _bg_del_profile:
-                try:
-                    if ctx2:
-                        await ctx2.close()
-                    await pw.stop()
-                except Exception:
-                    pass
-            if _bg_del_profile and profile_path and profile_path.exists():
-                try:
-                    shutil.rmtree(profile_path, ignore_errors=True)
-                    print(f"  [BG] Профиль +91 {phone_10} удалён (неуспешный вход)")
-                except Exception:
-                    pass
-    finally:
-        await client.close()
+    """Deprecated: background login now runs in bg_login.py."""
+    return None

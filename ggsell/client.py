@@ -37,7 +37,12 @@ class GGSellClient:
         self._token: Optional[str] = None
         self._token_expires_at: float = 0.0
         self._client = httpx.AsyncClient(
-            timeout=http_timeout,
+            timeout=httpx.Timeout(
+                connect=min(10.0, http_timeout),
+                read=float(http_timeout),
+                write=min(10.0, http_timeout),
+                pool=5.0,
+            ),
             follow_redirects=True,
             headers={"Accept": "application/json"},
         )
@@ -245,7 +250,6 @@ class GGSellClient:
         # Логируем первый заказ чтобы видеть реальные поля API
         if isinstance(data, list) and data:
             logger.debug(f"GGSell last-sales[0] keys: {list(data[0].keys())}")
-            logger.debug(f"GGSell last-sales[0] sample: {data[0]}")
         # ответ может быть списком или {items: [...], data: [...]}
         if isinstance(data, list):
             return data
@@ -261,7 +265,6 @@ class GGSellClient:
         content = data.get("content") if isinstance(data, dict) else None
         if isinstance(content, dict):
             logger.debug(f"GGSell order_info #{invoice_id} content keys: {list(content.keys())}")
-            logger.debug(f"GGSell order_info #{invoice_id} content: {content}")
         return data
 
     async def get_order_info_v2(self, invoice_id: int) -> Dict[str, Any]:

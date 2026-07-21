@@ -12,7 +12,7 @@ _patched = False
 
 
 def is_gui_host() -> bool:
-    """True если нас запустили без консоли (pythonw / SubHub.exe)."""
+    """True если нас запустили без консоли (pythonw)."""
     if sys.platform != "win32":
         return False
     exe = (sys.executable or "").lower().replace("/", "\\")

@@ -15,7 +15,6 @@ human_behavior:
   delay_between_accounts_min: 1.0
   delay_between_accounts_max: 2.0
 grizzlysms:
-  api_key: YOUR_GRIZZLYSMS_API_KEY
   service: xt
   country: 22
   max_price: 0.16
@@ -38,8 +37,6 @@ grizzlysms:
   poll_interval: 1
   get_number_retries: 3
   http_timeout: 30
-telegram:
-  token: YOUR_TELEGRAM_BOT_TOKEN
 telegram_otp:
   wait_timeout: 90
 auto_accounts: 10
