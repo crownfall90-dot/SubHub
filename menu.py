@@ -467,6 +467,50 @@ def shared_automation_running() -> tuple[bool, dict]:
     return False, st
 
 
+def _kill_automation_proc() -> bool:
+    """Убивает дочерний процесс автоматизации (main.py) вместе с деревом.
+    Возвращает True, если процесс был запущен и остановлен."""
+    st = _read_runtime_state()
+    pid = int(st.get("automation_pid") or 0)
+    killed = False
+    if pid and _pid_alive(pid):
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                )
+            else:
+                import signal as _sig
+                os.kill(pid, _sig.SIGTERM)
+            killed = True
+        except Exception:
+            pass
+    if pid:
+        clear_automation_proc()
+    return killed
+
+
+def stop_all_automation(reason: str = "стоп") -> dict:
+    """Останавливает ВСЁ: процесс автоматизации, Chrome бота и отменяет все
+    активные номера GrizzlySMS через API (в т.ч. купленные другим/зависшим процессом)."""
+    import grizzly as _gz
+    out: dict = {"killed_proc": False, "chrome": 0, "cancel": {}}
+    # 1. Процесс автоматизации — первым, чтобы он не покупал новые номера
+    out["killed_proc"] = _kill_automation_proc()
+    # 2. Chrome-процессы бота
+    try:
+        out["chrome"] = _gz.kill_all_bot_chrome()
+    except Exception:
+        pass
+    # 3. Отмена всех активных номеров через GrizzlySMS API
+    try:
+        out["cancel"] = _gz.cancel_all_active_rentals_blocking(reason)
+    except Exception as e:
+        out["cancel"] = {"error": str(e)}
+    return out
+
+
 def _start_heartbeat():
     import threading as _th
     host = _host_kind()
@@ -13369,16 +13413,29 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
             pass
         await page.wait_for_timeout(3_000)
 
-        # Проверяем вход
+        # Проверяем вход НАДЁЖНО: по наличию видимой кнопки "Login".
+        # (innerText-эвристика давала ложный успех — "orders"/"login" есть и у гостя,
+        # а fallback «любой flipkart-URL без /login» проходил почти всегда.)
+        try:
+            _has_login_btn = await page.evaluate("""() => {
+                for (const el of document.querySelectorAll(
+                        'button,a,div,span,[role="button"]')) {
+                    const t = (el.innerText || '').trim();
+                    if (t !== 'Login') continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 20 && r.height > 8) return true;
+                }
+                return false;
+            }""")
+        except Exception:
+            _has_login_btn = False
         body = (await page.evaluate("() => document.body?.innerText || ''")).lower()
-        logged_in = any(w in body for w in ["my account", "my profile", "logout",
-                                             "мой аккаунт", "выйти", "orders"])
-        if not logged_in:
-            cur_url = page.url
-            logged_in = "flipkart.com" in cur_url and "login" not in cur_url
+        _acct = any(w in body for w in ["my account", "my profile", "logout",
+                                        "мой аккаунт", "выйти"])
+        logged_in = _acct or not _has_login_btn
 
         if not logged_in:
-            return False, "Куки не дали входа — возможно устарели"
+            return False, "Куки не дали входа — сессия недействительна (нужен свежий вход)"
 
         # Сохраняем метаданные — СЛИВАЕМ с существующими, чтобы не потерять
         # link_history, привязку к заказу (issued_invoice_id), ссылки и т.п.
@@ -19525,6 +19582,94 @@ async def _ggs_send_msg(api_key: str, seller_id: int, order_id: int, text: str) 
         return await cli.send_message(order_id, text)
 
 
+async def _ggs_reviews(api_key: str, seller_id: int, limit: int = 40):
+    from ggsell.client import GGSellClient
+    async with GGSellClient(api_key, seller_id) as cli:
+        try:
+            return await cli.get_reviews(limit=limit)
+        except Exception:
+            return []
+
+
+# Шаблоны ответов покупателю (имя в ggsel_templates.json → подпись в меню)
+_GGS_REPLY_TEMPLATES = [
+    ("msg_greeting",     "Приветствие"),
+    ("msg_wait",         "Просьба подождать"),
+    ("msg_review_promo", "Просьба об отзыве"),
+    ("msg_template",     "Выдача ссылки  (с {link})"),
+]
+
+
+def _ggs_pick_reply(inv: int) -> str:
+    """Меню: выбрать шаблон ответа или ввести свой текст. Возвращает текст (или '')."""
+    from ggsell.monitor import get_template as _gt
+    cls()
+    header(f"СООБЩЕНИЕ — ЗАКАЗ #{inv}", G)
+    print(f"  {DIM}Выберите шаблон или напишите свой текст:{RST}\n")
+    for ti, (tname, tlabel) in enumerate(_GGS_REPLY_TEMPLATES, 1):
+        preview = _gt(tname).replace("\n", " ").strip()[:58]
+        print(f"  {BLD}{Y}[{ti}]{RST} {W}{tlabel}{RST}  {DIM}{preview}…{RST}")
+    print(f"  {BLD}{Y}[0]{RST} {W}Свой текст{RST}")
+    print()
+    try:
+        pick = input(f"  {BLD}Шаблон [1-{len(_GGS_REPLY_TEMPLATES)}] или 0: {RST}").strip()
+    except EOFError:
+        return ""
+    text = ""
+    if pick.isdigit() and 1 <= int(pick) <= len(_GGS_REPLY_TEMPLATES):
+        text = _gt(_GGS_REPLY_TEMPLATES[int(pick) - 1][0])
+    if text:
+        print(f"\n  {DIM}Текст шаблона:{RST}")
+        print(f"  {W}{text}{RST}")
+        print(f"\n  {DIM}Enter — отправить как есть, или введите новый текст (замените {{link}} и т.п.):{RST}")
+    else:
+        print(f"\n  {DIM}Введите текст сообщения:{RST}")
+    try:
+        edited = input("  > ").strip()
+    except EOFError:
+        edited = ""
+    if edited:
+        text = edited
+    return text
+
+
+def _ggs_reviews_screen(api_key: str, seller_id: int) -> None:
+    cls()
+    header("GGSELL — ОТЗЫВЫ", C)
+    print(f"  {DIM}Загружаю отзывы…{RST}")
+    try:
+        reviews = asyncio.run(_ggs_reviews(api_key, seller_id))
+    except Exception as e:
+        print(f"\n  {R}Ошибка: {e}{RST}")
+        pause()
+        return
+    cls()
+    header("GGSELL — ОТЗЫВЫ", C)
+    if not isinstance(reviews, list) or not reviews:
+        print(f"\n  {DIM}Отзывов нет.{RST}")
+        pause()
+        return
+    good = sum(1 for r in reviews if str(r.get("type") or r.get("rating")
+                                         or r.get("mark") or "").lower() in ("good", "5", "positive", "+"))
+    section(f"Отзывы  [{len(reviews)}]   {G}👍 {good}{RST}  {R}👎 {len(reviews) - good}{RST}")
+    print()
+    for r in reviews[:30]:
+        mark = str(r.get("type") or r.get("rating") or r.get("mark") or "").lower()
+        pos = mark in ("good", "5", "4", "positive", "+")
+        icon = f"{G}👍{RST}" if pos else f"{R}👎{RST}"
+        txt = str(r.get("text") or r.get("message") or r.get("comment") or r.get("content") or "").strip()
+        date = str(r.get("date") or r.get("created_at") or r.get("date_add") or "")[:16].replace("T", " ")
+        inv = r.get("invoice_id") or r.get("order_id") or r.get("id") or ""
+        reply = str(r.get("answer") or r.get("reply") or r.get("seller_answer") or "").strip()
+        print(f"  {icon}  {DIM}{date}{RST}  {W}#{inv}{RST}")
+        if txt:
+            print(f"      {W}{txt[:120]}{RST}")
+        if reply:
+            print(f"      {DIM}↳ ваш ответ: {reply[:100]}{RST}")
+    print()
+    pause()
+
+
 def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
     inv = int(order.get("invoice_id") or order.get("id") or 0)
     while True:
@@ -19585,10 +19730,7 @@ def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
         if ch in ("R", "К", "K"):
             continue
         if ch in ("С", "C", "S"):
-            try:
-                text = input("  Текст сообщения (Enter — отмена): ").strip()
-            except EOFError:
-                text = ""
+            text = _ggs_pick_reply(inv)
             if not text:
                 continue
             try:
@@ -19646,13 +19788,17 @@ def screen_ggsell() -> None:
             if p["name"]:
                 print(f"        {DIM}{p['name']}{RST}")
         print()
+        opt("О", "Отзывы покупателей", C)
         opt("R / Enter", "Обновить", C)
         opt("0", "Назад", R)
         print()
-        ch = input(f"  {BLD}Заказ [1-{len(shown)}], R или 0: {RST}").strip().upper()
+        ch = input(f"  {BLD}Заказ [1-{len(shown)}], О, R или 0: {RST}").strip().upper()
         if ch == "0":
             return
         if ch in ("", "R", "К", "K"):
+            continue
+        if ch in ("О", "O"):
+            _ggs_reviews_screen(api_key, seller_id)
             continue
         try:
             oi = int(ch) - 1
@@ -19661,6 +19807,68 @@ def screen_ggsell() -> None:
         except ValueError:
             continue
         _ggs_order_detail(api_key, seller_id, shown[oi])
+
+
+def screen_stop_all() -> None:
+    """Показывает запущенные процессы и активные номера; позволяет всё остановить."""
+    import grizzly as _gz
+    while True:
+        cls()
+        header("ПРОЦЕССЫ И НОМЕРА", R)
+        running, st = shared_automation_running()
+        pid = int(st.get("automation_pid") or 0)
+        mode = st.get("automation_mode") or ""
+        owner = st.get("automation_owner") or ""
+        print()
+        if running and pid:
+            print(f"  {G}▶ Автоматизация ЗАПУЩЕНА{RST}  {DIM}(pid {pid}"
+                  + (f", режим {mode}" if mode else "")
+                  + (f", запуск: {owner}" if owner else "") + f"){RST}")
+        else:
+            print(f"  {DIM}○ Активного процесса автоматизации нет.{RST}")
+
+        print(f"  {DIM}Проверяю активные номера GrizzlySMS…{RST}")
+        try:
+            act = _gz.fetch_active_rentals_status_blocking(timeout=12)
+        except Exception as e:
+            act = {"error": str(e)}
+        if act.get("error"):
+            print(f"  Активные номера: {Y}? ({act['error']}){RST}")
+        else:
+            n = int(act.get("total") or 0)
+            bal = act.get("balance")
+            print(f"  Активных номеров: {(R if n else G)}{BLD}{n}{RST}"
+                  + (f"   {DIM}баланс ${bal:.4f}{RST}"
+                     if isinstance(bal, (int, float)) else ""))
+        print()
+        opt("1", "🛑 ОСТАНОВИТЬ ВСЁ  (процесс + Chrome + отменить номера)", R)
+        opt("2", "Обновить", C)
+        opt("0", "Назад", DIM)
+        print()
+        ch = input(f"  {BLD}Выбор [1/2/0]: {RST}").strip()
+        if ch in ("0", ""):
+            return
+        if ch == "2":
+            continue
+        if ch == "1":
+            print(f"\n  {Y}Останавливаю всё…{RST}")
+            res = stop_all_automation("кнопка «Остановить всё»")
+            if res.get("killed_proc"):
+                print(f"  {G}✔ Процесс автоматизации остановлен{RST}")
+            else:
+                print(f"  {DIM}○ Активного процесса автоматизации не было{RST}")
+            print(f"  {G}✔ Chrome бота закрыт: {res.get('chrome', 0)}{RST}")
+            c = res.get("cancel") or {}
+            if c.get("error"):
+                print(f"  {R}✘ Отмена номеров: {c['error']}{RST}")
+            else:
+                print(f"  {G}✔ Номеров отменено: {c.get('cancelled', 0)} "
+                      f"из {c.get('total', 0)}{RST}")
+                _cbal = c.get("balance")
+                if isinstance(_cbal, (int, float)):
+                    print(f"  {DIM}Баланс GrizzlySMS: ${_cbal:.4f}{RST}")
+            pause()
+            return
 
 
 def screen_main():
@@ -19673,6 +19881,12 @@ def screen_main():
         _upd_commits = _bot_module._update_commits
         if _upd_avail:
             print(f"  {Y}⚡ Доступно обновление! [{BLD}{len(_upd_commits)} коммитов{RST}{Y}]  →  нажмите [У]{RST}")
+        # Видимый индикатор: идёт ли автоматизация (в т.ч. зависший процесс)
+        _auto_running, _auto_st = shared_automation_running()
+        if _auto_running:
+            print(f"  {R}▶ Автоматизация запущена{RST} "
+                  f"{DIM}(pid {_auto_st.get('automation_pid')}){RST}  "
+                  f"{R}→ [С] остановить всё{RST}")
         print()
         section("АВТОМАТИЗАЦИЯ", G)
         opt("1", "Запуск | Вход на ПК", G)
@@ -19690,6 +19904,7 @@ def screen_main():
         opt("7", "🛒 Панель продавца  (баланс · заказы · переписка)", C)
 
         section("НАСТРОЙКИ", B)
+        opt("С", "🛑 Остановить процессы / отменить все номера", R)
         opt("0", "Карты для оплаты (добавить / удалить)", C)
         _gc_bal = _gift_balance()
         opt("Г", f"🎁 Подарочные карты  {DIM}(баланс ₹{_gc_bal}){RST}", C)
@@ -19737,6 +19952,8 @@ def screen_main():
                 screen_used()
             elif choice == "7":
                 screen_ggsell()
+            elif choice in ("С", "C", "S"):
+                screen_stop_all()
             elif choice == "9":
                 screen_all_in_one()
             elif choice in ("П", "P"):
@@ -20075,6 +20292,12 @@ if __name__ == "__main__":
                     return True
                 if ctrl_type == 2:
                     # Закрытие окна — Python до finally не доходит, запускаем вручную.
+                    # СНАЧАЛА убиваем дочерний процесс автоматизации, иначе он
+                    # продолжит покупать номера уже после закрытия консоли.
+                    try:
+                        _kill_automation_proc()
+                    except Exception:
+                        pass
                     try:
                         import grizzly as _gz
                         _gz.cleanup_all_rentals_on_exit()
@@ -20455,6 +20678,12 @@ if __name__ == "__main__":
         import signal as _sig
         try:
             _sig.signal(_sig.SIGINT, _sig.SIG_IGN)
+        except Exception:
+            pass
+        # СНАЧАЛА гасим дочерний процесс автоматизации — иначе он продолжит
+        # покупать номера уже после выхода из консоли.
+        try:
+            _kill_automation_proc()
         except Exception:
             pass
         try:
