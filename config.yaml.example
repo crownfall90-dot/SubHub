@@ -37,6 +37,17 @@ grizzlysms:
   poll_interval: 1
   get_number_retries: 3
   http_timeout: 30
+pvapins:
+  country: india
+  apps:
+    - Flipkart22
+    - Flipkart1
+    - Flipkart
+    - Flipkart33
+    - Flipkart2
+  max_price: 0.30
+  buy_interval_seconds: 10   # Standard: max 6 new numbers/min
+  min_reject_seconds: 180    # reject того же номера не раньше 3 мин
 telegram_otp:
   wait_timeout: 90
 auto_accounts: 10

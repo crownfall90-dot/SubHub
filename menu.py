@@ -577,7 +577,7 @@ _UPDATE_FILES = [
     "README.md",
     "menu.py", "bot.py", "main.py",
     "menu.bat",
-    "grizzly_sms.py", "proxy.py", "grizzly.py", "bg_login.py", "deepseek.py", "requirements.txt", ".gitignore",
+    "grizzly_sms.py", "pvapins_sms.py", "sms_failover.py", "proxy.py", "grizzly.py", "bg_login.py", "deepseek.py", "requirements.txt", ".gitignore",
     "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
     "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py",
     "ggsell/monitor.py", "ggsell/deepseek_orders.py",
@@ -16888,11 +16888,11 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
         from playwright.async_api import async_playwright
         import yaml
         from grizzly_sms import (
-            GrizzlySMSClient,
             GrizzlySMSError,
             NumberUnavailableError,
             InsufficientBalanceError,
         )
+        from sms_failover import build_sms_client
     except ImportError as e:
         return False, f"Зависимость не установлена: {e}  (pip install playwright httpx pyyaml)"
 
@@ -16903,7 +16903,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
         return False, f"Ошибка чтения config.yaml: {exc}"
 
     gsms        = cfg.get("grizzlysms", {})
-    api_key     = (_read_secrets().get("grizzlysms") or {}).get("api_key", "").strip()
+    _secrets    = _read_secrets()
     service     = gsms.get("service", "xt")
     country     = gsms.get("country", 22)
     max_price   = gsms.get("max_price", 0.15)
@@ -16914,8 +16914,10 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
     price_tiers  = gsms.get("price_tiers")   # None → max_price весь timeout
     cycle_prices = bool(gsms.get("cycle_prices", False))
 
-    if not api_key:
-        return False, "GrizzlySMS api_key не задан в secrets.yaml"
+    try:
+        sms_client = build_sms_client(_secrets, cfg)
+    except ValueError as exc:
+        return False, str(exc)
 
     login_url = cfg.get("site", {}).get("url", "https://www.flipkart.com/account/login?ret=/")
     url       = _BLACK_URLS[months]
@@ -16930,7 +16932,6 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
     except Exception:
         pass
 
-    sms_client = GrizzlySMSClient(api_key, http_timeout=30)
     _failed_cancels: list = []  # IDs, которые не удалось отменить → фоновый повтор
 
     # Фоновый прогрев: доступен ли Flipkart напрямую (без VPN). Результат
@@ -17116,7 +17117,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
 
             try:
                 # ── 1. Получаем номер GrizzlySMS (параллельные слоты + price_tiers) ─
-                print(f"\n  {C}[Попытка {attempt}] Ищу номер GrizzlySMS "
+                print(f"\n  {C}[Попытка {attempt}] Ищу номер (Grizzly→PVAPins) "
                       f"({slots} слотов)...{RST}")
                 try:
                     phone_id, phone, cost_gn = await sms_client.get_number_parallel(
@@ -17130,7 +17131,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         cycle=True,
                     )
                 except InsufficientBalanceError:
-                    print(f"  {R}Недостаточно средств на балансе GrizzlySMS — отменяю все активные номера...{RST}")
+                    print(f"  {R}Недостаточно средств на балансе SMS — отменяю активные номера...{RST}")
                     try:
                         _acts = await sms_client.get_active_activations()
                         _n_cancelled = 0
@@ -17152,7 +17153,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                 except NumberUnavailableError as exc:
                     return False, f"Нет номеров: {exc}"
                 except GrizzlySMSError as exc:
-                    return False, f"GrizzlySMS ошибка: {exc}"
+                    return False, f"SMS ошибка: {exc}"
 
                 phone_10 = phone.lstrip("+")
                 if phone_10.startswith("91") and len(phone_10) > 10:
@@ -17577,7 +17578,11 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                             _grizzly_module.mark_completed(e_id)
                                         else:
                                             print(f"  {G}+91 {e_ph}: OTP на таймауте получен → фон{RST}")
-                                            _submit_bg_login(api_key, e_id, _est["code"], login_url, months,
+                                            _submit_bg_login(
+                                                (_read_secrets().get("pvapins") or {}).get("api_key", "").strip()
+                                                if str(e_id).startswith("pva:")
+                                                else (_read_secrets().get("grizzlysms") or {}).get("api_key", "").strip(),
+                                                e_id, _est["code"], login_url, months,
                                                              phone_10=e_ph)
                                             _grizzly_module.mark_completed(e_id)
                                         try:
@@ -17763,7 +17768,11 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                         _grizzly_module.mark_completed(o_id)
                                     else:
                                         print(f"  {G}+91 {o_ph}: финальный OTP получен → фон{RST}")
-                                        _submit_bg_login(api_key, o_id, _fst["code"], login_url, months, phone_10=o_ph)
+                                        _submit_bg_login(
+                                            (_read_secrets().get("pvapins") or {}).get("api_key", "").strip()
+                                            if str(o_id).startswith("pva:")
+                                            else (_read_secrets().get("grizzlysms") or {}).get("api_key", "").strip(),
+                                            o_id, _fst["code"], login_url, months, phone_10=o_ph)
                                         _grizzly_module.mark_completed(o_id)
                             except Exception: pass
                             if not _fin_otp:
@@ -19991,6 +20000,7 @@ def _init_secrets() -> None:
 
     _SECRET_KEYS = [
         ("grizzlysms", "api_key"),
+        ("pvapins", "api_key"),
         ("telegram", "token"),
         ("proxy6", "api_key"),
         ("github", "token"),
@@ -20541,12 +20551,17 @@ if __name__ == "__main__":
 
                 # Баланс до покупки номеров
                 try:
-                    from grizzly_sms import GrizzlySMSClient as _GC
-                    _api_key_s = (_read_secrets().get("grizzlysms") or {}).get("api_key", "")
-                    if _api_key_s:
-                        _cl_s = _GC(_api_key_s, http_timeout=10)
-                        _gz_s._STATS["balance_start"] = await _cl_s.get_balance()
-                        await _cl_s.close()
+                    from sms_failover import build_sms_client as _bsc
+                    import yaml as _y_bal
+                    _cfg_bal = {}
+                    try:
+                        with open("config.yaml", encoding="utf-8") as _fb:
+                            _cfg_bal = _y_bal.safe_load(_fb) or {}
+                    except Exception:
+                        pass
+                    _cl_s = _bsc(_read_secrets(), _cfg_bal)
+                    _gz_s._STATS["balance_start"] = await _cl_s.get_balance()
+                    await _cl_s.close()
                 except Exception:
                     pass
 
@@ -20558,12 +20573,17 @@ if __name__ == "__main__":
 
                 # Баланс после завершения задач
                 try:
-                    _api_key_s2 = (_read_secrets().get("grizzlysms") or {}).get("api_key", "")
-                    if _api_key_s2:
-                        from grizzly_sms import GrizzlySMSClient as _GC2
-                        _cl_s2 = _GC2(_api_key_s2, http_timeout=10)
-                        _gz_s._STATS["balance_end"] = await _cl_s2.get_balance()
-                        await _cl_s2.close()
+                    from sms_failover import build_sms_client as _bsc2
+                    import yaml as _y_bal2
+                    _cfg_bal2 = {}
+                    try:
+                        with open("config.yaml", encoding="utf-8") as _fb2:
+                            _cfg_bal2 = _y_bal2.safe_load(_fb2) or {}
+                    except Exception:
+                        pass
+                    _cl_s2 = _bsc2(_read_secrets(), _cfg_bal2)
+                    _gz_s._STATS["balance_end"] = await _cl_s2.get_balance()
+                    await _cl_s2.close()
                 except Exception:
                     pass
 

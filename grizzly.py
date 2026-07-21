@@ -160,6 +160,51 @@ def _get_grizzly_api_key() -> str:
     return _read_secrets_standalone().get("grizzlysms", {}).get("api_key", "").strip()
 
 
+def _get_pvapins_api_key() -> str:
+    return _read_secrets_standalone().get("pvapins", {}).get("api_key", "").strip()
+
+
+def _min_cancel_age_for(aid: str) -> float:
+    if str(aid).startswith("pva:"):
+        try:
+            with open(_HERE / "config.yaml", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            return float((cfg.get("pvapins") or {}).get("min_reject_seconds", 180.0))
+        except Exception:
+            return 180.0
+    return _grizzly_min_cancel_age()
+
+
+async def _make_client_for_aid(aid: str):
+    """Клиент под activation_id (Grizzly или PVAPins). Caller обязан close()."""
+    if str(aid).startswith("pva:"):
+        from pvapins_sms import PVAPinsSMSClient
+        key = _get_pvapins_api_key()
+        if not key:
+            return None
+        cfg = {}
+        try:
+            with open(_HERE / "config.yaml", encoding="utf-8") as fh:
+                cfg = (yaml.safe_load(fh) or {}).get("pvapins") or {}
+        except Exception:
+            pass
+        return PVAPinsSMSClient(
+            key,
+            http_timeout=15,
+            country=str(cfg.get("country") or "india"),
+            apps=list(cfg["apps"]) if cfg.get("apps") else None,
+            max_price=cfg.get("max_price"),
+            buy_interval_seconds=float(cfg.get("buy_interval_seconds") or 10),
+            min_reject_seconds=float(cfg.get("min_reject_seconds") or 180),
+        )
+    if GrizzlySMSClient is None:
+        return None
+    key = _get_grizzly_api_key()
+    if not key:
+        return None
+    return GrizzlySMSClient(key, http_timeout=15)
+
+
 def _read_gsms_float(key: str, default: float) -> float:
     try:
         with open(_HERE / "config.yaml", encoding="utf-8") as fh:
@@ -309,7 +354,7 @@ def register_rental(activation_id, phone_10, rented_at, profile_path=None, login
         "phase1_ok": False,
         "otp_received": False,
         "cancel_attempts": 0,
-        "next_attempt_at": rented_at + _grizzly_min_cancel_age(),
+        "next_attempt_at": rented_at + _min_cancel_age_for(aid),
         "cancelling": False,
     }
     _STATS["numbers_bought"] += 1
@@ -346,7 +391,7 @@ def mark_failed(activation_id):
     if aid in _RENTALS:
         r = _RENTALS[aid]
         r["status"] = "failed"
-        r["next_attempt_at"] = r["rented_at"] + _grizzly_min_cancel_age()
+        r["next_attempt_at"] = r["rented_at"] + _min_cancel_age_for(aid)
         # Очистка профиля (kill chrome + rmtree) — синхронная, thread-safe
         _cleanup_profile(r)
 
@@ -665,48 +710,68 @@ async def _rental_monitor_loop():
                     _log_err("api_scan", f"сканирование активных номеров: {_scan_ex}")
 
             # 1. Проверяем активные номера на OTP каждые 10 сек
-            if api_key:
-                for aid, r in list(_RENTALS.items()):
-                    if r["status"] != "active":
-                        continue
-                    last_check = _otp_last_check.get(aid, 0.0)
-                    if now - last_check >= 10.0:
-                        _otp_last_check[aid] = now
+            for aid, r in list(_RENTALS.items()):
+                if r["status"] != "active":
+                    continue
+                last_check = _otp_last_check.get(aid, 0.0)
+                if now - last_check < 10.0:
+                    continue
+                _otp_last_check[aid] = now
+                _otp_client = None
+                try:
+                    if str(aid).startswith("pva:"):
+                        _otp_client = await _make_client_for_aid(aid)
+                        if _otp_client is None:
+                            continue
+                        st = await _otp_client.get_status(aid)
+                    else:
+                        if not api_key or _mon_client is None:
+                            continue
+                        st = await _mon_client.get_status(aid)
+                    if st.get("type") == "OK" and st.get("code"):
+                        r["otp_received"] = True
+                        if r.get("intercept_mode") or r.get("external"):
+                            continue
+                        otp = st["code"]
+                        if aid not in _RENTALS:
+                            continue
+                        print(f"\n  {_G}📲 OTP для +91 {r['phone_10']} получен — вход в фоне...{_RST}")
+                        login_url = ""
+                        months = 3
                         try:
-                            st = await _mon_client.get_status(aid)
-                            if st.get("type") == "OK" and st.get("code"):
-                                r["otp_received"] = True
-                                if r.get("intercept_mode") or r.get("external"):
-                                    continue
-                                otp = st["code"]
-                                if aid not in _RENTALS:
-                                    continue
-                                print(f"\n  {_G}📲 OTP для +91 {r['phone_10']} получен — вход в фоне...{_RST}")
-                                login_url = ""
-                                months = 3
-                                try:
-                                    with open(_HERE / "config.yaml", encoding="utf-8") as fh:
-                                        cfg = yaml.safe_load(fh)
-                                    login_url = cfg.get("site", {}).get("url", "https://www.flipkart.com/account/login?ret=/")
-                                except Exception:
-                                    pass
-                                _submit_bg_login(api_key, aid, otp, login_url, months, phone_10=r["phone_10"])
-                                r["status"] = "completed"
-                                _RENTALS.pop(aid, None)
-                                _otp_last_check.pop(aid, None)
-                        except Exception as _otp_ex:
-                            _log_err(f"otp_{aid}",
-                                     f"проверка OTP +91 {r.get('phone_10','?')}: {_otp_ex}")
+                            with open(_HERE / "config.yaml", encoding="utf-8") as fh:
+                                cfg = yaml.safe_load(fh)
+                            login_url = cfg.get("site", {}).get("url", "https://www.flipkart.com/account/login?ret=/")
+                        except Exception:
+                            pass
+                        _api_for_bg = (
+                            _get_pvapins_api_key()
+                            if str(aid).startswith("pva:")
+                            else api_key
+                        )
+                        _submit_bg_login(_api_for_bg, aid, otp, login_url, months, phone_10=r["phone_10"])
+                        r["status"] = "completed"
+                        _RENTALS.pop(aid, None)
+                        _otp_last_check.pop(aid, None)
+                except Exception as _otp_ex:
+                    _log_err(f"otp_{aid}",
+                             f"проверка OTP +91 {r.get('phone_10','?')}: {_otp_ex}")
+                finally:
+                    if _otp_client is not None:
+                        try:
+                            await _otp_client.close()
+                        except Exception:
+                            pass
 
             # 2. Истекают номера без OTP: не введённые на Flipkart — раньше
             lifetime = _number_lifetime_seconds()
             no_phase1_limit = _no_phase1_cancel_seconds()
-            min_cancel = _grizzly_min_cancel_age()
             for aid, r in list(_RENTALS.items()):
                 if r["status"] != "active" or r.get("otp_received"):
                     continue
                 age = now - r["rented_at"]
                 limit = lifetime if r.get("phase1_ok") else no_phase1_limit
+                min_cancel = _min_cancel_age_for(aid)
                 if age >= limit:
                     r["status"] = "failed"
                     r["next_attempt_at"] = max(now, r["rented_at"] + min_cancel)
@@ -735,36 +800,28 @@ async def _cancel_rental_task(aid):
         return
     r["cancelling"] = True
     try:
-        api_key = _get_grizzly_api_key()
-        if not api_key:
-            print(f"  {_R}[BG] Нет API-ключа GrizzlySMS для отмены{_RST}")
+        client = await _make_client_for_aid(aid)
+        if client is None:
+            print(f"  {_R}[BG] Нет API-ключа для отмены {aid[:20]}…{_RST}")
             _RENTALS.pop(aid, None)
             return
-        client = GrizzlySMSClient(api_key, http_timeout=15)
-        
+
         # Проверяем, вдруг OTP пришел в последний момент перед отменой
         try:
             st = await client.get_status(aid)
             if st["type"] == "OK" and st.get("code"):
                 otp = st["code"]
-                # Если основной поток уже обработал этот номер (mark_completed удалил из _RENTALS) —
-                # не запускаем фоновый вход повторно
                 if aid not in _RENTALS:
                     await client.close()
                     return
-                # В intercept-режиме OTP передаётся в TG основным потоком —
-                # монитор не должен запускать фоновый вход, только завершить аренду
                 if r.get("intercept_mode") or r.get("external"):
-                    # intercept: OTP уже передан основным потоком в TG
-                    # external: номер подхвачен сканером — его уже обработал
-                    # _background_login_monitor в main.py; повторный вход не нужен
                     _reason = "перехват" if r.get("intercept_mode") else "внешний, уже обработан"
                     print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} ({_reason}) — завершаю аренду{_RST}")
                     try:
                         await client.complete(aid)
                     except Exception:
                         pass
-                    mark_completed(aid)  # добавляет в _COMPLETED_IDS, не даёт сканеру переподхватить
+                    mark_completed(aid)
                     await client.close()
                     return
                 print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} пришёл в последний момент. Вход...{_RST}")
@@ -776,7 +833,9 @@ async def _cancel_rental_task(aid):
                     login_url = cfg.get("site", {}).get("url", "https://www.flipkart.com/account/login?ret=/")
                 except Exception:
                     pass
-                _submit_bg_login(api_key, aid, otp, login_url, months, phone_10=r["phone_10"])
+                # bg_login ждёт Grizzly api_key; для PVAPins передаём pvapins key
+                _api_for_bg = _get_pvapins_api_key() if str(aid).startswith("pva:") else _get_grizzly_api_key()
+                _submit_bg_login(_api_for_bg, aid, otp, login_url, months, phone_10=r["phone_10"])
                 r["status"] = "completed"
                 _RENTALS.pop(aid, None)
                 await client.close()
@@ -806,21 +865,19 @@ async def _cancel_rental_task(aid):
                 r["cancel_attempts"] += 1
                 now = time.monotonic()
                 if r["cancel_attempts"] == 1:
-                    r["next_attempt_at"] = r["rented_at"] + _grizzly_min_cancel_age() + 10.0
+                    r["next_attempt_at"] = r["rented_at"] + _min_cancel_age_for(aid) + 10.0
                 else:
                     r["next_attempt_at"] = now + 10.0
                 _transient_print(f"  {_Y}[Фон] ↺ +91 {r['phone_10']} — повтор через 10 сек{_RST}")
 
         await client.close()
     except Exception as _ct_ex:
-        # Возврат денег не прошёл из-за неожиданной ошибки — логируем (раньше
-        # терялось как «Task exception was never retrieved»). Номер останется в
-        # _RENTALS и будет повторно отменён следующей итерацией монитора.
         _log_err(f"cancel_task_{aid}",
                  f"отмена номера +91 {r.get('phone_10','?')}: {_ct_ex}")
     finally:
         if aid in _RENTALS:
             _RENTALS[aid]["cancelling"] = False
+
 
 async def _tg_cancel_notify(ph: str, reason: str = "") -> None:
     """Отправляет TG-уведомление об отмене номера (standalone, без import menu)."""
@@ -994,18 +1051,17 @@ def cleanup_all_rentals_on_exit():
     loop = asyncio.new_event_loop()
 
     async def _async_cleanup():
-        api_key = _get_grizzly_api_key()
-        if not api_key:
-            print(f"  {_R}[Выход] Нет API-ключа для отмены номеров{_RST}")
-            return
-        client = GrizzlySMSClient(api_key, http_timeout=15)
-        try:
-            for aid in list(ready_ids):
-                r = _RENTALS.get(aid)
-                if not r:
-                    continue
-                age = time.monotonic() - r["rented_at"]
-                print(f"  [Выход] Попытка отмены +91 {r['phone_10']} (id={aid}), прошло {int(age)} сек...")
+        for aid in list(ready_ids):
+            r = _RENTALS.get(aid)
+            if not r:
+                continue
+            age = time.monotonic() - r["rented_at"]
+            print(f"  [Выход] Попытка отмены +91 {r['phone_10']} (id={str(aid)[:24]}…), прошло {int(age)} сек...")
+            client = await _make_client_for_aid(aid)
+            if client is None:
+                print(f"  {_R}[Выход] Нет API-ключа для отмены{_RST}")
+                continue
+            try:
                 try:
                     await client.cancel(aid)
                     print(f"  {_G}[Выход✓] Номер +91 {r['phone_10']} успешно отменён.{_RST}")
@@ -1014,13 +1070,17 @@ def cleanup_all_rentals_on_exit():
                     await _tg_cancel_notify(r["phone_10"], "Отменён при выходе из скрипта")
                     _RENTALS.pop(aid, None)
                 except Exception as e:
-                    # Проверяем, не пришёл ли код в последний момент
                     try:
                         _st = await client.get_status(aid)
                         if _st.get("type") == "OK" and _st.get("code"):
                             print(f"  {_G}[Выход✓] Код обнаружен — вход в фоне{_RST}")
+                            _bg_key = (
+                                _get_pvapins_api_key()
+                                if str(aid).startswith("pva:")
+                                else _get_grizzly_api_key()
+                            )
                             _submit_bg_login(
-                                api_key, aid, _st["code"], r.get("login_url", ""),
+                                _bg_key, aid, _st["code"], r.get("login_url", ""),
                                 r.get("months", 3), r["phone_10"],
                             )
                             r["status"] = "completed"
@@ -1034,11 +1094,13 @@ def cleanup_all_rentals_on_exit():
                         _STATS["numbers_bad_action"] += 1
                         _RENTALS.pop(aid, None)
                     else:
-                        # EARLY_CANCEL_DENIED или сеть — оставляем фоновому монитору
                         r["next_attempt_at"] = time.monotonic() + 10
-                        print(f"  {_Y}[Фон⏳] +91 {r['phone_10']} — повтор в фоне через 10 сек ({e}){_RST}")
-        finally:
-            await client.close()
+                        print(f"  {_Y}[Фон⏳] +91 {r['phone_10']} — повтор в фоне через 10 сек ({err_str[:60]}){_RST}")
+            finally:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
 
     try:
         loop.run_until_complete(_async_cleanup())

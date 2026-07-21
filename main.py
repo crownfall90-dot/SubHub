@@ -2806,29 +2806,47 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
         # main.py нужен бот только для отправки уведомлений — поллинг не запускаем.
         tg_manager = TelegramBotManager(token, send_only=True)
 
-    # ── GrizzlySMS клиент ────────────────────────────────────────────────────
-    sms_client: Optional[GrizzlySMSClient] = None
-    sms_cfg = config.sms_config
-    if sms_cfg.get("api_key"):
-        sms_client = GrizzlySMSClient(
-            api_key=sms_cfg["api_key"],
-            http_timeout=sms_cfg.get("http_timeout", 30),
-        )
+    # ── SMS клиент (Grizzly → PVAPins failover) ───────────────────────────────
+    sms_client = None
+    try:
+        from sms_failover import build_sms_client
+        _sec = {}
         try:
-            balance = await sms_client.get_balance()
-            logger.info(f"GrizzlySMS баланс: ${balance:.4f}")
+            _sp = Path(__file__).parent / "secrets.yaml"
+            if _sp.exists():
+                _sec = yaml.safe_load(_sp.read_text(encoding="utf-8")) or {}
+        except Exception:
+            pass
+        sms_client = build_sms_client(_sec, config.config)
+        try:
+            if hasattr(sms_client, "get_balances"):
+                bals = await sms_client.get_balances()
+                if "grizzly" in bals:
+                    logger.info(f"GrizzlySMS баланс: ${bals['grizzly']:.4f}")
+                if "pvapins" in bals:
+                    logger.info(f"PVAPins баланс: ${bals['pvapins']:.4f}")
+            else:
+                balance = await sms_client.get_balance()
+                logger.info(f"SMS баланс: ${balance:.4f}")
         except Exception as exc:
-            logger.error(f"Не удалось подключиться к GrizzlySMS: {exc}")
+            logger.error(f"Не удалось подключиться к SMS API: {exc}")
+            await sms_client.close()
             sms_client = None
+    except ValueError as exc:
+        logger.warning(str(exc))
+        sms_client = None
+    except Exception as exc:
+        logger.error(f"SMS клиент: {exc}")
+        sms_client = None
 
     # ── Режим работы ────────────────────────────────────────────────────────────
     is_auto = config.auto_accounts_count > 0 or accounts_target is not None
     if is_auto:
         target = accounts_target if accounts_target is not None else config.auto_accounts_count
         if not sms_client:
-            logger.error("Авто-режим требует GrizzlySMS. Проверьте api_key в secrets.yaml → grizzlysms.api_key")
+            logger.error("Авто-режим требует SMS API. Проверьте secrets.yaml → grizzlysms / pvapins")
             sys.exit(1)
-        logger.info(f"Режим auto: цель — {target} аккаунт(ов) через GrizzlySMS")
+        logger.info(f"Режим auto: цель — {target} аккаунт(ов) через SMS failover")
     else:
         manual_accounts = config.accounts
         logger.info(f"Аккаунтов к обработке: {len(manual_accounts)}")

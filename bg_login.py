@@ -104,7 +104,53 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
     auto_submitted = False
 
     try:
-        client = GrizzlySMSClient(api_key, http_timeout=15)
+        # Ключ всегда из secrets по префиксу id — не доверяем api_key аргументу
+        # (иначе при выходе Grizzly-ключ мог уйти в PVAPins).
+        if str(activation_id).startswith("pva:"):
+            from pvapins_sms import PVAPinsSMSClient
+            from pathlib import Path as _P
+            import yaml as _y
+            _sec = {}
+            try:
+                _sec = _y.safe_load((_P(__file__).parent / "secrets.yaml").read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
+            _pkey = ((_sec.get("pvapins") or {}).get("api_key") or "").strip()
+            if not _pkey:
+                print(f"  [BG] Нет PVAPins api_key для id={activation_id}")
+                return
+            _pcfg = {}
+            try:
+                _pcfg = (_y.safe_load((_P(__file__).parent / "config.yaml").read_text(encoding="utf-8")) or {}).get("pvapins") or {}
+            except Exception:
+                pass
+            client = PVAPinsSMSClient(
+                _pkey,
+                http_timeout=15,
+                country=str(_pcfg.get("country") or "india"),
+                apps=list(_pcfg["apps"]) if _pcfg.get("apps") else None,
+                min_reject_seconds=float(_pcfg.get("min_reject_seconds") or 180),
+            )
+            if not phone_10:
+                try:
+                    _a, _c, _n = PVAPinsSMSClient.parse_aid(activation_id)
+                    phone_10 = _n[-10:]
+                except Exception:
+                    pass
+        else:
+            _gkey = (api_key or "").strip()
+            if not _gkey:
+                try:
+                    import yaml as _y2
+                    from pathlib import Path as _P2
+                    _sec2 = _y2.safe_load((_P2(__file__).parent / "secrets.yaml").read_text(encoding="utf-8")) or {}
+                    _gkey = ((_sec2.get("grizzlysms") or {}).get("api_key") or "").strip()
+                except Exception:
+                    _gkey = ""
+            if not _gkey:
+                print(f"  [BG] Нет Grizzly api_key для id={activation_id}")
+                return
+            client = GrizzlySMSClient(_gkey, http_timeout=15)
         pw = await async_playwright().start()
 
         try:
