@@ -421,15 +421,6 @@ def is_host_running() -> bool:
     return bool(active_host())
 
 
-_host_restart_cb = None
-
-
-def register_host_restart(callback) -> None:
-    """GUI регистрирует callback для мягкого перезапуска (app.main loop)."""
-    global _host_restart_cb
-    _host_restart_cb = callback
-
-
 def restart_target_label() -> str:
     return "консоль"
 
