@@ -36,7 +36,7 @@ gh pr create --title "Заголовок" --body "$(cat <<'EOF'
 - ...
 
 ## Test plan
-- [ ] app.bat --console
+- [ ] menu.bat
 - [ ] python scripts/smoke_test.py
 - [ ] ...
 
@@ -54,9 +54,9 @@ EOF
 
 ## Test plan — шаблон по областям
 
-### GUI (`app.py`)
+### GUI (`subhub/menu.py`)
 
-- [ ] `app.bat --console` — окно, sidebar, трей
+- [ ] `menu.bat` — окно, sidebar, трей
 - [ ] Закрытие: quit / tray / cancel
 - [ ] Статусы VPN / Grizzly / GGSell синхронны
 
@@ -93,7 +93,7 @@ EOF
 - Sync Grizzly cancel button visibility with active number count
 
 ## Test plan
-- [ ] app.bat --console → YouTube → VPN → статус OK после bootstrap
+- [ ] menu.bat → YouTube → VPN → статус OK после bootstrap
 - [ ] Grizzly: кнопка отмены скрыта без активных номеров
 ```
 

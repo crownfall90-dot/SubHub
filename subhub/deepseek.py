@@ -9,7 +9,7 @@ DeepSeek Platform — автоматизация пополнения API-бал
   5. Успех = «Topped-up balance» на /usage вырос на сумму пополнения.
 
 Модуль самостоятельный (не тянет menu.py) — чтобы позже его могла вызывать
-и авто-обработка заказов GGSell, и GUI.
+и авто-обработка заказов GGSell.
 """
 
 from __future__ import annotations

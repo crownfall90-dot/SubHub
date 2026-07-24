@@ -12,7 +12,7 @@ Skill: `.cursor/skills/ui-ux-pro-max/` (upstream: `vendor/ui-ux-pro-max-skill`).
 - новый экран, редизайн, улучшить UI/UX, «сделай красивее»
 - выбор стиля, цветов, шрифтов, паттерна лендинга
 - accessibility, contrast, hover, responsive, dark mode
-- dashboard, sidebar, карточки, формы в SubHub (`app.py`)
+- dashboard, sidebar, карточки, формы (веб / Canvas)
 - слова: design system, UI/UX Pro Max, uipro, палитра, типографика
 
 **Шаг 1 — design system (обязательно):**
@@ -30,7 +30,7 @@ python .cursor/skills/ui-ux-pro-max/scripts/search.py "<запрос>" --domain 
 python .cursor/skills/ui-ux-pro-max/scripts/search.py "<запрос>" --stack html-tailwind
 ```
 
-SubHub GUI = CustomTkinter → переводи токены (цвета, spacing, контраст) в `app.py`; для веб/Canvas — `html-tailwind` / `react`.
+SubHub — консоль (`menu.bat` / `subhub/`); UI-токены из Pro Max применяй к **веб/Canvas**, не к удалённому CustomTkinter.
 
 ## Связка с MotionSites
 
@@ -40,7 +40,7 @@ SubHub GUI = CustomTkinter → переводи токены (цвета, spacin
 | Готовый animated hero / landing prompt | **MotionSites** (`vendor/motionsites_prompts/`) |
 | React/Tailwind компонент (веб) | **Magic MCP** (`/ui`, `.cursor/rules/magic-mcp.mdc`) |
 
-Сначала Pro Max → MotionSites prompt → Magic `/ui` (веб) или код в `app.py` (Tkinter).
+Сначала Pro Max → MotionSites prompt → Magic `/ui` (веб).
 
 ## Обновление
 

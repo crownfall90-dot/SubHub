@@ -39,8 +39,6 @@ YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
 # Очередь уведомлений для TG-бота (thread-safe)
 # Элементы: {"type": "new_order", "invoice_id": int, "order": dict}
 notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
-# Копия событий для десктопного GUI SubHub
-gui_notify_queue: _queue.SimpleQueue = _queue.SimpleQueue()
 _STATE_LOCK = threading.RLock()
 
 
@@ -52,9 +50,8 @@ def _atomic_json_write(path: Path, data: object) -> None:
 
 
 def emit_ggs_notify(item: dict) -> None:
-    """Разослать событие GGSell в TG-бот и в GUI."""
+    """Положить событие GGSell в очередь TG-бота."""
     notify_queue.put(item)
-    gui_notify_queue.put(item)
 
 # Сообщения, отправленные НАМИ (продавцом/ботом) — чтобы монитор не принял их
 # за сообщения покупателя. Хранит (invoice_id, нормализованный_текст, время).

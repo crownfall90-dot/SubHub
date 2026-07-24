@@ -99,7 +99,7 @@ Destroy Grizzly cancel button when no active numbers.
 | Grizzly | `Grizzly`, `SMS` |
 | GGSELL | `GGSell`, `GGSELL` |
 | Telegram | `Telegram`, `bot` |
-| Infra | `OTA`, `app.bat`, `smoke_test` |
+| Infra | `OTA`, `menu.bat`, `smoke_test` |
 
 ## PR
 
@@ -112,7 +112,7 @@ Destroy Grizzly cancel button when no active numbers.
 - ...
 
 ## Test plan
-- [ ] app.bat --console — окно и трей
+- [ ] menu.bat — окно и трей
 - [ ] python scripts/smoke_test.py
 - [ ] [специфично для изменения]
 ```

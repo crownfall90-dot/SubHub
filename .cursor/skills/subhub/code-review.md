@@ -7,7 +7,7 @@
 ```
 Review Progress:
 - [ ] Область изменений определена (GUI / Flipkart / GGSELL / Grizzly / bot / infra)
-- [ ] Diff минимален — нет «заодно» рефакторинга menu.py/app.py
+- [ ] Diff минимален — нет «заодно» рефакторинга menu.py/subhub/menu.py
 - [ ] Архитектурные запреты не нарушены
 - [ ] Секреты и runtime не в diff
 - [ ] Thread/async safety
@@ -66,7 +66,7 @@ Review Progress:
 
 ## Review по модулям
 
-### app.py
+### subhub/menu.py
 
 | Проверить | Почему |
 |-----------|--------|
@@ -125,7 +125,7 @@ Review Progress:
 |----------------|------|
 | `import menu` в `grizzly.py` | Deadlock |
 | `async_playwright` в `grizzly.py` | Hang |
-| `CTkButton` без thread offload | GUI freeze |
+| `console handler` без thread offload | GUI freeze |
 | Hardcoded token/key | Leak |
 | Удаление `chcp 65001` / UTF-8 env | Кириллица |
 | Большой rename в `menu.py` | Merge hell, скрытые баги |

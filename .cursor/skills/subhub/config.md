@@ -38,7 +38,7 @@ ggsel:
   webhook_secret: ""     # SHA256 из GGSell → Уведомления
 ```
 
-Дополнительные ключи (promo_code и т.д.) — смотри `secrets.yaml.example` и использование в `app.py` / `ggsell/`.
+Дополнительные ключи (promo_code и т.д.) — смотри `secrets.yaml.example` и использование в `subhub/` / `ggsell/`.
 
 **Читатели secrets:**
 - `menu.py` → `_SECRETS` (кэш, единый источник)
@@ -101,13 +101,10 @@ YOUR_API_КЛЮЧ
 
 `_init_secrets` и `_check_setup` считают их пустыми.
 
-## GUI → Настройки
+## Консоль → Настройки
 
-`app.py` открывает файлы:
-- `🔑 secrets.yaml` → `_open_secrets`
-- `⚙️ config.yaml` → `_open_config`
-
-При первом запуске без `secrets.yaml` — предупреждение в лог GUI.
+Редактируй `secrets.yaml` / `config.yaml` рядом с `menu.bat` (блокнот или IDE).
+При первом запуске без `secrets.yaml` — предупреждение в лог.
 
 ## Чеклист при добавлении настройки
 

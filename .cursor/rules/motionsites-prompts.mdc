@@ -11,7 +11,7 @@ alwaysApply: true
 
 - красивый дизайн, анимация, motion, hero, лендинг, portfolio, SaaS UI
 - Framer Motion, scroll animation, parallax, glassmorphism, 3D hero
-- редизайн экрана SubHub, sidebar, splash, onboarding, маркетинговая страница
+- редизайн маркетинговой страницы / веб-прототипа SubHub
 - Canvas, React-лендинг, Tailwind, «как на motionsites»
 - слова: MotionSites, motion sites, premium hero, animated background
 
@@ -31,7 +31,7 @@ alwaysApply: true
 
 ## Адаптация под SubHub
 
-- `app.py` / CustomTkinter: цвета, типографика, spacing, идеи motion — **без** слепого копирования React.
+- Основной продукт — консоль (`subhub/`); MotionSites — для **веб/Canvas**, не для удалённого Tkinter GUI.
 - Веб/Canvas: следуй промпту (React + Tailwind + Framer Motion).
 
 ## Premium
@@ -43,7 +43,6 @@ alwaysApply: true
 1. Палитра / паттерн / UX → `search.py ... --design-system` (UI/UX Pro Max)
 2. Hero / motion → промпт MotionSites
 3. **Веб/React** → Magic MCP `/ui` (см. `.cursor/rules/magic-mcp.mdc`)
-4. **SubHub Tkinter** → токены + layout в `app.py` без Magic
 
 ## Ограничения
 

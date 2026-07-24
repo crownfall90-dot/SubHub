@@ -3,8 +3,8 @@ name: magic-mcp
 description: >-
   21st.dev Magic MCP — генерация React/UI-компонентов через /ui в Cursor.
   Применяется при веб-UI, React, Tailwind, лендингах, dashboard в браузере,
-  «сделай как v0», компоненты из 21st.dev. SubHub GUI (CustomTkinter) — только
-  как референс; код пиши в app.py вручную. Требует API key и MCP в .cursor/mcp.json.
+  «сделай как v0», компоненты из 21st.dev. SubHub GUI (console) — только
+  как референс; код пиши в subhub/menu.py вручную. Требует API key и MCP в .cursor/mcp.json.
 ---
 
 # Magic MCP (21st.dev)
@@ -33,7 +33,7 @@ npx @21st-dev/cli@latest install cursor --api-key <KEY>
 | Hero / motion prompt | **MotionSites** (`vendor/motionsites_prompts/`) |
 | Готовый React/Tailwind компонент | **Magic MCP** (`/ui ...`) |
 
-**SubHub `app.py` (CustomTkinter)** — Magic не пишет в Tkinter напрямую. Бери идеи/структуру из сгенерированного React, переноси токены и layout в CTk.
+**SubHub `subhub/menu.py` (console)** — Magic не пишет в Tkinter напрямую. Бери идеи/структуру из сгенерированного React, переноси токены и layout в CTk.
 
 ## Workflow в чате
 

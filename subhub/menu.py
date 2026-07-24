@@ -458,7 +458,7 @@ def _patch_runtime_state(**kwargs) -> dict:
 
 
 def runtime_touch(event: str = "") -> None:
-    """Сигнал для GUI: данные изменились (карты, гифт-карты, оплата и т.д.)."""
+    """Обновить метку last_event в runtime_state (карты, гифт-карты, оплата)."""
     _patch_runtime_state(last_event=event, last_event_ts=time.time())
 
 
@@ -829,13 +829,12 @@ def pause(msg: str = "  Нажмите Enter для продолжения..."):
 
 
 def run(
-    cmd: list[str], *, hidden: bool | None = None, timeout: float | None = 300,
+    cmd: list[str], *, hidden: bool = False, timeout: float | None = 300,
 ) -> int:
-    """Запускает команду. Без консольного окна при запуске под pythonw."""
-    import winproc
+    """Запускает команду. hidden=True — без консольного окна (winproc)."""
     kw: dict = {}
-    use_hidden = winproc.is_gui_host() if hidden is None else hidden
-    if use_hidden:
+    if hidden:
+        import winproc
         kw = winproc.hidden_kwargs(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1453,7 +1452,6 @@ async def _open_chrome_keep_alive(profile_path: Path, url: str | None = None) ->
         _clear_stale_profile_locks(profile_path)
 
     # Ручной Chrome: прокси если включён; VeepN не поднимаем (только при автоматизации)
-    set_profile_op_stage(profile_path, "Открытие Chrome")
     _, proxy, _ = await _resolve_profile_scenario_network(
         profile_path, allow_vpn_extension=False,
     )
@@ -1542,7 +1540,6 @@ async def _open_chrome_keep_alive(profile_path: Path, url: str | None = None) ->
                 break
             await asyncio.sleep(0.5)
     finally:
-        set_profile_op_stage(profile_path, "")
         if ctx:
             with contextlib.suppress(Exception):
                 await _vpn_disconnect(ctx)
@@ -7271,7 +7268,7 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
 
 
 def _profile_addr_meta(addr: dict | None) -> dict:
-    """Поля адреса для .profile_meta.json (GUI показывает под «Создан»)."""
+    """Поля адреса для .profile_meta.json."""
     if not addr:
         return {}
     name = str(addr.get("name") or "").strip()
@@ -7511,7 +7508,6 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             result["status"] = "vpn_failed"
             result["error"] = net_err
             return result
-        set_profile_op_stage(profile_path or username, "Активация · браузер")
         pw = await async_playwright().start()
         _pre_inject_chrome_prefs(profile_path)
         ctx = await pw.chromium.launch_persistent_context(
@@ -7531,7 +7527,6 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
             return result
 
         store_url = "https://www.flipkart.com/flipkart-black-store"
-        set_profile_op_stage(profile_path or username, "Активация · Black Store")
         if use_vpn or proxy:
             ok_nav, page, nav_err = await _navigate_flipkart_resilient(
                 ctx, page, store_url, label=username, profile_path=profile_path,
@@ -7962,7 +7957,6 @@ async def _check_black_store_activation(profile_path: Path, username: str = "",
         result["error"] = str(e)
         return result
     finally:
-        set_profile_op_stage(profile_path or username, "")
         await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
 
 
@@ -9151,7 +9145,7 @@ async def _check_recent_black_orders(page) -> list:
 async def _do_fill_address(profile_path: Path, addr: dict,
                            stop_at_payment: bool = False) -> tuple[bool, str]:
     """Открывает профиль, проверяет вход и заполняет форму адреса через Buy Now."""
-    # Актуальный способ оплаты из файла (GUI мог переключить в другом процессе)
+    # Актуальный способ оплаты из файла
     with contextlib.suppress(Exception):
         _pay_method[0] = _load_pay_method()
     # Как bot.py: сброс sticky-cancel после предыдущего Stop/shutdown
@@ -9160,7 +9154,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
     use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
     if net_err:
         return False, net_err
-    set_profile_op_stage(profile_path, "Сеть / браузер")
     if not use_vpn and not proxy:
         # Лёгкая проба (сокет/httpx) не совпадает с TLS-отпечатком реального Chrome
         # и даёт ложное «недоступно», хотя браузер Flipkart открывает. Поэтому
@@ -9204,7 +9197,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             page = await _main_work_page(ctx)
             with contextlib.suppress(Exception):
                 await page.bring_to_front()
-        set_profile_op_stage(profile_path, "Открытие Flipkart")
         _stealth2 = _build_stealth_js_m()
         if _stealth2:
             await ctx.add_init_script(_stealth2)
@@ -9296,15 +9288,12 @@ async def _do_fill_address(profile_path: Path, addr: dict,
             return False, _NOT_LOGGED_IN_MSG
 
         # Buy Now создаёт реальную сессию чекаута (прямой URL формы не работает)
-        set_profile_op_stage(profile_path, "Buy Now")
         err = await _click_buy_now(page, product_url, skip_goto=True)
         if err:
             return False, err
 
         # После нажатия Buy Now браузер всегда оставляем открытым
         _keep_open = True
-        set_profile_op_stage(profile_path, "Заполнение адреса")
-
         async def _fill_addr_and_wait():
             """Заполняет форму адреса и ждёт viewcheckout."""
             lat, lon = _CITY_COORDS.get(addr.get("city", ""), (20.5937, 78.9629))
@@ -9362,7 +9351,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
                 return False, "Кнопка Save Address не найдена в форме адреса"
 
         # ── Шаг B: viewcheckout → email → Continue → payments ───────────────
-        set_profile_op_stage(profile_path, "Чекаут / Continue")
         async def _oos_delete_return(retry_done: bool = False):
             """OOS — профиль НЕ удаляем сами. Закрываем браузер и сообщаем
             вызывающему кодом OUT_OF_STOCK; удаление — только после подтверждения."""
@@ -9509,7 +9497,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
 
         if stop_at_payment:
             import time as _t_sap
-            set_profile_op_stage(profile_path, "Страница оплаты")
             with contextlib.suppress(Exception):
                 page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
                 await _maximize_window(ctx, page)
@@ -9589,7 +9576,6 @@ async def _do_fill_address(profile_path: Path, addr: dict,
         _keep_open = False
         return False, msg
     finally:
-        set_profile_op_stage(profile_path, "")
         if not _keep_open:
             await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
         else:
@@ -10959,41 +10945,6 @@ def _to_gmail(email: str) -> str:
 import threading as _threading_pc
 _purchase_cancel = _threading_pc.Event()
 
-# Этап текущего сценария по профилю (phone10 → текст) — GUI читает для блока «В процессе».
-_profile_op_stages: dict[str, str] = {}
-
-
-def _profile_stage_key(phone_or_path) -> str:
-    if phone_or_path is None:
-        return ""
-    with contextlib.suppress(Exception):
-        ph = _phone_from_path(Path(phone_or_path))
-        if ph:
-            digits = "".join(c for c in ph if c.isdigit())
-            return digits[-10:] if len(digits) >= 10 else digits
-    digits = "".join(c for c in str(phone_or_path) if c.isdigit())
-    return digits[-10:] if len(digits) >= 10 else (digits or str(phone_or_path))
-
-
-def set_profile_op_stage(phone_or_path, stage: str) -> None:
-    """Пишет этап сценария для GUI (пустая строка — сброс)."""
-    key = _profile_stage_key(phone_or_path)
-    if not key:
-        return
-    with _app_lock:
-        if stage:
-            _profile_op_stages[key] = stage
-        else:
-            _profile_op_stages.pop(key, None)
-
-
-def get_profile_op_stage(phone: str) -> str:
-    key = _profile_stage_key(phone)
-    if not key:
-        return ""
-    with _app_lock:
-        return _profile_op_stages.get(key, "")
-
 
 def stop_profile_op(profile_path) -> int:
     """Стоп сценария по профилю: флаг отмены + kill Chrome этого профиля."""
@@ -11001,7 +10952,6 @@ def stop_profile_op(profile_path) -> int:
     killed = 0
     with contextlib.suppress(Exception):
         killed = int(_kill_chrome_for_profile(profile_path) or 0)
-    set_profile_op_stage(profile_path, "Остановка…")
     return killed
 
 
@@ -16027,7 +15977,6 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         use_vpn, proxy, net_err = await _resolve_profile_scenario_network(profile_path)
         if net_err:
             return False, net_err
-        set_profile_op_stage(profile_path, "Покупка · сеть / браузер")
         if not use_vpn and not proxy:
             # Лёгкая проба не совпадает с TLS-отпечатком реального Chrome и даёт
             # ложное «недоступно» — не блокируем, браузер решает по факту
@@ -16178,7 +16127,6 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 return False, _NOT_LOGGED_IN_MSG
 
         # Уже на странице товара — Buy Now; иначе переход на тариф
-        set_profile_op_stage(profile_path, "Buy Now")
         _on_product = "flipkart-black" in (page.url or "") and "/p/" in (page.url or "")
         if _on_product:
             print(f"  {DIM}Уже на странице товара — Buy Now…{RST}")
@@ -16268,7 +16216,6 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                 return False, "Кнопка Save Address не найдена"
 
         # ── Шаг B: viewcheckout → email → Continue → payments ───────────────
-        set_profile_op_stage(profile_path, "Чекаут / Continue")
         if "viewcheckout" in page.url or (
             "checkout" in (page.url or "") and "payments" not in (page.url or "")
         ):
@@ -16579,7 +16526,6 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
         _keep_open = False
         return False, msg
     finally:
-        set_profile_op_stage(profile_path, "")
         if not _keep_open and _owns_ctx:
             await _close_browser_session(
                 ctx, pw, profile_path, disconnect_vpn=True,
@@ -18919,18 +18865,12 @@ def _update_notify_loop() -> None:
 
 
 def _check_updates_bg() -> None:
-    """Фоновая проверка. В GUI — только HTTP (без вспышек git/cmd)."""
+    """Фоновая проверка обновлений (git fetch или HTTP)."""
     global _update_available, _update_commits, _update_checked, _update_checked_at
     _cwd = _HERE
     lines: list[str] = []
     _git_ok = False
     use_git = (_cwd / ".git").exists()
-    try:
-        import winproc as _wp
-        if _wp.is_gui_host():
-            use_git = False
-    except Exception:
-        pass
     if use_git:
         try:
             import winproc

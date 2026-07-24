@@ -71,10 +71,10 @@ Ping-профиль: `data/_vpn_ping_profile/`
 | Уровень | Команда | Когда |
 |---------|---------|-------|
 | Smoke | `python scripts/smoke_test.py` | После любых правок infra/log/VPN |
-| Меню | `python menu.py` | Интерактив, выбор профиля/сценария |
+| Меню | `python -m subhub` | Интерактив, выбор профиля/сценария |
 | До оплаты | `python scripts/run_to_payment.py` | Полный путь Buy Now → адрес → checkout |
 | С телефоном | `python scripts/run_to_payment.py --phone 91XXXXXXXXXX` | Конкретный профиль |
-| Full cycle (boot) | `python menu.py --full-cycle --tariffs 3 --accounts 1 --headless` | Быстрый старт без покупки |
+| Full cycle (boot) | `python -m subhub --full-cycle --tariffs 3 --accounts 1 --headless` | Быстрый старт без покупки |
 
 CLI `--fill-to-payment` обрабатывается в `menu.py` (~строка 14326).
 

@@ -11,7 +11,7 @@ Upstream: `vendor/magic-mcp/` · MCP: `@21st-dev/magic` в `.cursor/mcp.json`.
 
 - React, Tailwind, shadcn-подобные компоненты, веб-dashboard, лендинг в браузере
 - «как v0», «сгенерируй UI», navigation bar, card grid, форма на React
-- Canvas / веб-часть SubHub (не основной CustomTkinter в `app.py`)
+- Canvas / веб-прототипы вокруг SubHub
 - слова: Magic MCP, 21st.dev, `/ui`, magic-mcp
 
 **Перед вызовом MCP** — если задача про стиль/UX: сначала UI/UX Pro Max (`search.py --design-system`), для hero — MotionSites prompt.
@@ -28,10 +28,7 @@ Upstream: `vendor/magic-mcp/` · MCP: `@21st-dev/magic` в `.cursor/mcp.json`.
 
 ## SubHub — важно
 
-| Стек | Действие |
-|------|----------|
-| `app.py` CustomTkinter | Magic **не** пишет CTk; используй вывод как референс, токены из Pro Max |
-| React / HTML / Canvas | Magic MCP генерирует код напрямую |
+Основной продукт — **консоль** (`menu.bat` / `subhub/`). Magic MCP полезен только для веб/Canvas; не выдумывать CustomTkinter `app.py`.
 
 ## Настройка (коллеги)
 
@@ -46,5 +43,3 @@ Upstream: `vendor/magic-mcp/` · MCP: `@21st-dev/magic` в `.cursor/mcp.json`.
 ```
 UI/UX Pro Max (токены) → MotionSites (hero prompt) → Magic MCP (/ui React) → код
 ```
-
-Для чистого Tkinter-экрана: Pro Max → ручная верстка в `app.py` (без Magic).
