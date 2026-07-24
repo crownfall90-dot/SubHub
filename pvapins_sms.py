@@ -35,7 +35,12 @@ _ERROR_NO_NUMBERS = (
     "new numbers registration in progress",
     "error 102",
 )
-_ERROR_BALANCE = ("your balance is expired", "insufficient", "low balance")
+_ERROR_BALANCE = (
+    "your balance is expired",
+    "insufficient",
+    "low balance",
+    "not enough balance",
+)
 
 
 class PVAPinsSMSClient:
@@ -240,6 +245,9 @@ class PVAPinsSMSClient:
             if m:
                 number = m.group(1)
         if not number:
+            low = raw.lower()
+            if any(x in low for x in _ERROR_BALANCE):
+                raise InsufficientBalanceError("Недостаточно средств на балансе PVAPins")
             raise NumberUnavailableError(f"PVAPins empty number: {raw[:120]}")
         number = re.sub(r"\D", "", number)
         if number.startswith("91") and len(number) > 10:

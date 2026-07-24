@@ -367,6 +367,65 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _process_name_cmdline(pid: int) -> tuple[str, str]:
+    """Имя exe + CommandLine процесса (Windows). Пустые строки при ошибке."""
+    if not pid or pid <= 0:
+        return "", ""
+    if os.name != "nt":
+        try:
+            import pathlib
+            name = pathlib.Path(f"/proc/{int(pid)}/exe").resolve().name
+            cmd = pathlib.Path(f"/proc/{int(pid)}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+            return name, cmd
+        except Exception:
+            return "", ""
+    try:
+        # PowerShell быстрее/доступнее чем wmic на Win11
+        r = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
+                f"-ErrorAction SilentlyContinue; if($p){{$p.Name; $p.CommandLine}}",
+            ],
+            capture_output=True, text=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+        if not lines:
+            return "", ""
+        name = lines[0]
+        cmd = lines[1] if len(lines) > 1 else ""
+        return name, cmd
+    except Exception:
+        return "", ""
+
+
+def _is_our_automation_pid(pid: int) -> bool:
+    """True только если PID жив и это наш python main.py / menu.py full-cycle.
+
+    Иначе PID reuse (браузер и т.п.) даёт ложное «Автоматизация запущена».
+    """
+    if not _pid_alive(pid):
+        return False
+    name, cmd = _process_name_cmdline(pid)
+    name_l = (name or "").lower()
+    cmd_l = (cmd or "").lower()
+    if name_l and name_l not in ("python.exe", "pythonw.exe", "py.exe"):
+        return False
+    if cmd_l:
+        if "main.py" in cmd_l:
+            return True
+        if "menu.py" in cmd_l and ("--full-cycle" in cmd_l or "--accounts" in cmd_l or "--stop-at-email" in cmd_l):
+            return True
+        # python жив, но это не наша автоматизация (например другой скрипт)
+        return False
+    # Нет cmdline — принимаем только свежий python-процесс (< 6 ч)
+    if name_l in ("python.exe", "pythonw.exe", "py.exe"):
+        started = float(_read_runtime_state().get("automation_started") or 0)
+        return bool(started) and (time.time() - started) < 6 * 3600
+    return False
+
+
 def _read_runtime_state() -> dict:
     try:
         if _RUNTIME_STATE_FILE.exists():
@@ -460,10 +519,11 @@ def clear_automation_proc() -> None:
 def shared_automation_running() -> tuple[bool, dict]:
     st = _read_runtime_state()
     pid = int(st.get("automation_pid") or 0)
-    if pid and _pid_alive(pid):
+    if pid and _is_our_automation_pid(pid):
         return True, st
     if pid:
         clear_automation_proc()
+        st = _read_runtime_state()
     return False, st
 
 
@@ -473,7 +533,7 @@ def _kill_automation_proc() -> bool:
     st = _read_runtime_state()
     pid = int(st.get("automation_pid") or 0)
     killed = False
-    if pid and _pid_alive(pid):
+    if pid and _is_our_automation_pid(pid):
         try:
             if os.name == "nt":
                 subprocess.run(
