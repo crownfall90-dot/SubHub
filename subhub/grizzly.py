@@ -964,11 +964,6 @@ async def _tg_login_ok_notify(phone_10: str) -> None:
         pass
 
 
-async def _send_cookies_to_tg_standalone(ctx2, phone_10: str, otp_code: str = "") -> None:
-    """Deprecated: cookie export now runs in bg_login.py."""
-    return None
-
-
 def _submit_bg_cancel(activation_ids: list, api_key: str,
                        login_url: str = "", months: int = 3) -> None:
     """Для обратной совместимости: регистрирует и отменяет номера."""
@@ -1119,7 +1114,3 @@ def cleanup_all_rentals_on_exit():
         _start_monitor_if_needed()
 
 
-async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
-                              login_url: str, months: int, phone_10: str = "") -> None:
-    """Deprecated: background login now runs in bg_login.py."""
-    return None

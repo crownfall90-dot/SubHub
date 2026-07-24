@@ -28,9 +28,10 @@ _ORDERS_FILE      = _DATA / "ggsel_orders.json"
 _SEEN_MSGS_FILE   = _DATA / "ggsel_seen_msgs.json"
 _TEMPLATES_FILE   = _DATA / "ggsel_templates.json"
 _SEEN_REVIEWS_FILE = _DATA / "ggsel_seen_reviews.json"
+_UNREAD_FILE       = _DATA / "ggsel_unread.json"  # invoice_id(str) -> непрочитанные сообщения покупателя
 
 POLL_INTERVAL        = 15.0  # секунды между проверкой заказов
-MSG_POLL_INTERVAL    =  5.0  # секунды между проверкой сообщений
+MSG_POLL_INTERVAL    =  8.0  # секунды между проверкой сообщений (компромисс отклик/нагрузка API)
 REVIEW_POLL_INTERVAL = 120.0 # секунды между проверкой отзывов
 
 # Обрабатываем только заказы YouTube Premium
@@ -53,9 +54,13 @@ def emit_ggs_notify(item: dict) -> None:
     """Положить событие GGSell в очередь TG-бота."""
     notify_queue.put(item)
 
-# Сообщения, отправленные НАМИ (продавцом/ботом) — чтобы монитор не принял их
-# за сообщения покупателя. Хранит (invoice_id, нормализованный_текст, время).
+# Сообщения, отправленные НАМИ (продавцом/ботом) — чтобы монитор (и консоль) не принял
+# их за сообщения покупателя. Хранит (invoice_id, нормализованный_текст, время).
+# Персистентно на диске — иначе после перезапуска консоли/бота (память деки теряется)
+# все ранее отправленные нами сообщения (например автоприветствие при заказе,
+# просмотренное спустя часы) снова показывались бы как «от покупателя».
 import collections as _collections
+_SENT_MSGS_FILE = _DATA / "ggsel_sent_msgs.json"
 _recent_sent: "_collections.deque" = _collections.deque(maxlen=400)
 
 
@@ -63,15 +68,39 @@ def _norm_msg(text: str) -> str:
     return " ".join(str(text or "").split())[:200].lower()
 
 
-def record_sent_message(invoice_id, text: str) -> None:
-    """Запомнить отправленное продавцом сообщение (фильтр своих сообщений)."""
+def _load_recent_sent() -> None:
     try:
-        _recent_sent.append((int(invoice_id), _norm_msg(text), time.time()))
+        raw = json.loads(_SENT_MSGS_FILE.read_text(encoding="utf-8"))
+        for item in raw.get("sent", []):
+            _recent_sent.append((int(item[0]), str(item[1]), float(item[2])))
     except Exception:
         pass
 
 
-def is_own_sent(invoice_id, text: str, max_age: float = 1800.0) -> bool:
+def _save_recent_sent() -> None:
+    with _STATE_LOCK:
+        try:
+            _atomic_json_write(_SENT_MSGS_FILE, {"sent": list(_recent_sent)})
+        except Exception:
+            pass
+
+
+_load_recent_sent()
+
+
+def record_sent_message(invoice_id, text: str) -> None:
+    """Запомнить отправленное продавцом сообщение (фильтр своих сообщений)."""
+    try:
+        _recent_sent.append((int(invoice_id), _norm_msg(text), time.time()))
+        _save_recent_sent()
+    except Exception:
+        pass
+
+
+# max_age практически бессрочный (deque и так ограничена 400 записями) — раньше
+# 1800с (30 мин) приводили к тому, что уже спустя полчаса собственное сообщение
+# (например автоприветствие) переставало распознаваться и подписывалось «покупатель».
+def is_own_sent(invoice_id, text: str, max_age: float = 60 * 60 * 24 * 90) -> bool:
     """True, если сообщение совпадает с недавно отправленным нами по тому же заказу."""
     try:
         inv = int(invoice_id)
@@ -170,6 +199,46 @@ DS_MSG_DELAY = (
     "напишу, как только всё будет готово 🙏"
 )
 
+# Фиксированные куски наших шаблонов — по ним узнаём свои сообщения даже если
+# GGSell API не проставляет ни одного из полей is_seller/sender/type/role/... и
+# is_own_sent не сработал (сообщение отправлено давно или через сайт GGSell,
+# а не через SubHub). Берём первые ~30 символов — этого достаточно как отпечатка
+# и не ломается на {link}/{amount}-подстановках.
+_OWN_TEMPLATE_SNIPPETS = tuple(
+    _norm_msg(t)[:30] for t in (
+        MSG_TEMPLATE, MSG_REVIEW_PROMO, MSG_WAIT, MSG_GREETING,
+        DS_MSG_ASK_CREDS, DS_MSG_ASK_PASSWORD, DS_MSG_PROCESSING,
+        DS_MSG_DONE, DS_MSG_FAIL_CREDS, DS_MSG_DELAY,
+    ) if t.strip()
+)
+
+
+def classify_is_seller(invoice_id, msg: dict) -> bool:
+    """Определить, что сообщение чата отправлено НАМИ (продавцом), а не покупателем.
+
+    Единая проверка для консоли (menu.py), монитора и Telegram-бота — раньше
+    у каждого была своя урезанная версия, из-за чего в консоли старые собственные
+    сообщения (например автоприветствие) подписывались «Покупатель».
+    """
+    text = str(msg.get("text") or msg.get("message") or msg.get("body") or "")
+    norm = _norm_msg(text)
+    return bool(
+        msg.get("is_current_user")
+        or msg.get("is_seller")
+        or msg.get("is_seller_msg")
+        or msg.get("sender") == "seller"
+        or msg.get("type") == "seller"
+        or msg.get("from_seller")
+        or msg.get("role") == "seller"
+        or msg.get("who") == "seller"
+        or msg.get("author_type") == "seller"
+        or msg.get("user_type") == "seller"
+        or msg.get("is_mine")
+        or int(msg.get("type_message") or msg.get("type_msg") or -1) == 1
+        or (text and is_own_sent(invoice_id, text))
+        or (norm and any(norm.startswith(s) for s in _OWN_TEMPLATE_SNIPPETS if s))
+    )
+
 
 # ── Хранение и загрузка шаблонов сообщений ───────────────────────────────────
 
@@ -246,6 +315,48 @@ def _save_seen_reviews(seen: Set[str]) -> None:
         _atomic_json_write(_SEEN_REVIEWS_FILE, {"seen": sorted(seen)})
 
 
+# ── Непрочитанные сообщения покупателей (для консоли: подсветка + сортировка) ─
+
+def _load_unread() -> dict:
+    try:
+        return json.loads(_UNREAD_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_unread(unread: dict) -> None:
+    with _STATE_LOCK:
+        _atomic_json_write(_UNREAD_FILE, unread)
+
+
+def get_unread_counts() -> dict:
+    """{invoice_id: количество непрочитанных сообщений покупателя} для экрана консоли."""
+    raw = _load_unread()
+    out = {}
+    for k, v in raw.items():
+        try:
+            n = int(v)
+            if n > 0:
+                out[int(k)] = n
+        except Exception:
+            pass
+    return out
+
+
+def mark_order_read(invoice_id) -> None:
+    """Сбросить счётчик непрочитанных для заказа — вызывается при открытии заказа в консоли."""
+    try:
+        inv_key = str(int(invoice_id))
+    except Exception:
+        return
+    unread = _load_unread()
+    if unread.get(inv_key):
+        unread[inv_key] = 0
+        _save_unread(unread)
+    if _monitor_instance is not None:
+        _monitor_instance._unread[inv_key] = 0
+
+
 # ── Монитор ───────────────────────────────────────────────────────────────────
 
 class GGSellMonitor:
@@ -279,6 +390,7 @@ class GGSellMonitor:
         self._running = False
         self._seen_msgs: dict    = {}
         self._seen_reviews: set  = set()
+        self._unread: dict       = {}
 
     def stop(self) -> None:
         self._running = False
@@ -288,6 +400,7 @@ class GGSellMonitor:
         processed = _load_processed()
         self._seen_msgs    = _load_seen_msgs()
         self._seen_reviews = _load_seen_reviews()
+        self._unread        = _load_unread()
         try:
             from . import deepseek_orders as _ds
             _ds.sweep_stale()
@@ -366,6 +479,7 @@ class GGSellMonitor:
         # в уже известных чатах (раньше первый проход терял их без уведомления).
         _orig_keys = set(seen.keys())
         changed = False
+        _unread_changed = False
 
         for chat in chats:
             id_i = int(chat.get("id_i") or chat.get("invoice_id") or chat.get("id") or 0)
@@ -413,24 +527,11 @@ class GGSellMonitor:
                 _mtext = str(msg.get("text") or msg.get("message") or msg.get("body") or "")
                 # Определяем, чьё сообщение: наше (продавца/бота) или покупателя.
                 # Фильтр read убран: повторы исключаются по last_id.
-                is_seller = bool(
-                    is_own_sent(id_i, _mtext)
-                    or msg.get("is_current_user")
-                    or msg.get("is_seller")
-                    or msg.get("is_seller_msg")
-                    or msg.get("sender") == "seller"
-                    or msg.get("type") == "seller"
-                    or msg.get("from_seller")
-                    or msg.get("role") == "seller"
-                    or msg.get("who") == "seller"
-                    or msg.get("author_type") == "seller"
-                    or msg.get("user_type") == "seller"
-                    or msg.get("is_mine")
-                    or int(msg.get("type_message") or msg.get("type_msg") or -1) == 1
-                )
+                is_seller = classify_is_seller(id_i, msg)
                 # Уведомляем о ВСЕХ сообщениях (и своих, и покупателя), но с флагом —
                 # бот покажет «от вас» или «от покупателя».
-                buyer_email = (msg.get("author") or {}).get("email") or ""
+                buyer_email = ((msg.get("author") or {}).get("email")
+                               or chat.get("email") or "")
                 emit_ggs_notify({
                     "type": "new_message",
                     "invoice_id": id_i,
@@ -442,6 +543,11 @@ class GGSellMonitor:
                 logger.info(
                     f"GGSell: новое сообщение ({'продавец' if is_seller else 'покупатель'}) "
                     f"в заказе #{id_i}")
+                # Сообщение от покупателя — считаем непрочитанным до открытия
+                # заказа в консоли (см. get_unread_counts / mark_order_read).
+                if not is_seller:
+                    self._unread[seen_key] = int(self._unread.get(seen_key) or 0) + 1
+                    _unread_changed = True
                 # Заказ DeepSeek ждёт данные аккаунта — передаём сообщение покупателя
                 if not is_seller:
                     try:
@@ -458,6 +564,8 @@ class GGSellMonitor:
 
         if changed:
             _save_seen_msgs(seen)
+        if _unread_changed:
+            _save_unread(self._unread)
 
     # YOUTUBE_PREMIUM_PRODUCT_ID из константы бота (дублируем)
     _YT_GGSEL_ID = 102276416

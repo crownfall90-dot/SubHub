@@ -699,10 +699,28 @@ def _gh_get(url: str, token: str = "") -> bytes:
     with opener.open(urllib.request.Request(url, headers=hdrs), timeout=15) as r:
         return r.read()
 
+_OTA_CACHE_FILE = None  # инициализируется лениво в _http_check_updates (нужен _HERE)
+_OTA_CACHE_TTL  = 180.0  # сек — без токена лимит GitHub API 60 запросов/час на IP
+
+
 def _http_check_updates() -> list[str]:
-    """Проверяет новые коммиты через GitHub API — без git."""
+    """Проверяет новые коммиты через GitHub API — без git.
+
+    Кэшируется на диске на _OTA_CACHE_TTL секунд: повторные ручные проверки
+    («У» в меню) и параллельные процессы на одном IP не жгут лимит 60 запросов/час
+    (без токена в secrets.yaml)."""
+    global _OTA_CACHE_FILE
     try:
         import json as _j
+        if _OTA_CACHE_FILE is None:
+            _OTA_CACHE_FILE = _HERE / "data" / "._ota_check_cache.json"
+        try:
+            _cache = _j.loads(_OTA_CACHE_FILE.read_text(encoding="utf-8"))
+            if time.time() - float(_cache.get("ts") or 0) < _OTA_CACHE_TTL:
+                return list(_cache.get("commits") or [])
+        except Exception:
+            pass
+
         owner, repo, token = _parse_git_remote()
         if not owner:
             return []
@@ -740,6 +758,12 @@ def _http_check_updates() -> list[str]:
                 break
             msg = c["commit"]["message"].split("\n")[0][:70]
             result.append(f"{sha[:7]} {msg}")
+        try:
+            _OTA_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _OTA_CACHE_FILE.write_text(
+                _j.dumps({"ts": time.time(), "commits": result}), encoding="utf-8")
+        except Exception:
+            pass
         return result
     except Exception:
         return []
@@ -19667,11 +19691,36 @@ async def _ggs_overview(api_key: str, seller_id: int):
                 orders = await cli.get_last_orders()
             except Exception:
                 orders = []
+        # Email покупателя часто отсутствует в списке заказов (buyer_email пуст),
+        # но есть в объекте чата (/debates/v2/chats) — один запрос на все заказы
+        # сразу, дешевле, чем дёргать детали каждого заказа по отдельности.
+        try:
+            chats = await cli.get_chats()
+        except Exception:
+            chats = []
+        chat_email = {}
+        for c in (chats or []):
+            cid = int(c.get("id_i") or c.get("invoice_id") or c.get("id") or 0)
+            em = str(c.get("email") or "").strip()
+            if cid and em:
+                chat_email[cid] = em
+        for o in orders:
+            try:
+                inv = int(o.get("invoice_id") or o.get("id") or 0)
+            except Exception:
+                inv = 0
+            if inv and inv in chat_email and not (o.get("buyer_email") or o.get("email")):
+                o["buyer_email"] = chat_email[inv]
         return bal, orders
 
 
 async def _ggs_order_full(api_key: str, seller_id: int, order_id: int):
-    """Детали заказа (buyer_email, status, options, reward) + сообщения."""
+    """Детали заказа (buyer_email, status, options, reward) + сообщения.
+
+    buyer_email в v2-ответе GGSell часто пуст, поэтому email покупателя
+    дособираем из нескольких источников: order_info (options/buyer_info),
+    сообщений чата (author.email) и объекта чата (/debates/v2/chats).
+    """
     from ggsell.client import GGSellClient
     async with GGSellClient(api_key, seller_id) as cli:
         try:
@@ -19682,6 +19731,32 @@ async def _ggs_order_full(api_key: str, seller_id: int, order_id: int):
             msgs = await cli.get_messages(order_id)
         except Exception:
             msgs = []
+        if not isinstance(v2, dict):
+            v2 = {}
+        buyer = v2.get("buyer") or v2.get("buyer_info") or {}
+        email = str(buyer.get("email") or v2.get("buyer_email") or "").strip()
+        if not email:
+            try:
+                email = str(await cli.get_buyer_email(order_id) or "").strip()
+            except Exception:
+                pass
+        if not email:
+            for m in (msgs or []):
+                a_email = str((m.get("author") or {}).get("email") or "").strip()
+                if a_email:
+                    email = a_email
+                    break
+        if not email:
+            try:
+                for c in await cli.get_chats():
+                    cid = int(c.get("id_i") or c.get("invoice_id") or c.get("id") or 0)
+                    if cid == order_id:
+                        email = str(c.get("email") or "").strip()
+                        break
+            except Exception:
+                pass
+        if email:
+            v2["buyer_email"] = email
         return v2, msgs
 
 
@@ -19781,6 +19856,11 @@ def _ggs_reviews_screen(api_key: str, seller_id: int) -> None:
 
 def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
     inv = int(order.get("invoice_id") or order.get("id") or 0)
+    try:
+        from ggsell.monitor import mark_order_read
+        mark_order_read(inv)  # заказ открыт — сбрасываем счётчик непрочитанных
+    except Exception:
+        pass
     while True:
         cls()
         header(f"GGSELL — ЗАКАЗ #{inv}", C)
@@ -19810,20 +19890,21 @@ def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
         if not msgs:
             print(f"  {DIM}Сообщений нет.{RST}")
         try:
-            from ggsell.monitor import is_own_sent as _own_sent
+            from ggsell.monitor import classify_is_seller as _classify_seller
         except Exception:
-            _own_sent = None
+            _classify_seller = None
         for m in (msgs[-15:] if isinstance(msgs, list) else []):
             txt = str(m.get("message") or m.get("text") or m.get("content") or "").strip()
             ts = str(m.get("date_written") or m.get("date")
                      or m.get("created_at") or "")[:16].replace("T", " ")
-            is_seller = bool(m.get("is_seller") or m.get("is_seller_msg")
-                             or m.get("sender") == "seller" or m.get("type") == "seller")
-            if not is_seller and _own_sent is not None and txt:
+            if _classify_seller is not None:
                 try:
-                    is_seller = _own_sent(inv, txt)
+                    is_seller = _classify_seller(inv, m)
                 except Exception:
-                    pass
+                    is_seller = False
+            else:
+                is_seller = bool(m.get("is_seller") or m.get("is_seller_msg")
+                                 or m.get("sender") == "seller" or m.get("type") == "seller")
             tag = f"{G}🏪 Вы{RST}" if is_seller else f"{C}👤 Покупатель{RST}"
             print(f"  [{tag}{DIM} {ts}{RST}]")
             if txt:
@@ -19881,21 +19962,38 @@ def screen_ggsell() -> None:
         plus = float(bal.get("plus") or 0.0)
         print(f"  💵 Баланс: {G}{BLD}${free:,.2f}{RST}    "
               f"{DIM}холд ${lock:,.2f}   ·   плюс ${plus:,.2f}{RST}")
-        shown = orders[:20] if isinstance(orders, list) else []
-        section(f"Последние заказы  [{len(orders) if isinstance(orders, list) else 0}]")
+        try:
+            from ggsell.monitor import get_unread_counts
+            unread = get_unread_counts()
+        except Exception:
+            unread = {}
+        all_orders = orders if isinstance(orders, list) else []
+        # Заказы с новыми сообщениями от покупателя — наверх списка (стабильная
+        # сортировка сохраняет исходный порядок по дате внутри каждой группы).
+        all_orders = sorted(
+            all_orders,
+            key=lambda o: -unread.get(int(o.get("invoice_id") or o.get("id") or 0), 0),
+        )
+        shown = all_orders[:20]
+        section(f"Последние заказы  [{len(all_orders)}]")
         print()
         if not shown:
             print(f"  {DIM}Заказов нет.{RST}")
         for i, o in enumerate(shown, 1):
             p = _ggs_parse_order(o)
-            # список (last-orders) тонкий: показываем покупателя если есть, иначе цену
-            mid = p["email"] or p["price"] or "—"
-            print(f"  {BLD}{Y}[{i:>2}]{RST}  {W}#{p['inv']}{RST}  "
-                  f"{DIM}{p['date']:<16}{RST}  {C}{mid}{RST}"
+            n_new = unread.get(p["inv"], 0)
+            email = p["email"] or "—"
+            col = G if n_new else C
+            badge = f"  {G}{BLD}✉ новых: {n_new}{RST}" if n_new else ""
+            idx_col = G if n_new else Y
+            print(f"  {BLD}{idx_col}[{i:>2}]{RST}  {W}#{p['inv']}{RST}  "
+                  f"{DIM}{p['date']:<16}{RST}  {col}{email}{RST}"
                   + (f"   {_ggs_st(p['status'])}" if p["status"] else "")
-                  + (f"   {G}+${p['sum_sell']}{RST}" if p["sum_sell"] else ""))
+                  + (f"   {G}+${p['sum_sell']}{RST}" if p["sum_sell"] else "")
+                  + badge)
             if p["name"]:
-                print(f"        {DIM}{p['name']}{RST}")
+                print(f"        {DIM}{p['name']}{RST}"
+                      + (f"   {DIM}цена {p['price']}{RST}" if p["price"] else ""))
         print()
         opt("О", "Отзывы покупателей", C)
         opt("R / Enter", "Обновить", C)
@@ -20771,8 +20869,13 @@ if __name__ == "__main__":
                 _migrate_config()
                 _startup_cleanup()
                 _start_log_tee()     # дублируем вывод в automation.log
-                # Отменяем «хвосты» GrizzlySMS до запуска монитора
-                _grizzly_module.startup_cleanup_active_rentals("старт консоли")
+                # Отменяем «хвосты» GrizzlySMS в фоне — раньше блокировало старт
+                # консоли до 45 сек (таймаут cancel_all_active_rentals_blocking).
+                # Монитор безопасно стартует параллельно: его API-скан «хвостов»
+                # запускается только когда есть свои _RENTALS (см. _rental_monitor_loop).
+                threading.Thread(
+                    target=_grizzly_module.startup_cleanup_active_rentals,
+                    args=("старт консоли",), daemon=True, name="rental-cleanup").start()
                 # Фоновый монитор GrizzlySMS — сканирует активные номера с первой секунды
                 _grizzly_module.start_global_monitor()
                 # Фоновый монитор GGSell — следит за новыми заказами
@@ -20789,8 +20892,9 @@ if __name__ == "__main__":
                 # Фоновая проверка обновлений (один раз при старте)
                 threading.Thread(target=_check_updates_bg, daemon=True, name="update-check").start()
                 screen_install(auto=True)
-                # Ждём первый ответ от Telegram API (макс 12 сек)
-                for _ in range(24):
+                # Ждём первый ответ от Telegram API (макс 4 сек — остальное статус
+                # досчитает в фоне, не стоит держать меню закрытым дольше)
+                for _ in range(8):
                     if _bot_module._tg_status != "starting":
                         break
                     time.sleep(0.5)

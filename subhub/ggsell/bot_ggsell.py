@@ -1962,7 +1962,7 @@ class GGSellBotHandler:
                 msgs = await cli.get_messages(inv, id_from=0)
             except Exception:
                 continue
-            from ggsell.monitor import is_own_sent as _own
+            from ggsell.monitor import classify_is_seller as _classify_seller
             last_buyer = None
             buyer_cnt = 0
             greet_msg = None
@@ -1974,12 +1974,7 @@ class GGSellBotHandler:
                 if marker and marker in _mtext:
                     greet_msg = m
                     continue
-                _is_seller = bool(
-                    m.get("is_current_user") or m.get("is_seller") or m.get("is_mine")
-                    or m.get("from_seller") or m.get("is_seller_msg")
-                    or int(m.get("type_message") or m.get("type_msg") or -1) == 1
-                )
-                if _is_seller or _own(inv, _mtext):   # продавец/наше отправленное — пропускаем
+                if _classify_seller(inv, m):   # продавец/наше отправленное — пропускаем
                     continue
                 buyer_cnt += 1
                 last_buyer = m   # по возрастанию id → последнее перезапишется
