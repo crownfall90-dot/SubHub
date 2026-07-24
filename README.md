@@ -67,19 +67,29 @@ secrets.yaml.example →  secrets.yaml
 
 ```
 SubHub/
-├── menu.py             # Ядро: консольное меню + автоматизация
-├── menu.bat            # Запуск консоли
-├── bot.py              # Telegram-бот (фоновый поток консоли)
-├── main.py             # Полный цикл входа
-├── grizzly.py          # GrizzlySMS: номера, OTP, фоновые задачи
-├── bg_login.py         # Фоновый вход / экспорт куков
-├── assets/             # Шаблоны для автоматизации (VPN, иконка расширений)
-├── vpn_extension/      # VPN-расширение для Flipkart
-├── ggsell/             # Модуль маркетплейса
-├── data/               # Runtime (создаётся автоматически, не в git)
-├── config.yaml         # Настройки (не в git)
-└── secrets.yaml        # API-ключи (не в git)
+├── menu.bat                 # Запуск консоли
+├── README.md
+├── requirements.txt
+├── VERSION
+├── config.yaml.example      # → скопировать в config.yaml
+├── secrets.yaml.example     # → скопировать в secrets.yaml
+├── subhub/                  # Код приложения
+│   ├── menu.py              # Ядро: консольное меню + автоматизация
+│   ├── main.py              # Полный цикл входа
+│   ├── bot.py               # Telegram-бот
+│   ├── grizzly.py / *_sms.py
+│   ├── bg_login.py
+│   └── ggsell/              # Маркетплейс
+├── scripts/                 # Утилиты и smoke-тесты
+├── docs/                    # CHANGELOG и доп. документы
+├── assets/                  # Картинки для автоматизации
+├── data/                    # Runtime (не в git)
+├── chrome_profiles*/        # Профили Chrome (не в git)
+├── config.yaml              # Настройки (не в git)
+└── secrets.yaml             # API-ключи (не в git)
 ```
+
+Запуск: **`menu.bat`** или `python -m subhub`
 
 ---
 
@@ -102,8 +112,8 @@ python -m playwright install chromium
 
 ### Что обновляется автоматически
 
-`menu.py`, `bot.py`, `main.py`, `menu.bat`, `ggsell/*`, `requirements.txt` и др. —
-полный список в `menu.py` → `_UPDATE_FILES`.
+`menu.bat`, `subhub/*`, `requirements.txt` и др. —
+полный список в `subhub/menu.py` → `_UPDATE_FILES`.
 
 > **Важно:** папка `vpn_extension/` обновляется только через `git pull` (слишком много файлов для OTA).
 

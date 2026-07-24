@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-_HERE = Path(__file__).parent
+from paths import ROOT as _HERE
 _DATA = _HERE / "data"
 _CARDS_FILE = _DATA / "cards.json"
 _CARD_ORDER_FILE = _DATA / "card_order.json"

@@ -15,7 +15,7 @@ if not defined PYEXE (
 )
 
 :loop
-"%PYEXE%" menu.py
+"%PYEXE%" -m subhub
 set "EX=%errorlevel%"
 
 if "%EX%"=="42" goto restart
@@ -30,3 +30,4 @@ goto loop
 echo.
 echo  Python завершился с ошибкой (код %EX%).
 ping -n 3 127.0.0.1 >nul 2>&1
+goto :eof

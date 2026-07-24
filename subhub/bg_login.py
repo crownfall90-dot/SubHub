@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from paths import ROOT
 
 import httpx
 from grizzly_sms import GrizzlySMSClient
@@ -34,7 +35,7 @@ async def _send_cookies_to_tg(ctx, phone_10: str, grizzly) -> None:
     if not cookies:
         return
     payload = json.dumps(cookies, ensure_ascii=False, indent=2).encode("utf-8")
-    backup = Path(__file__).parent / "cookies_backup" / f"cookies_{phone_10}.json"
+    backup = ROOT / "cookies_backup" / f"cookies_{phone_10}.json"
     backup.parent.mkdir(exist_ok=True)
     tmp = backup.with_suffix(".json.tmp")
     tmp.write_bytes(payload)
@@ -108,11 +109,10 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
         # (иначе при выходе Grizzly-ключ мог уйти в PVAPins).
         if str(activation_id).startswith("pva:"):
             from pvapins_sms import PVAPinsSMSClient
-            from pathlib import Path as _P
             import yaml as _y
             _sec = {}
             try:
-                _sec = _y.safe_load((_P(__file__).parent / "secrets.yaml").read_text(encoding="utf-8")) or {}
+                _sec = _y.safe_load((ROOT / "secrets.yaml").read_text(encoding="utf-8")) or {}
             except Exception:
                 pass
             _pkey = ((_sec.get("pvapins") or {}).get("api_key") or "").strip()
@@ -121,7 +121,7 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
                 return
             _pcfg = {}
             try:
-                _pcfg = (_y.safe_load((_P(__file__).parent / "config.yaml").read_text(encoding="utf-8")) or {}).get("pvapins") or {}
+                _pcfg = (_y.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}).get("pvapins") or {}
             except Exception:
                 pass
             client = PVAPinsSMSClient(
@@ -142,8 +142,7 @@ async def _bg_login_with_otp(api_key: str, activation_id: str, otp_code: str,
             if not _gkey:
                 try:
                     import yaml as _y2
-                    from pathlib import Path as _P2
-                    _sec2 = _y2.safe_load((_P2(__file__).parent / "secrets.yaml").read_text(encoding="utf-8")) or {}
+                    _sec2 = _y2.safe_load((ROOT / "secrets.yaml").read_text(encoding="utf-8")) or {}
                     _gkey = ((_sec2.get("grizzlysms") or {}).get("api_key") or "").strip()
                 except Exception:
                     _gkey = ""

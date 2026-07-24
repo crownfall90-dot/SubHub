@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "subhub"))
 
 
 def main() -> None:
@@ -49,7 +50,7 @@ def main() -> None:
     assert pm in ("card", "gift"), pm
 
     # Source contracts: gift path must honor pay_method in fill + buy
-    src = (ROOT / "menu.py").read_text(encoding="utf-8", errors="replace")
+    src = (ROOT / "subhub" / "menu.py").read_text(encoding="utf-8", errors="replace")
     assert "gift=(_pm == \"gift\")" in src or 'gift=(_pm == "gift")' in src
     assert "_do_gift_card_payment" in src
     assert "_select_gift_cards_pay_method" in src

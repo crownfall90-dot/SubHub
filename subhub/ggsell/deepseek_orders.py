@@ -20,11 +20,12 @@ import json
 import re
 import time
 from pathlib import Path
+from paths import ROOT
 from typing import Optional
 
 from loguru import logger
 
-_DATA = Path(__file__).resolve().parent.parent / "data"
+_DATA = ROOT / "data"
 _STATE_FILE = _DATA / "ggsel_deepseek.json"
 _CARDS_FILE = _DATA / "cards.json"
 _CARD_ORDER_FILE = _DATA / "card_order.json"

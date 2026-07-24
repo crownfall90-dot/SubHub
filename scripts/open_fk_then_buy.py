@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "subhub"))
 
 for s in (sys.stdout, sys.stderr):
     with contextlib.suppress(Exception):

@@ -1,7 +1,10 @@
 """Minimal self-check: PVAPins id parse + failover routing (no live buy)."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "subhub"))
 
 from pvapins_sms import PVAPinsSMSClient
 from sms_failover import FailoverSMSClient, _sms_provider_mode

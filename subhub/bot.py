@@ -11,6 +11,7 @@ import threading
 import time
 import warnings
 from pathlib import Path
+from paths import ROOT, PKG
 
 warnings.filterwarnings("ignore", message="unclosed transport", category=ResourceWarning)
 
@@ -61,7 +62,7 @@ _update_commits: list   = []
 _update_checked: bool   = False
 _update_checked_at: float = 0.0
 def _load_notified_updates() -> set:
-    p = Path(__file__).parent / "data" / "notified_updates.json"
+    p = ROOT / "data" / "notified_updates.json"
     if p.exists():
         try:
             return set(json.loads(p.read_text(encoding="utf-8")))
@@ -71,7 +72,7 @@ def _load_notified_updates() -> set:
 
 
 def _save_notified_updates(hashes: set) -> None:
-    p = Path(__file__).parent / "data" / "notified_updates.json"
+    p = ROOT / "data" / "notified_updates.json"
     try:
         p.parent.mkdir(exist_ok=True)
         p.write_text(json.dumps(list(hashes), ensure_ascii=False), encoding="utf-8")
@@ -152,7 +153,7 @@ def ensure_tg_bot(owner: str = "console") -> str:
 
 def _menu_tg_bot_thread() -> None:
     global _tg_status, _ggsel_status
-    _HERE = Path(__file__).parent
+    _HERE = ROOT
 
     # Токен только из secrets.yaml
     try:
@@ -185,7 +186,7 @@ def _menu_tg_bot_thread() -> None:
         _owner_chat_id = 0
         pass
 
-    _HEARTBEAT_FILE = Path(__file__).resolve().parent / "data" / "console_heartbeat.json"
+    _HEARTBEAT_FILE = ROOT / "data" / "console_heartbeat.json"
 
     def _is_console_running() -> bool:
         """True если запущено приложение или консоль."""
@@ -934,7 +935,7 @@ def _menu_tg_bot_thread() -> None:
 
 
         # ── Порядок карт ──────────────────────────────────────────────────────
-        _CARD_ORDER_FILE = Path(__file__).parent / "data" / "card_order.json"
+        _CARD_ORDER_FILE = ROOT / "data" / "card_order.json"
 
         def _load_card_order():
             try:
@@ -1020,7 +1021,7 @@ def _menu_tg_bot_thread() -> None:
 
         # ── Логи ──────────────────────────────────────────────────────────────
         def _logs_text(n=40):
-            log = Path(__file__).parent / "automation.log"
+            log = ROOT / "data" / "automation.log"
             if not log.exists():
                 return "📋 *Логи*\n\n_automation.log не найден_"
             try:
@@ -2281,7 +2282,7 @@ def _menu_tg_bot_thread() -> None:
                 loop = asyncio.get_running_loop()
                 def _pip():
                     import winproc
-                    req = Path(__file__).parent / "requirements.txt"
+                    req = ROOT / "requirements.txt"
                     r = winproc.run(
                         [sys.executable, "-m", "pip", "install", "-r", str(req), "--upgrade"],
                         capture_output=True, text=True, timeout=120,
@@ -2328,7 +2329,7 @@ def _menu_tg_bot_thread() -> None:
                 _ctrl[0] = {}
 
         async def _do_run(cid, mode, count=None, mid=0):
-            args = [sys.executable, str(Path(__file__).parent / "main.py")]
+            args = [sys.executable, str(PKG / "main.py")]
             if mode == "headless" or mode == "tg":
                 args.append("--headless")
             if mode == "tg":
@@ -2346,7 +2347,12 @@ def _menu_tg_bot_thread() -> None:
                         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                     )
                 loop = asyncio.get_running_loop()
-                proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
+                proc = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(
+                        args, creationflags=creationflags, cwd=str(ROOT)
+                    ),
+                )
                 _proc[0]   = proc
                 _mode[0]   = mode
                 _m("set_automation_proc")(proc.pid, mode, _m("_host_kind")())
@@ -2366,7 +2372,7 @@ def _menu_tg_bot_thread() -> None:
                     await _send(cid, txt)
 
         async def _do_run_full(cid, tariffs, mode, mid=0, from_cfg=False):
-            args = [sys.executable, str(Path(__file__).parent / "menu.py"), "--full-cycle",
+            args = [sys.executable, str(PKG / "menu.py"), "--full-cycle",
                     "--tariffs", ",".join(str(m) for m in tariffs)]
             if from_cfg:
                 args += ["--accounts", "0"]
@@ -2381,7 +2387,12 @@ def _menu_tg_bot_thread() -> None:
                         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                     )
                 loop = asyncio.get_running_loop()
-                proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
+                proc = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(
+                        args, creationflags=creationflags, cwd=str(ROOT)
+                    ),
+                )
                 _proc[0]   = proc
                 _mode[0]   = f"full:{','.join(set(str(m) for m in tariffs))}:{mode}"
                 _m("set_automation_proc")(proc.pid, _mode[0], _m("_host_kind")())
@@ -2402,13 +2413,13 @@ def _menu_tg_bot_thread() -> None:
 
         async def _wz_execute(cid, br, mode, tariff, count, mid=0):
             if mode in ("login", "address", "intercept"):
-                args = [sys.executable, str(Path(__file__).parent / "main.py")]
+                args = [sys.executable, str(PKG / "main.py")]
                 if mode == "intercept":
                     args.append("--tg-intercept")
                 else:
                     args.append("--tg-login")
             else:
-                args = [sys.executable, str(Path(__file__).parent / "menu.py")]
+                args = [sys.executable, str(PKG / "menu.py")]
                 args.append("--full-cycle")
                 t_val = tariff if tariff in ("3", "12") else "3"
                 args += ["--tariffs", t_val]
@@ -2425,7 +2436,12 @@ def _menu_tg_bot_thread() -> None:
                         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                     )
                 loop = asyncio.get_running_loop()
-                proc = await loop.run_in_executor(None, lambda: subprocess.Popen(args, creationflags=creationflags))
+                proc = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.Popen(
+                        args, creationflags=creationflags, cwd=str(ROOT)
+                    ),
+                )
                 _proc[0]   = proc
                 _mode[0]   = f"wz:{br}:{mode}:{tariff}"
                 _m("set_automation_proc")(proc.pid, _mode[0], _m("_host_kind")())
@@ -2501,7 +2517,7 @@ def _menu_tg_bot_thread() -> None:
         async def _bg_update_loop():
             global _update_available, _update_commits, _update_checked, \
                    _notified_update_hashes, _update_checked_at
-            _cwd = Path(__file__).parent
+            _cwd = ROOT
 
             def _fetch():
                 if not (_cwd / ".git").exists():
@@ -3510,7 +3526,7 @@ def _menu_tg_bot_thread() -> None:
             # Обновление ───────────────────────────────────────────────────────
             if data == "update:check":
                 await _ack(qid, "🔄 Проверяю...")
-                _cwd_u = Path(__file__).parent
+                _cwd_u = ROOT
                 try:
                     def _check():
                         if not (_cwd_u / ".git").exists():
@@ -3585,7 +3601,7 @@ def _menu_tg_bot_thread() -> None:
                                       f"⚡ _Перезапускаю..._")
                         await _edit(cid, mid, result, {"inline_keyboard": []})
                         try:
-                            rf = Path(__file__).parent / "._restart_msg.json"
+                            rf = ROOT / "._restart_msg.json"
                             rf.write_text(json.dumps({"chat_id": cid, "msg_id": mid,
                                                       "text": result}),
                                           encoding="utf-8")
@@ -3624,7 +3640,7 @@ def _menu_tg_bot_thread() -> None:
                 result = f"⏳ *Перезапуск {_tgt}...*\n\n⚡ _Перезапускаю активный процесс..._"
                 await _edit(cid, mid, result, {"inline_keyboard": []})
                 try:
-                    rf = Path(__file__).parent / "._restart_msg.json"
+                    rf = ROOT / "._restart_msg.json"
                     rf.write_text(json.dumps({"chat_id": cid, "msg_id": mid,
                                               "text": result}),
                                   encoding="utf-8")
@@ -4035,7 +4051,7 @@ def _menu_tg_bot_thread() -> None:
         # Обработчик входящих сообщений
         # ══════════════════════════════════════════════════════════════════════
 
-        _OTP_3DS_FILE = Path(__file__).parent / "data" / "tg_otp_3ds.json"
+        _OTP_3DS_FILE = ROOT / "data" / "tg_otp_3ds.json"
 
         def _push_otp_3ds(text: str) -> None:
             """Сохранить потенциальный 3DS OTP в файл для menu.py."""
@@ -4418,7 +4434,7 @@ def _menu_tg_bot_thread() -> None:
                 m_fn=_m,
                 http_client=client,
                 tg_api_url=api,
-                project_root=Path(__file__).parent,
+                project_root=ROOT,
                 webhook_url=_webhook_url,
                 record_sale_fn=_record_sale,
             )
@@ -4454,7 +4470,7 @@ def _menu_tg_bot_thread() -> None:
 
             # После рестарта: убираем "Перезапускаю..." и сразу открываем главное меню
             try:
-                rf = Path(__file__).parent / "._restart_msg.json"
+                rf = ROOT / "._restart_msg.json"
                 if rf.exists():
                     rm = json.loads(rf.read_text(encoding="utf-8"))
                     rf.unlink()

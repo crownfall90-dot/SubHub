@@ -6,12 +6,14 @@ Browser Login Automation using Playwright
 import asyncio
 import contextlib
 import json
+import os
 import random
 import shutil
 import sys
 import threading
 import time
 from pathlib import Path
+from paths import ROOT
 from typing import Optional, Tuple
 
 import yaml
@@ -25,12 +27,15 @@ from grizzly_sms import (
     NumberUnavailableError,
 )
 
+# Child entry (python subhub/main.py) must use repo root like `python -m subhub`.
+os.chdir(ROOT)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Statistics
 # ─────────────────────────────────────────────────────────────────────────────
 
-_DATA = Path(__file__).parent / "data"
+_DATA = ROOT / "data"
 _DATA.mkdir(exist_ok=True)
 STATS_FILE = _DATA / "tg_stats.json"
 
@@ -2744,8 +2749,7 @@ async def _check_flipkart_accessible() -> bool:
 
 
 async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, force_headless: bool = False) -> None:
-    _script_dir = Path(__file__).resolve().parent
-    setup_logging(log_file=str(_script_dir / "automation.log"))
+    setup_logging(log_file=str(ROOT / "data" / "automation.log"))
 
     # Фоновая проверка прямого доступа + прогрев пула прокси (если включён).
     # Порядок: номер → Chrome → (прокси / VPN) → сайт → ввод номера.
@@ -2758,7 +2762,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
     except Exception:
         pass
 
-    config_path = _script_dir / "config.yaml"
+    config_path = ROOT / "config.yaml"
     if not config_path.exists():
         logger.error("Файл config.yaml не найден. Создайте его по шаблону из README.")
         sys.exit(1)
@@ -2769,9 +2773,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
         config.config.setdefault("browser", {})["headless"] = True
 
     # Читаем secrets.yaml (ключи из него всегда перекрывают плейсхолдеры из config.yaml)
-    _secrets_path = _script_dir / "secrets.yaml"
-    if not _secrets_path.exists():
-        _secrets_path = Path("secrets.yaml")
+    _secrets_path = ROOT / "secrets.yaml"
     if _secrets_path.exists():
         try:
             import yaml as _sy
@@ -2812,7 +2814,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
         from sms_failover import build_sms_client
         _sec = {}
         try:
-            _sp = Path(__file__).parent / "secrets.yaml"
+            _sp = ROOT / "secrets.yaml"
             if _sp.exists():
                 _sec = yaml.safe_load(_sp.read_text(encoding="utf-8")) or {}
         except Exception:
@@ -3148,8 +3150,8 @@ def list_profiles_cli(profiles_dir: str = "./chrome_profiles") -> None:
 
 
 def purge_profiles_cli(profiles_dir: str = "./chrome_profiles") -> None:
-    """Удаляет устаревшие профили. Вызов: python main.py --purge"""
-    config_path = Path("config.yaml")
+    """Удаляет устаревшие профили. Вызов: python -m subhub.main --purge"""
+    config_path = ROOT / "config.yaml"
     max_age = 2.0
     if config_path.exists():
         try:

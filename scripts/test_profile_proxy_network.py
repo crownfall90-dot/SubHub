@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "subhub"))
 
 import menu as m  # noqa: E402
 

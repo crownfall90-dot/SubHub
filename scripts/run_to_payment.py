@@ -16,7 +16,7 @@ def main() -> int:
         if i + 1 < len(args):
             phone = args[i + 1]
 
-    cmd = [sys.executable, str(ROOT / "menu.py"), "--fill-to-payment"]
+    cmd = [sys.executable, str(ROOT / "subhub" / "menu.py"), "--fill-to-payment"]
     if phone:
         cmd.extend(["--phone", phone])
 

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MENU = (ROOT / "menu.py").read_text(encoding="utf-8", errors="replace")
+MENU = (ROOT / "subhub" / "menu.py").read_text(encoding="utf-8", errors="replace")
 
 REQUIRED = [
     "Add Gift Card",

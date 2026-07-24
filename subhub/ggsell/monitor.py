@@ -16,13 +16,14 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from paths import ROOT
 from typing import Awaitable, Callable, Optional, Set
 
 from loguru import logger
 
 from .client import GGSellClient, GGSellError
 
-_DATA = Path(__file__).resolve().parent.parent / "data"
+_DATA = ROOT / "data"
 _ORDERS_FILE      = _DATA / "ggsel_orders.json"
 _SEEN_MSGS_FILE   = _DATA / "ggsel_seen_msgs.json"
 _TEMPLATES_FILE   = _DATA / "ggsel_templates.json"

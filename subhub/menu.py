@@ -45,15 +45,20 @@ DIM = "\033[90m"   # серый
 BLD = "\033[1m"    # жирный
 RST = "\033[0m"    # сброс
 
-PROFILES_DIR        = Path("./chrome_profiles")
-DONE_PROFILES_DIR   = Path("./chrome_profiles_done")
-USED_PROFILES_DIR   = Path("./chrome_profiles_used")
-BACKUP_PROFILES_DIR = Path("./chrome_profiles_backup")
-_VPN_PING_PROFILE_DIR = Path("./data/_vpn_ping_profile")
+try:
+    from paths import ROOT as _HERE, PKG as _PKG  # type: ignore
+except Exception:
+    _PKG = Path(__file__).resolve().parent
+    _HERE = _PKG.parent  # repo root (config/data/profiles)
+
+PROFILES_DIR        = _HERE / "chrome_profiles"
+DONE_PROFILES_DIR   = _HERE / "chrome_profiles_done"
+USED_PROFILES_DIR   = _HERE / "chrome_profiles_used"
+BACKUP_PROFILES_DIR = _HERE / "chrome_profiles_backup"
+_VPN_PING_PROFILE_DIR = _HERE / "data" / "_vpn_ping_profile"
 _OPEN_CHROME_LOCK = threading.Lock()
 _OPEN_CHROME_SESSIONS: dict[str, threading.Thread] = {}
-_HERE               = Path(__file__).parent
-_AUTOMATION_LOG     = _HERE / "automation.log"
+_AUTOMATION_LOG     = _HERE / "data" / "automation.log"
 
 
 class _TeeWriter:
@@ -635,19 +640,38 @@ _GH_REPO  = "SubHub"  # GitHub-репозиторий (OTA / raw master)
 # Файлы, которые скачиваются при «Обновить» в SubHub (коллеги получают то же через git pull)
 _UPDATE_FILES = [
     "README.md",
-    "menu.py", "bot.py", "main.py",
     "menu.bat",
-    "grizzly_sms.py", "pvapins_sms.py", "sms_failover.py", "proxy.py", "grizzly.py", "bg_login.py", "deepseek.py", "requirements.txt", ".gitignore",
-    "config.yaml.example", "secrets.yaml.example", "secrets1.yaml.example",
-    "ggsell/__init__.py", "ggsell/bot_ggsell.py", "ggsell/client.py",
-    "ggsell/monitor.py", "ggsell/deepseek_orders.py",
+    "requirements.txt",
+    ".gitignore",
+    "config.yaml.example",
+    "secrets.yaml.example",
+    "VERSION",
+    "subhub/__init__.py",
+    "subhub/__main__.py",
+    "subhub/paths.py",
+    "subhub/menu.py",
+    "subhub/bot.py",
+    "subhub/main.py",
+    "subhub/grizzly_sms.py",
+    "subhub/pvapins_sms.py",
+    "subhub/sms_failover.py",
+    "subhub/proxy.py",
+    "subhub/grizzly.py",
+    "subhub/bg_login.py",
+    "subhub/deepseek.py",
+    "subhub/winproc.py",
+    "subhub/ggsell/__init__.py",
+    "subhub/ggsell/bot_ggsell.py",
+    "subhub/ggsell/client.py",
+    "subhub/ggsell/monitor.py",
+    "subhub/ggsell/deepseek_orders.py",
 ]
 
 def _parse_git_remote() -> tuple[str, str, str]:
     """Читает .git/config → (owner, repo, token). Fallback: secrets.yaml → константы."""
     try:
         import re
-        cfg = (Path(__file__).parent / ".git" / "config").read_text(encoding="utf-8", errors="replace")
+        cfg = (_HERE / ".git" / "config").read_text(encoding="utf-8", errors="replace")
         for line in cfg.splitlines():
             m = re.search(r'url\s*=\s*https://(?:([^@\s]+)@)?github\.com/([^/\s]+)/([^/\s.]+)', line)
             if m:
@@ -658,7 +682,7 @@ def _parse_git_remote() -> tuple[str, str, str]:
     try:
         import yaml as _y
         _sec = _y.safe_load(
-            (Path(__file__).parent / "secrets.yaml").read_text(encoding="utf-8")
+            (_HERE / "secrets.yaml").read_text(encoding="utf-8")
         ) or {}
         _tok = (_sec.get("github") or {}).get("token", "")
     except Exception:
@@ -682,7 +706,7 @@ def _http_check_updates() -> list[str]:
         owner, repo, token = _parse_git_remote()
         if not owner:
             return []
-        _here = Path(__file__).parent
+        _here = _HERE
         _sha_f = _here / "._update_sha"
 
         # Читаем локальный SHA: .git → ._update_sha
@@ -728,7 +752,7 @@ def _http_do_update() -> tuple[bool, str]:
         owner, repo, token = _parse_git_remote()
         if not owner:
             return False, "Не удалось прочитать репозиторий из .git/config"
-        _here = Path(__file__).parent
+        _here = _HERE
         _FILES = list(_UPDATE_FILES)
         updated = []
         failed = []
@@ -1564,7 +1588,7 @@ def _vpn_provider() -> str:
     """Провайдер VPN из config.yaml: veepn (по умолчанию) или vpnly."""
     try:
         import yaml as _yaml
-        cfg_path = Path(__file__).parent / "config.yaml"
+        cfg_path = _HERE / "config.yaml"
         if cfg_path.exists():
             with open(cfg_path, encoding="utf-8") as fh:
                 cfg = _yaml.safe_load(fh) or {}
@@ -1585,7 +1609,7 @@ def _vpn_enabled() -> bool:
 
 def _set_vpn_enabled(enabled: bool) -> bool:
     """Пишет vpn.enabled в config.yaml точечно (сохраняет комментарии вокруг блока)."""
-    cfg_path = Path(__file__).resolve().parent / "config.yaml"
+    cfg_path = _HERE / "config.yaml"
     try:
         text = cfg_path.read_text(encoding="utf-8")
     except Exception:
@@ -4100,7 +4124,7 @@ def _win_chrome_dpi_scale(hwnd: int) -> float:
 
 
 def _chrome_puzzle_icon_path() -> Path:
-    return Path(__file__).resolve().parent / "assets" / "chrome_puzzle_icon.png"
+    return _HERE / "assets" / "chrome_puzzle_icon.png"
 
 
 def _win_grab_chrome_image(hwnd: int):
@@ -4375,7 +4399,7 @@ def _win_chrome_puzzle_menu_coords(hwnd: int) -> dict | None:
 
 
 def _veepn_power_on_icon_path() -> Path:
-    return Path(__file__).resolve().parent / "assets" / "veepn_power_on.png"
+    return _HERE / "assets" / "veepn_power_on.png"
 
 
 def _win_find_veepn_power_circle(hwnd: int) -> tuple[int, int] | None:
@@ -7131,7 +7155,7 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         if stop_at_email:
             args = [sys.executable, str(Path(__file__)), "--full-cycle", "--stop-at-email", "--tariffs", str(months)]
         else:
-            args = [sys.executable, str(Path(__file__).parent / "main.py")]
+            args = [sys.executable, str(_PKG / "main.py")]
             if tg_mode == "login":
                 args.append("--tg-login")
             elif tg_mode == "intercept":
@@ -7148,7 +7172,7 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
             # консоль и его вывод (покупка номеров, OTP, вход) виден в реальном
             # времени — иначе автоматизация «молчит» и кажется, что не работает.
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-        proc = subprocess.Popen(args, creationflags=creationflags)
+        proc = subprocess.Popen(args, creationflags=creationflags, cwd=str(_HERE))
         set_automation_proc(proc.pid, "login", "console")
         proc.wait()
         code = proc.returncode
@@ -12742,7 +12766,7 @@ async def _handle_3ds_verification(page) -> bool:
     # СВЕЖИЙ OTP: один раз сбрасываем старые коды, чтобы не подхватить код от
     # прошлой операции, и дальше уже не очищаем.
     try:
-        (Path(__file__).parent / "data" / "tg_otp_3ds.json").write_text("[]", encoding="utf-8")
+        (_HERE / "data" / "tg_otp_3ds.json").write_text("[]", encoding="utf-8")
     except Exception:
         pass
     # Ждём поле ввода OTP — ищем во всех фреймах (может быть в cross-origin iframe)
@@ -12846,7 +12870,7 @@ async def _handle_3ds_verification(page) -> bool:
             _otp_tgt = asyncio.get_event_loop().time() + 900  # 15 мин
             import re as _re3d
             import json as _json3d
-            _OTP_FILE_3D = Path(__file__).parent / "data" / "tg_otp_3ds.json"
+            _OTP_FILE_3D = _HERE / "data" / "tg_otp_3ds.json"
             # Файл НЕ очищаем — код мог прийти до появления поля 3DS (сброс старых
             # кодов делается один раз в начале оплаты в _enter_card_on_payments).
             _otp_submitted = False
@@ -12964,7 +12988,7 @@ async def _get_3ds_otp_from_telegram() -> str | None:
     import yaml as _yaml
     import json as _json
 
-    _OTP_FILE = Path(__file__).parent / "data" / "tg_otp_3ds.json"
+    _OTP_FILE = _HERE / "data" / "tg_otp_3ds.json"
 
     try:
         with open("config.yaml", encoding="utf-8") as _f:
@@ -15390,7 +15414,7 @@ def _proxy_config() -> dict:
     """Секция proxy из config.yaml (безопасно, с дефолтами)."""
     try:
         import yaml as _y
-        cfg_path = Path(__file__).resolve().parent / "config.yaml"
+        cfg_path = _HERE / "config.yaml"
         with open(cfg_path, encoding="utf-8") as _fh:
             cfg = _y.safe_load(_fh) or {}
         p = cfg.get("proxy") or {}
@@ -15490,7 +15514,7 @@ def _sms_provider_menu_label() -> str:
 
 def _set_proxy_enabled(enabled: bool) -> bool:
     """Пишет proxy.enabled в config.yaml точечно (сохраняет комментарии вокруг блока)."""
-    cfg_path = Path(__file__).resolve().parent / "config.yaml"
+    cfg_path = _HERE / "config.yaml"
     try:
         text = cfg_path.read_text(encoding="utf-8")
     except Exception:
@@ -15811,7 +15835,7 @@ def _proxy6_api_key() -> str:
         try:
             import yaml as _y
             cfg = _y.safe_load(
-                (Path(__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8")
+                (_HERE / "config.yaml").read_text(encoding="utf-8")
             ) or {}
             key = str((cfg.get("proxy6") or {}).get("api_key") or "").strip()
         except Exception:
@@ -15832,7 +15856,7 @@ def _select_proxy6() -> dict | None:
         with contextlib.suppress(Exception):
             import yaml as _y
             cfg = _y.safe_load(
-                (Path(__file__).resolve().parent / "config.yaml").read_text(encoding="utf-8")
+                (_HERE / "config.yaml").read_text(encoding="utf-8")
             ) or {}
             country = str((cfg.get("proxy6") or {}).get("country") or "in").strip().lower() or "in"
         r = _hx.get(
@@ -18649,7 +18673,7 @@ def _deps_ok() -> bool:
     return _deps_ok_full()
 
 
-_DEPS_OK_MARKER = Path(__file__).parent / "data" / "deps_ok.json"
+_DEPS_OK_MARKER = _HERE / "data" / "deps_ok.json"
 
 
 def _chromium_ok(fast: bool = True) -> bool:
@@ -18709,7 +18733,7 @@ def ensure_dependencies(log_fn=None) -> tuple[bool, str]:
     if _deps_ok_full():
         return True, "Зависимости в порядке"
 
-    req = Path(__file__).parent / "requirements.txt"
+    req = _HERE / "requirements.txt"
     if log_fn:
         log_fn("Установка пакетов из requirements.txt…")
     pip_ok = run([sys.executable, "-m", "pip", "install", "-r", str(req)]) == 0
@@ -18897,7 +18921,7 @@ def _update_notify_loop() -> None:
 def _check_updates_bg() -> None:
     """Фоновая проверка. В GUI — только HTTP (без вспышек git/cmd)."""
     global _update_available, _update_commits, _update_checked, _update_checked_at
-    _cwd = Path(__file__).parent
+    _cwd = _HERE
     lines: list[str] = []
     _git_ok = False
     use_git = (_cwd / ".git").exists()
@@ -18938,7 +18962,7 @@ def _check_updates_bg() -> None:
 def _do_git_update() -> tuple[bool, str]:
     """Применяет обновление: git pull если есть .git, иначе HTTP-скачивание."""
     global _update_available, _update_commits
-    _cwd = Path(__file__).parent
+    _cwd = _HERE
     # Пробуем git только если есть .git папка
     if (_cwd / ".git").exists():
         try:
@@ -20127,7 +20151,7 @@ def _init_secrets() -> None:
     """
     import yaml as _yaml
 
-    script_dir      = Path(__file__).parent
+    script_dir      = _HERE
     secrets_path    = script_dir / "secrets.yaml"
     secrets_example = script_dir / "secrets.yaml.example"
     cfg_path        = script_dir / "config.yaml"
@@ -20248,7 +20272,7 @@ def _check_setup() -> None:
     инструкцию и выходит (menu.bat не перезапускает при sys.exit(0))."""
     import yaml as _yaml
 
-    script_dir   = Path(__file__).parent
+    script_dir   = _HERE
     secrets_path = script_dir / "secrets.yaml"
     example_path = script_dir / "secrets.yaml.example"
 
@@ -20358,8 +20382,8 @@ def _migrate_config() -> None:
     Существующие значения пользователя не изменяются — только дополнение."""
     import yaml as _yaml
 
-    cfg_path     = Path(__file__).parent / "config.yaml"
-    example_path = Path(__file__).parent / "config.yaml.example"
+    cfg_path     = _HERE / "config.yaml"
+    example_path = _HERE / "config.yaml.example"
     if not cfg_path.exists() or not example_path.exists():
         return
 
@@ -20406,7 +20430,7 @@ def _startup_cleanup() -> None:
     _thr.Thread(target=_gz.kill_all_bot_chrome, daemon=True, name="chrome-kill").start()
 
     # Логи (automation*.log, test_run.log и любые *.log рядом со скриптом)
-    script_dir = Path(__file__).parent
+    script_dir = _HERE
     deleted_logs = 0
     for log_file in script_dir.glob("*.log"):
         try:

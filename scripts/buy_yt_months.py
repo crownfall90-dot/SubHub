@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "subhub"))
 
 # Windows cp125x падает на emoji в print() — без этого покупка рвётся как «ошибка»
 for _stream in (sys.stdout, sys.stderr):

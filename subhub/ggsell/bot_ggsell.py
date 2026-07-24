@@ -14,11 +14,12 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from paths import ROOT, PKG
 from typing import Any, Optional
 
 from loguru import logger
 
-_DATA_DIR       = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR       = ROOT / "data"
 _TEMPLATES_FILE = _DATA_DIR / "ggsel_templates.json"
 
 YOUTUBE_PREMIUM_PRODUCT_ID = 102276416
@@ -2124,8 +2125,8 @@ class GGSellBotHandler:
             try:
                 import subprocess as _sp, sys as _sys
                 _sp.Popen(
-                    [_sys.executable, str(self._root / "main.py"), "--tg-login", "--accounts", "1"],
-                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL
+                    [_sys.executable, str(PKG / "main.py"), "--tg-login", "--accounts", "1"],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, cwd=str(ROOT),
                 )
             except Exception as exc:
                 logger.error(f"GGSell prepare #{invoice_id}: ошибка запуска авто-логина: {exc}")
@@ -2361,7 +2362,7 @@ class GGSellBotHandler:
 
         args = [
             sys.executable,
-            str(self._root / "main.py"),
+            str(PKG / "main.py"),
             "--tg-login", "--accounts", "1",
         ]
         try:
@@ -2374,7 +2375,11 @@ class GGSellBotHandler:
                 )
             loop = asyncio.get_running_loop()
             proc = await loop.run_in_executor(
-                None, lambda: subprocess.Popen(args, creationflags=creationflags))
+                None,
+                lambda: subprocess.Popen(
+                    args, creationflags=creationflags, cwd=str(ROOT)
+                ),
+            )
             await loop.run_in_executor(None, proc.wait)
             code = proc.returncode
         except Exception as exc:

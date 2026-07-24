@@ -33,7 +33,7 @@ _DIM = "\033[2m"
 _BLD = "\033[1m"
 _RST = "\033[0m"
 
-_HERE = Path(__file__).parent
+from paths import ROOT as _HERE
 
 # ── Временные (transient) сообщения в консоли — стираются через N секунд ─────
 _TPRINT_LOCK  = threading.Lock()
