@@ -136,7 +136,12 @@ python -m playwright install chromium
 - `config.yaml`, `secrets.yaml`, `cards.json`
 - `chrome_profiles*/`, `data/`, `cookies_backup/`
 
-Эти пути уже в `.gitignore`.
+Эти пути уже в `.gitignore`. Дополнительно рекомендуется установить git-хук,
+который заблокирует коммит секретов даже при `git add -f`:
+
+```bash
+python scripts/install_hooks.py
+```
 
 ---
 

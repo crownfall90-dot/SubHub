@@ -1,0 +1,16 @@
+#!/bin/sh
+# Блокирует коммит секретов, даже если кто-то сделал `git add -f`.
+# Установка: python scripts/install_hooks.py (или скопировать вручную в .git/hooks/pre-commit)
+
+blocked_pattern='(^|/)(config\.yaml|secrets\.yaml|cards\.json)$'
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+
+hit=$(printf '%s\n' "$staged" | grep -E "$blocked_pattern")
+if [ -n "$hit" ]; then
+    echo "ОШИБКА: попытка закоммитить файл(ы) с секретами:" >&2
+    printf '%s\n' "$hit" | sed 's/^/  /' >&2
+    echo "Эти файлы не должны попадать в git (см. .gitignore). Уберите из индекса: git restore --staged <файл>" >&2
+    exit 1
+fi
+
+exit 0
