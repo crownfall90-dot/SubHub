@@ -17013,6 +17013,11 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
     poll_delay  = float(gsms.get("get_number_retry_delay", 2.0))
     price_tiers  = gsms.get("price_tiers")   # None → max_price весь timeout
     cycle_prices = bool(gsms.get("cycle_prices", True))
+    try:
+        max_price = float(max_price) if max_price is not None else 0.20
+    except (TypeError, ValueError):
+        max_price = 0.20
+    max_price = min(max_price, 0.20)
 
     try:
         sms_client = build_sms_client(_secrets, cfg)

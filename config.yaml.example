@@ -18,16 +18,16 @@ grizzlysms:
   service: xt
   country: 22
   max_price: 0.20              # жёсткий потолок: любой оператор, не дороже $0.20
-  price_tiers:
+  price_tiers:                   # сначала дешёвые, потом до 0.20; cycle крутит пока не купит
   - max_price: 0.10
     duration: 12
   - max_price: 0.15
     duration: 12
   - max_price: 0.20
     duration: 20
-  cycle_prices: true           # крутить тиры, пока не купит
+  cycle_prices: true             # крутить тиры, пока не купит
   parallel_get_slots: 5
-  get_number_timeout: 0        # 0 = искать без лимита времени (пока не купит)
+  get_number_timeout: 0          # 0 = без лимита времени (пока не купит)
   get_number_retry_delay: 2.0
   buy_next_after_seconds: 90
   max_parallel_numbers: 10

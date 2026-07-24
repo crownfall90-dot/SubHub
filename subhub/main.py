@@ -1215,12 +1215,18 @@ class LoginAutomation:
         sms_cfg      = self.config.sms_config
         service      = sms_cfg.get("service", "xt")
         country      = sms_cfg.get("country", 22)
-        max_price    = sms_cfg.get("max_price")
+        max_price    = sms_cfg.get("max_price", 0.20)
         slots        = sms_cfg.get("parallel_get_slots", 3)
         poll_delay   = sms_cfg.get("get_number_retry_delay", 5.0)
         acq_timeout  = float(sms_cfg.get("get_number_timeout", 0))
         price_tiers  = sms_cfg.get("price_tiers")  # None → используется max_price весь timeout
         cycle_prices = bool(sms_cfg.get("cycle_prices", True))
+        # Жёсткий потолок $0.20: тиры не выше, оператор любой (без providerIds).
+        try:
+            max_price = float(max_price) if max_price is not None else 0.20
+        except (TypeError, ValueError):
+            max_price = 0.20
+        max_price = min(max_price, 0.20)
 
         try:
             activation_id, phone, cost = await self.sms_client.get_number_parallel(
