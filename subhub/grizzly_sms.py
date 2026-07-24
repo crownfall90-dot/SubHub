@@ -106,30 +106,48 @@ class GrizzlySMSClient:
         if not price_tiers:
             price_tiers = [{"max_price": max_price, "duration": 0}]
 
-        deadline  = asyncio.get_running_loop().time() + timeout
+        # Жёсткий потолок: ни один тир не выше max_price (если задан).
+        if max_price is not None:
+            cap = float(max_price)
+            clamped = []
+            for t in price_tiers:
+                tp = t.get("max_price")
+                if tp is None:
+                    clamped.append(dict(t, max_price=cap))
+                else:
+                    clamped.append(dict(t, max_price=min(float(tp), cap)))
+            price_tiers = clamped
+
+        # timeout <= 0 → искать пока не купит (без дедлайна).
+        loop = asyncio.get_running_loop()
+        deadline = (loop.time() + timeout) if timeout and timeout > 0 else None
         tier_seq  = 0   # абсолютный счётчик тиров (не сбрасывается при цикле)
         n_tiers   = len(price_tiers)
 
         while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
+            remaining = (deadline - loop.time()) if deadline is not None else float("inf")
+            if deadline is not None and remaining <= 0:
                 break
 
             tier_idx      = tier_seq % n_tiers
             tier          = price_tiers[tier_idx]
             tier_price    = tier.get("max_price")
-            tier_duration = tier.get("duration", 0)
+            tier_duration = float(tier.get("duration") or 0)
 
             is_last_pass  = (tier_idx == n_tiers - 1) and not cycle
+            # При cycle duration<=0 = шаг 20с (иначе застряли бы на одном тире навсегда).
+            if tier_duration <= 0 and cycle and not is_last_pass:
+                tier_duration = 20.0
             tier_limit    = remaining if (tier_duration <= 0 or is_last_pass) \
-                            else min(float(tier_duration), remaining)
+                            else min(tier_duration, remaining)
 
             cycle_round   = tier_seq // n_tiers + 1
             price_str     = f"${tier_price:.2f}" if tier_price is not None else "любая"
             label         = (f"круг {cycle_round}, шаг {tier_idx + 1}/{n_tiers}"
                              if cycle else f"уровень {tier_idx + 1}/{n_tiers}")
             logger.info(
-                f"  ╔ Цена {price_str} [{label}] | {parallel_slots} слотов | {tier_limit:.0f}s"
+                f"  ╔ Цена {price_str} [{label}] | {parallel_slots} слотов | "
+                f"{'∞' if tier_limit == float('inf') else f'{tier_limit:.0f}s'}"
             )
 
             result = await self._parallel_acquire(
@@ -150,7 +168,8 @@ class GrizzlySMSClient:
             )
 
         raise NumberUnavailableError(
-            f"NO_NUMBERS при всех ценовых уровнях (таймаут {timeout:.0f}s)"
+            f"NO_NUMBERS при всех ценовых уровнях"
+            + (f" (таймаут {timeout:.0f}s)" if timeout and timeout > 0 else "")
         )
 
     async def _parallel_acquire(
@@ -234,10 +253,11 @@ class GrizzlySMSClient:
         last_fatal:   Optional[Exception] = None
 
         try:
+            wait_timeout = None if tier_timeout == float("inf") else tier_timeout
             done, pending = await asyncio.wait(
                 tasks,
                 return_when=asyncio.FIRST_COMPLETED,
-                timeout=tier_timeout,
+                timeout=wait_timeout,
             )
 
             for t in pending:

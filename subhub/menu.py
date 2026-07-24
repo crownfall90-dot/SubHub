@@ -17006,13 +17006,13 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
     _secrets    = _read_secrets()
     service     = gsms.get("service", "xt")
     country     = gsms.get("country", 22)
-    max_price   = gsms.get("max_price", 0.15)
+    max_price   = gsms.get("max_price", 0.20)
     poll_int    = float(gsms.get("poll_interval", 3))
-    gn_timeout  = float(gsms.get("get_number_timeout", 120))
+    gn_timeout  = float(gsms.get("get_number_timeout", 0))
     slots       = int(gsms.get("parallel_get_slots", 3))
     poll_delay  = float(gsms.get("get_number_retry_delay", 2.0))
     price_tiers  = gsms.get("price_tiers")   # None → max_price весь timeout
-    cycle_prices = bool(gsms.get("cycle_prices", False))
+    cycle_prices = bool(gsms.get("cycle_prices", True))
 
     try:
         sms_client = build_sms_client(_secrets, cfg)
@@ -17228,7 +17228,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         poll_delay=poll_delay,
                         timeout=gn_timeout,
                         price_tiers=price_tiers,
-                        cycle=True,
+                        cycle=cycle_prices,
                     )
                 except InsufficientBalanceError:
                     print(f"  {R}Недостаточно средств на балансе SMS — отменяю активные номера...{RST}")
@@ -17448,7 +17448,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             service=service, country=country,
                             max_price=max_price, parallel_slots=slots,
                             poll_delay=poll_delay, timeout=max(60.0, hard_dl - time.monotonic()),
-                            price_tiers=_tiers, cycle=True,
+                            price_tiers=_tiers, cycle=cycle_prices,
                         )
                         nph10 = nph.lstrip("+")
                         if nph10.startswith("91") and len(nph10) > 10:

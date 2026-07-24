@@ -1218,8 +1218,9 @@ class LoginAutomation:
         max_price    = sms_cfg.get("max_price")
         slots        = sms_cfg.get("parallel_get_slots", 3)
         poll_delay   = sms_cfg.get("get_number_retry_delay", 5.0)
-        acq_timeout  = float(sms_cfg.get("get_number_timeout", 90))
+        acq_timeout  = float(sms_cfg.get("get_number_timeout", 0))
         price_tiers  = sms_cfg.get("price_tiers")  # None → используется max_price весь timeout
+        cycle_prices = bool(sms_cfg.get("cycle_prices", True))
 
         try:
             activation_id, phone, cost = await self.sms_client.get_number_parallel(
@@ -1230,6 +1231,7 @@ class LoginAutomation:
                 poll_delay=poll_delay,
                 timeout=acq_timeout,
                 price_tiers=price_tiers,
+                cycle=cycle_prices,
             )
             return activation_id, phone, cost
         except InsufficientBalanceError as exc:

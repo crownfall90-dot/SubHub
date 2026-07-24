@@ -17,18 +17,17 @@ human_behavior:
 grizzlysms:
   service: xt
   country: 22
-  max_price: 0.16
+  max_price: 0.20              # жёсткий потолок: любой оператор, не дороже $0.20
   price_tiers:
-  - max_price: 0.07
-    duration: 8
   - max_price: 0.10
-    duration: 8
-  - max_price: 0.14
-    duration: 8
-  - max_price: 0.16
-    duration: 0
+    duration: 12
+  - max_price: 0.15
+    duration: 12
+  - max_price: 0.20
+    duration: 20
+  cycle_prices: true           # крутить тиры, пока не купит
   parallel_get_slots: 5
-  get_number_timeout: 180
+  get_number_timeout: 0        # 0 = искать без лимита времени (пока не купит)
   get_number_retry_delay: 2.0
   buy_next_after_seconds: 90
   max_parallel_numbers: 10
@@ -45,7 +44,7 @@ pvapins:
     - Flipkart
     - Flipkart33
     - Flipkart2
-  max_price: 0.30
+  max_price: 0.20
   buy_interval_seconds: 10   # Standard: max 6 new numbers/min
   min_reject_seconds: 180    # reject того же номера не раньше 3 мин
 sms:
