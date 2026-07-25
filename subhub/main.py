@@ -85,6 +85,18 @@ def _update_stat(key: str = "", delta: int = 0, money: float = 0.0, balance: Opt
     _save_stats(s)
 
 
+# Сколько максимум ждать отмену номеров при выходе. Больше — и Ctrl+C
+# выглядит как зависание; неотменённый номер без кода не тарифицируется.
+_CANCEL_ON_EXIT_TIMEOUT = 45.0
+
+# Ввод на Flipkart — строго по одному окну за раз (номера и OTP, любой
+# SMS-провайдер). Экземпляров LoginAutomation несколько (по профилю на каждый),
+# поэтому замок общий на модуль, а не на объект. Без него параллельные пайплайны
+# печатали одновременно, фокус уходил чужому окну и поле оставалось пустым
+# (в логах: "keyboard.type дал ''" с откатом на JS setter).
+_flipkart_input_lock = asyncio.Lock()
+
+
 def _sms_provider_label(act_id: str) -> str:
     """PVAPins activation_id — 'pva:{app}:{country}:{number}', иначе GrizzlySMS."""
     return "PVAPins" if str(act_id).startswith("pva:") else "GrizzlySMS"
@@ -729,7 +741,7 @@ class LoginAutomation:
                     to_cancel[act_id] = phone       # для _run_auto.finally
                     self._all_pending[act_id] = phone  # глобальный реестр для main().finally
                     self._log_number(index, attempt_num, phone, act_id)
-                    bal_after = await self._log_balance(f"[{index}] Куплен +{phone}")
+                    bal_after = await self._log_balance(f"[{index}] Куплен +{phone}", act_id)
                     await self._notify_bought(phone, cost, bal_after, act_id)
 
                     await self._pause.wait()  # пауза перед запуском браузера
@@ -1078,10 +1090,11 @@ class LoginAutomation:
             self._all_pending.pop(act_id, None)
             await self.sms_client.complete(act_id)
 
-            bal_after = await self._get_balance()
+            bal_after = await self._get_balance(act_id)
             if bal_after is not None:
                 logger.success(
-                    f"[{index}] ✅ Вход выполнен! +91{short_phone} | 💰 Баланс: ${bal_after:.4f}"
+                    f"[{index}] ✅ Вход выполнен! +91{short_phone} "
+                    f"| 💰 Баланс ({_sms_provider_label(act_id)}): ${bal_after:.4f}"
                 )
             else:
                 logger.success(f"[{index}] ✅ Вход выполнен! +91{short_phone}")
@@ -1272,19 +1285,27 @@ class LoginAutomation:
         logger.success(f"[{index}] ║  КОД   : ***{code[-2:]}")
         logger.success(f"[{index}] ╚═════════════════════════════════════════")
 
-    async def _get_balance(self) -> Optional[float]:
+    async def _get_balance(self, act_id: str = "") -> Optional[float]:
+        """Баланс. С act_id — именно того провайдера, которому принадлежит
+        номер (в режиме auto активный клиент может быть другим, и показанный
+        баланс относился бы не к тому сервису)."""
         if not self.sms_client:
             return None
         try:
+            if act_id:
+                sub = getattr(self.sms_client, "client_for", None)
+                if callable(sub):
+                    return await sub(act_id).get_balance()
             return await self.sms_client.get_balance()
         except Exception:
             return None
 
-    async def _log_balance(self, label: str = "") -> Optional[float]:
-        bal = await self._get_balance()
+    async def _log_balance(self, label: str = "", act_id: str = "") -> Optional[float]:
+        bal = await self._get_balance(act_id)
         if bal is not None:
             prefix = f"{label} | " if label else ""
-            logger.info(f"  {prefix}💰 Баланс: ${bal:.4f}")
+            prov = f" ({_sms_provider_label(act_id)})" if act_id else ""
+            logger.info(f"  {prefix}💰 Баланс{prov}: ${bal:.4f}")
         return bal
 
     async def _notify_bought(self, phone: str, cost: float, bal_after: Optional[float],
@@ -1298,16 +1319,17 @@ class LoginAutomation:
         if cost > 0:
             lines.append(f"💸 Списано: -${cost:.4f}")
         if bal_after is not None:
-            lines.append(f"💰 Остаток: ${bal_after:.4f}")
+            lines.append(f"💰 Баланс {prov}: ${bal_after:.4f}")
         asyncio.create_task(self.tg_client.notify_filtered("\n".join(lines), "buy_number"))
 
     async def _safe_cancel(self, activation_id: str, phone: str = "") -> None:
         self._all_pending.pop(activation_id, None)  # снимаем с учёта сразу
         try:
             await self.sms_client.cancel(activation_id)
-            bal_after = await self._get_balance()
+            prov = _sms_provider_label(activation_id)
+            bal_after = await self._get_balance(activation_id)
             if bal_after is not None:
-                logger.info(f"  Возврат {activation_id} → Баланс: ${bal_after:.4f}")
+                logger.info(f"  Возврат {activation_id} → 💰 Баланс ({prov}): ${bal_after:.4f}")
             else:
                 logger.debug(f"Активация {activation_id} отменена (возврат средств)")
             _update_stat("refunds", delta=1, balance=bal_after)
@@ -1315,11 +1337,11 @@ class LoginAutomation:
             if self.tg_client:
                 lines = []
                 if phone:
-                    lines.append(f"❌ Возврат номера: `+{phone}`")
+                    lines.append(f"❌ Возврат номера: `+{phone}`  ·  _{prov}_")
                 else:
-                    lines.append(f"❌ Возврат активации `{activation_id}`")
+                    lines.append(f"❌ Возврат активации `{activation_id}`  ·  _{prov}_")
                 if bal_after is not None:
-                    lines.append(f"💰 Остаток: ${bal_after:.4f}")
+                    lines.append(f"💰 Баланс {prov}: ${bal_after:.4f}")
                 asyncio.create_task(self.tg_client.notify_filtered("\n".join(lines), "buy_number"))
         except Exception as exc:
             logger.warning(f"Не удалось отменить активацию {activation_id}: {exc}")
@@ -1432,18 +1454,20 @@ class LoginAutomation:
                         except Exception:
                             pass
 
-                        bal_after = await self._get_balance()
+                        _prov = _sms_provider_label(act_id)
+                        bal_after = await self._get_balance(act_id)
                         _update_stat("logins", delta=1, balance=bal_after)
                         bal_str = f"${bal_after:.4f}" if bal_after is not None else "—"
                         logger.success(
-                            f"[{index}] [фон] ✅ Вход выполнен: +91{short_phone} | 💰 {bal_str}"
+                            f"[{index}] [фон] ✅ Вход выполнен: +91{short_phone} "
+                            f"| 💰 Баланс ({_prov}): {bal_str}"
                         )
                         if self.tg_mode == "login" and self.tg_client:
                             asyncio.create_task(self.tg_client.notify_all(
                                 f"🎉 [Фоновый] Вход выполнен!\n"
-                                f"📱 Телефон: `+91{short_phone}`\n"
+                                f"📱 Телефон: `+91{short_phone}`  ·  _{_prov}_\n"
                                 f"🔑 OTP: `{code}`\n"
-                                f"💰 Баланс: `{bal_str}`\n"
+                                f"💰 Баланс {_prov}: `{bal_str}`\n"
                                 f"📁 Профиль: `{done_path.name}`"
                             ))
                         logged_in = True
@@ -1593,8 +1617,25 @@ class LoginAutomation:
             return p[-10:]  # берём последние 10 цифр как запасной вариант
         return p
 
+    async def _focus_for_input(self, page: Page, index: int) -> None:
+        """Разворачивает окно профиля и выводит его на передний план перед
+        вводом. В фоновом (headless) режиме окна нет — ничего не делаем."""
+        if self.config.config.get("browser", {}).get("headless"):
+            return
+        try:
+            await page.bring_to_front()
+            with contextlib.suppress(Exception):
+                await page.evaluate(
+                    "() => { try { window.moveTo(0,0); "
+                    "window.resizeTo(screen.availWidth, screen.availHeight); } catch(e) {} }"
+                )
+        except Exception as exc:
+            logger.debug(f"[{index}] bring_to_front: {exc}")
+
     async def _login_phase1(self, page: Page, phone: str, index: int) -> bool:
-        """Ввести номер телефона и нажать кнопку OTP/CONTINUE."""
+        """Ввести номер телефона и нажать кнопку OTP/CONTINUE.
+
+        Ввод сериализован общим замком — номера печатаются по одному."""
         display_phone = self._format_phone(phone)
         logger.info(f"[{index}] Ввожу номер: +91 {display_phone}")
 
@@ -1646,29 +1687,34 @@ class LoginAutomation:
             await self._save_screenshot(page, index, phone, "no_phone_field")
             return False
 
-        # Лёгкий скролл перед кликом — человек обычно двигает страницу
-        await page.mouse.wheel(0, random.randint(30, 80))
-        await asyncio.sleep(random.uniform(0.1, 0.25))
+        # Ввод — под общим замком: номера печатаются строго по одному окну,
+        # иначе фокус уходит соседнему пайплайну и поле остаётся пустым.
+        async with _flipkart_input_lock:
+            await self._focus_for_input(page, index)
 
-        # Двигаем мышь по кривой к полю и кликаем
-        await self._human_move_click(page, rect["x"], rect["y"])
-        await asyncio.sleep(0.15)
-        await page.keyboard.press("Control+a")
-        await page.keyboard.press("Delete")
-        await asyncio.sleep(0.1)
+            # Лёгкий скролл перед кликом — человек обычно двигает страницу
+            await page.mouse.wheel(0, random.randint(30, 80))
+            await asyncio.sleep(random.uniform(0.1, 0.25))
 
-        await page.keyboard.type(display_phone, delay=30)
-        await asyncio.sleep(0.2)
+            # Двигаем мышь по кривой к полю и кликаем
+            await self._human_move_click(page, rect["x"], rect["y"])
+            await asyncio.sleep(0.15)
+            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Delete")
+            await asyncio.sleep(0.1)
 
-        # Считываем то, что оказалось в сфокусированном элементе
-        actual = await page.evaluate("() => document.activeElement?.value || ''")
-        logger.info(f"[{index}] В activeElement: '{actual}'")
+            await page.keyboard.type(display_phone, delay=30)
+            await asyncio.sleep(0.2)
 
-        if actual != display_phone:
-            # Запасной: React native value setter + принудительные события
-            logger.warning(f"[{index}] keyboard.type дал '{actual}', пробую JS setter")
-            actual = await page.evaluate(
-                """([x, y, phone]) => {
+            # Считываем то, что оказалось в сфокусированном элементе
+            actual = await page.evaluate("() => document.activeElement?.value || ''")
+            logger.info(f"[{index}] В activeElement: '{actual}'")
+
+            if actual != display_phone:
+                # Запасной: React native value setter + принудительные события
+                logger.warning(f"[{index}] keyboard.type дал '{actual}', пробую JS setter")
+                actual = await page.evaluate(
+                    """([x, y, phone]) => {
                     // elementFromPoint может вернуть label/span поверх input
                     let el = document.elementFromPoint(x, y);
                     if (el && el.tagName !== 'INPUT') {
@@ -1691,9 +1737,9 @@ class LoginAutomation:
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                     return el.value;
                 }""",
-                [rect["x"], rect["y"], display_phone],
-            )
-            logger.info(f"[{index}] После JS setter: '{actual}'")
+                    [rect["x"], rect["y"], display_phone],
+                )
+                logger.info(f"[{index}] После JS setter: '{actual}'")
 
         if actual != display_phone:
             logger.error(f"[{index}] Не удалось ввести номер (got '{actual}')")
@@ -1829,7 +1875,18 @@ class LoginAutomation:
             return False
 
     async def _login_phase2(self, page: Page, otp_code: str, index: int, phone: str = "") -> bool:
-        """Ввести OTP → верифицировать → проверить успех."""
+        """Ввести OTP → верифицировать → проверить успех.
+
+        Сериализовано общим замком: если коды пришли одновременно на несколько
+        номеров, они вводятся по очереди — каждый в своё окно, с фокусом на нём.
+        Иначе печать шла во все окна разом и символы попадали в чужое поле."""
+        async with _flipkart_input_lock:
+            await self._focus_for_input(page, index)
+            return await self._login_phase2_locked(page, otp_code, index, phone)
+
+    async def _login_phase2_locked(self, page: Page, otp_code: str, index: int,
+                                    phone: str = "") -> bool:
+        """Тело ввода OTP; вызывается только под _flipkart_input_lock."""
         sel      = self.config.selectors
         otp_wait = self.config.otp_config.get("wait_timeout", 20000)
 
@@ -3032,12 +3089,42 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
         pending = getattr(automation, "_all_pending", {}) if automation else {}
         if pending and sms_client:
             logger.info(f"⟳ Отменяю {len(pending)} активных номер(а) при остановке...")
-            for act_id, ph in list(pending.items()):
-                try:
-                    await sms_client.cancel(act_id)
-                    logger.info(f"  ✓ Отменён +{ph} ({act_id})")
-                except Exception as _ce:
-                    logger.warning(f"  ✗ Не удалось отменить +{ph} ({act_id}): {_ce}")
+
+            async def _cancel_with_cooldown(act_id: str, ph: str) -> None:
+                """PVAPins отменяет номер только через 2 мин после покупки и
+                бросает CancelTooEarlyError раньше срока — пробуем несколько раз.
+                Неотменённый номер не пропадает: без пришедшего кода он ничего
+                не стоит и освобождается сам через 20 мин (см. доки PVAPins),
+                поэтому ожидание ограничено — выход важнее возврата."""
+                while True:
+                    try:
+                        await sms_client.cancel(act_id)
+                        logger.info(f"  ✓ Отменён +{ph} ({act_id})")
+                        return
+                    except Exception as _ce:
+                        if type(_ce).__name__ != "CancelTooEarlyError":
+                            logger.warning(f"  ✗ Не удалось отменить +{ph} ({act_id}): {_ce}")
+                            return
+                        await asyncio.sleep(10)
+
+            # Жёсткий потолок на всю очистку: Ctrl+C не должен «подвисать».
+            # Плюс само ожидание прерывается — сон идёт внутри задач, а не в
+            # обработчике сигнала.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(_cancel_with_cooldown(a, p) for a, p in list(pending.items())),
+                        return_exceptions=True,
+                    ),
+                    timeout=_CANCEL_ON_EXIT_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"  ⏱ Отмена прервана по таймауту {_CANCEL_ON_EXIT_TIMEOUT:.0f}s — "
+                    f"оставшиеся номера освободятся сами (списания без кода нет)"
+                )
+            except asyncio.CancelledError:
+                logger.warning("  ⏹ Отмена прервана — выхожу")
             pending.clear()
             # Финальный баланс
             try:

@@ -802,6 +802,11 @@ async def _rental_monitor_loop():
                 age = now - r["rented_at"]
                 limit = lifetime if r.get("phase1_ok") else no_phase1_limit
                 min_cancel = _min_cancel_age_for(aid)
+                # Не держим номер дольше, чем нужно: как только отмена стала
+                # доступна у провайдера (PVAPins — 2 мин), нет смысла ждать
+                # общий lifetime. Номер без кода ничего не стоит, а свободный
+                # слот сразу уходит под следующую попытку.
+                limit = min(limit, min_cancel)
                 if age >= limit:
                     r["status"] = "failed"
                     r["next_attempt_at"] = max(now, r["rented_at"] + min_cancel)

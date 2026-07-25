@@ -6949,6 +6949,9 @@ def _browser_launch_kw(headless: bool = False, use_bundled_chromium: bool = Fals
     --load-extension только если расширения ещё нет в profile_path.
     use_vpn=False — Flipkart доступен напрямую: без расширения и VPN-аргументов.
     proxy — dict Playwright ({'server':..}) для входа через прокси вместо VeePN."""
+    # Запоминаем режим запуска: при вводе номера/OTP окно выводится на передний
+    # план только если оно вообще есть (в фоновом режиме этого делать нельзя).
+    _headless_mode[0] = bool(headless)
     vp = random.choice(_MENU_VIEWPORTS)
     ua = random.choice(_MENU_USER_AGENTS)
     args = [
@@ -7091,6 +7094,46 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         title = "ЗАПУСК АВТОМАТИЗАЦИИ ВХОДА" + (" + TELEGRAM" if use_telegram else "")
     header(title, G)
 
+    # Второй параллельный запуск ломает работу: два процесса покупают номера
+    # независимо (двойной расход) и печатают в разные окна Chrome одновременно —
+    # фокус уходит чужому окну и номер/OTP попадает не в то поле. Замок ввода
+    # внутрипроцессный и между процессами не действует, поэтому не пускаем сюда.
+    _busy, _busy_st = shared_automation_running()
+    if _busy:
+        _bpid = _busy_st.get("automation_pid")
+        _bmode = _busy_st.get("automation_mode") or "?"
+        _bowner = _busy_st.get("automation_owner") or "?"
+        print(f"\n  {R}▶ Автоматизация уже запущена{RST} "
+              f"{DIM}(pid {_bpid}, режим {_bmode}, запуск: {_bowner}){RST}")
+        print(f"  {DIM}Два процесса одновременно тратят баланс вдвое и мешают"
+              f" друг другу вводить номера.{RST}\n")
+        opt("1", "Остановить старый процесс и запустить новый", Y)
+        opt("0", "Отмена — вернуться в меню", DIM)
+        print()
+        try:
+            _ch = input(f"  {BLD}Выбор [1/0]: {RST}").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if _ch != "1":
+            return
+        print(f"\n  {Y}Останавливаю предыдущий процесс…{RST}")
+        try:
+            _kill_automation_proc()
+        except Exception as _ke:
+            print(f"  {R}Не удалось остановить: {_ke}{RST}")
+            pause()
+            return
+        # Номера, купленные убитым процессом, он уже не отменит сам.
+        try:
+            _grizzly_module.startup_cleanup_active_rentals("перезапуск автоматизации")
+        except Exception:
+            pass
+        clear_automation_proc()
+        print(f"  {G}✔ Предыдущий процесс остановлен{RST}")
+        time.sleep(0.8)
+        cls()
+        header(title, G)
+
     if not (_HERE / "config.yaml").exists():
         print(f"{R}  [!] Файл config.yaml не найден!{RST}")
         print(f"{DIM}      Создайте config.yaml рядом с menu.bat{RST}")
@@ -7198,15 +7241,22 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
         proc.wait()
         code = proc.returncode
     except KeyboardInterrupt:
-        print(f"\n\n{Y}  [!] Остановка по Ctrl+C...{RST}")
+        print(f"\n\n{Y}  [!] Остановка по Ctrl+C — отменяю номера…{RST}")
         if proc and proc.poll() is None:
             if os.name == "nt":
                 proc.send_signal(signal.CTRL_BREAK_EVENT)
             else:
                 proc.terminate()
+            # Даём процессу время вернуть купленные номера (в main.py очистка
+            # ограничена _CANCEL_ON_EXIT_TIMEOUT=45s). Прежние 5s убивали его
+            # прямо посреди отмены. Второй Ctrl+C прекращает ожидание.
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=50)
             except subprocess.TimeoutExpired:
+                print(f"  {Y}Процесс не ответил — завершаю принудительно{RST}")
+                proc.kill()
+            except KeyboardInterrupt:
+                print(f"  {Y}Второй Ctrl+C — завершаю немедленно{RST}")
                 proc.kill()
         code = -1
     except Exception as exc:
@@ -16878,10 +16928,49 @@ _PHONE_FIELD_JS = """
 """
 
 
+# Ввод на Flipkart идёт строго по одному профилю за раз: и номера телефона,
+# и OTP-коды. Одновременный ввод в несколько окон приводил к тому, что фокус
+# уходил чужому окну и символы попадали не в то поле.
+_flipkart_input_lock = asyncio.Lock()
+
+
+async def _focus_for_input(page) -> None:
+    """Разворачивает окно профиля и выводит его на передний план перед вводом.
+    В headless-режиме бездействует — там окна нет."""
+    try:
+        ctx = page.context
+        if _is_headless_ctx(ctx):
+            return
+        await _maximize_window(ctx, page)
+        await page.bring_to_front()
+    except Exception:
+        pass
+
+
+def _is_headless_ctx(ctx) -> bool:
+    """True, если контекст запущен без окна (фоновый режим).
+
+    Playwright не отдаёт флаг headless у контекста, поэтому смотрим на
+    глобальный режим запуска, выставленный при старте сценария."""
+    try:
+        if _headless_mode[0] is not None:
+            return bool(_headless_mode[0])
+    except Exception:
+        pass
+    return False
+
+
+# None = не задан (считаем «с окном»); True = фоновый запуск без окна.
+_headless_mode: list = [None]
+
+
 async def _flipkart_phase1(page, login_url: str, phone_10: str) -> str:
     """
     Navigate to login_url, enter phone_10, click CONTINUE, wait for OTP field.
     Returns: "ok" | "blocked" | "error:<msg>"
+
+    Ввод номера сериализован глобальным замком: номера вводятся один за другим,
+    а не одновременно во всех окнах.
     """
     try:
         cur = (page.url or "").lower()
@@ -16929,19 +17018,23 @@ async def _flipkart_phase1(page, login_url: str, phone_10: str) -> str:
             return "error:поле телефона не найдено"
 
     # Enter phone — human-like: move to near field, pause, move to field, click, type variably
+    # Под общим замком: одновременный ввод в несколько окон уводил фокус и
+    # символы попадали в чужое поле (в логах — "keyboard.type дал ''").
     import random as _r
-    try:
-        await page.mouse.move(rect["x"] + _r.uniform(-50, 50), rect["y"] + _r.uniform(-25, 25))
-        await asyncio.sleep(_r.uniform(0.05, 0.12))
-        await page.mouse.click(rect["x"], rect["y"])
-        await asyncio.sleep(0.12)
-        await page.keyboard.press("Control+a")
-        for ch in phone_10:
-            await page.keyboard.type(ch)
-            await asyncio.sleep(_r.uniform(0.03, 0.08))
-        await asyncio.sleep(0.15)
-    except Exception as exc:
-        return f"error:ввод телефона: {exc}"
+    async with _flipkart_input_lock:
+        await _focus_for_input(page)
+        try:
+            await page.mouse.move(rect["x"] + _r.uniform(-50, 50), rect["y"] + _r.uniform(-25, 25))
+            await asyncio.sleep(_r.uniform(0.05, 0.12))
+            await page.mouse.click(rect["x"], rect["y"])
+            await asyncio.sleep(0.12)
+            await page.keyboard.press("Control+a")
+            for ch in phone_10:
+                await page.keyboard.type(ch)
+                await asyncio.sleep(_r.uniform(0.03, 0.08))
+            await asyncio.sleep(0.15)
+        except Exception as exc:
+            return f"error:ввод телефона: {exc}"
 
     actual = await page.evaluate("() => document.activeElement?.value || ''")
     if actual != phone_10:
@@ -17063,9 +17156,21 @@ async def _enter_otp_on_page(page, otp_code: str, *, timeout_redirect: float = 2
     Ищет поле OTP, вводит код посимвольно (триггерит React onChange),
     кликает VERIFY, ждёт редиректа.
     Возвращает True если страница ушла с login-URL.
+
+    Ввод сериализован общим замком: если коды пришли одновременно на несколько
+    номеров, они вводятся по очереди — каждый в своё окно, с фокусом на нём.
     """
     import random as _rn_otp
 
+    async with _flipkart_input_lock:
+        return await _enter_otp_locked(page, otp_code, timeout_redirect=timeout_redirect)
+
+
+async def _enter_otp_locked(page, otp_code: str, *, timeout_redirect: float = 22.0) -> bool:
+    """Тело ввода OTP; вызывается только под _flipkart_input_lock."""
+    import random as _rn_otp
+
+    await _focus_for_input(page)
     _otp_el = None
     _dl = asyncio.get_event_loop().time() + 12
     while asyncio.get_event_loop().time() < _dl:
