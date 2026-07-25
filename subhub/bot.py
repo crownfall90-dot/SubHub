@@ -3916,6 +3916,9 @@ def _menu_tg_bot_thread() -> None:
                 try:
                     _m("_gift_big_choice")[0] = True
                     _m("_gift_big_ev").set()
+                    # Автоматизация может идти в отдельном процессе — Event там не
+                    # виден, поэтому дублируем ответ через файл-сигнал.
+                    _m("_gift_big_answer_write")(True)
                 except Exception:
                     pass
                 await _ack(qid, "✅ Разрешил крупные гифт-карты")
@@ -3925,6 +3928,7 @@ def _menu_tg_bot_thread() -> None:
                 try:
                     _m("_gift_big_choice")[0] = False
                     _m("_gift_big_ev").set()
+                    _m("_gift_big_answer_write")(False)
                 except Exception:
                     pass
                 await _ack(qid, "🚫 Крупные гифт-карты не использую")

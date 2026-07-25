@@ -11044,10 +11044,45 @@ _orders_confirm_ev = _threading_pc.Event()
 _orders_confirm_choice: list = [None]  # True=продолжить, False=удалить профиль
 
 # Подтверждение использования «крупных» гифт-карт (>= GIFT_CONFIRM_THRESHOLD).
-# Если мелких (50/100/200/250) не хватает — бот спрашивает разрешение через TG.
+# Если мелких (50/100/200/250) не хватает — спрашиваем в консоли И в TG.
 GIFT_CONFIRM_THRESHOLD = 500
+
+# Как часто повторять попытку отмены «проигравшего» номера: до кулдауна провайдера
+# (Grizzly 1:30, PVAPins 2 мин) API отвечает отказом.
+_LOSER_CANCEL_RETRY_SEC = 15.0
 _gift_big_ev = _threading_pc.Event()
 _gift_big_choice: list = [None]  # True=разрешить крупные, False=нет
+
+# Автоматизация покупки идёт в ОТДЕЛЬНОМ процессе (subprocess.Popen в
+# screen_run_auto), а TG-бот — в процессе консоли. Поэтому in-memory Event выше
+# не виден процессу автоматизации: ответ из TG передаём через файл-сигнал.
+_GIFT_BIG_ANSWER_FILE = _HERE / "data" / "gift_big_answer.json"
+
+
+def _gift_big_answer_write(choice: bool) -> None:
+    """TG-бот (процесс консоли) публикует ответ для процесса автоматизации."""
+    try:
+        _GIFT_BIG_ANSWER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _GIFT_BIG_ANSWER_FILE.write_text(
+            json.dumps({"choice": bool(choice), "ts": time.time()}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _gift_big_answer_read(after_ts: float):
+    """Читает ответ из TG, если он свежее старта запроса. None — ответа ещё нет."""
+    try:
+        raw = json.loads(_GIFT_BIG_ANSWER_FILE.read_text(encoding="utf-8"))
+        if float(raw.get("ts") or 0) >= after_ts:
+            return bool(raw.get("choice"))
+    except Exception:
+        pass
+    return None
+
+
+def _gift_big_answer_clear() -> None:
+    with contextlib.suppress(Exception):
+        _GIFT_BIG_ANSWER_FILE.unlink()
 
 
 class _PurchaseCancelled(Exception):
@@ -14270,7 +14305,8 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
     _allow_big = False
 
     async def _ask_big_gift_confirm(need_amt: int, small_now: int) -> bool:
-        """Спросить в TG разрешение на карты ≥ GIFT_CONFIRM_THRESHOLD. True = да."""
+        """Спросить разрешение на карты ≥ GIFT_CONFIRM_THRESHOLD — в консоли И в TG.
+        Что ответит первым, то и применяем. True = да, использовать крупные."""
         _all_now = _load_gift_cards()
         _big = sorted({int(c.get("denom") or 0) for c in _all_now
                        if not c.get("used") and c.get("number") and c.get("pin")
@@ -14278,9 +14314,10 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
         if not _big:
             return False
         _big_lbl = ", ".join(f"₹{d}" for d in _big)
-        print(f"  {Y}Мелких не хватает (₹{small_now} из ₹{need_amt}). Спрашиваю подтверждение на крупные…{RST}")
         _gift_big_ev.clear()
         _gift_big_choice[0] = None
+        _gift_big_answer_clear()
+        _asked_ts = time.time()
         _tg_send_direct_kb(
             f"🎁 *Не хватает мелких гифт-карт*\n\n"
             f"Осталось покрыть: *₹{need_amt}*\n"
@@ -14290,13 +14327,50 @@ async def _do_gift_card_payment(page, profile_path=None) -> bool | str:
                 {"text": "✅ Да, использовать", "callback_data": "gift:big_yes"},
                 {"text": "🚫 Нет", "callback_data": "gift:big_no"},
             ]]})
+
+        print(f"\n  {Y}🎁 Не хватает мелких гифт-карт{RST}")
+        print(f"  {DIM}Осталось покрыть: ₹{need_amt} · мелкими (до ₹{GIFT_CONFIRM_THRESHOLD}) есть ₹{small_now}{RST}")
+        print(f"  {W}Использовать карты от ₹{GIFT_CONFIRM_THRESHOLD}? ({_big_lbl}){RST}")
+        print(f"  {DIM}[Y] да · [N] нет · или ответьте в Telegram (120 сек){RST}")
+
+        # Ввод из консоли — в отдельном треде, чтобы не блокировать event loop
+        # (и параллельно ждём ответ из TG).
+        _console_answer: list = [None]
+
+        def _read_console():
+            try:
+                ans = input("  Использовать крупные? [Y/N]: ").strip().lower()
+                _console_answer[0] = ans in ("y", "yes", "д", "да", "1")
+            except (EOFError, KeyboardInterrupt, Exception):
+                pass
+
+        _t = _threading_pc.Thread(target=_read_console, daemon=True, name="gift-big-ask")
+        _t.start()
+
         _wait_dl = asyncio.get_event_loop().time() + 120
+        _result = None
         while asyncio.get_event_loop().time() < _wait_dl:
             _ckcancel()
-            if _gift_big_ev.is_set():
+            if _console_answer[0] is not None:
+                _result = _console_answer[0]
+                print(f"  {G if _result else Y}→ Ответ из консоли: {'да' if _result else 'нет'}{RST}")
                 break
-            await asyncio.sleep(1)
-        return _gift_big_choice[0] is True
+            # TG-ответ: in-memory (тот же процесс) ИЛИ файл (процесс автоматизации)
+            if _gift_big_ev.is_set():
+                _result = _gift_big_choice[0] is True
+                print(f"  {G if _result else Y}→ Ответ из Telegram: {'да' if _result else 'нет'}{RST}")
+                break
+            _file_ans = _gift_big_answer_read(_asked_ts)
+            if _file_ans is not None:
+                _result = _file_ans
+                print(f"  {G if _result else Y}→ Ответ из Telegram: {'да' if _result else 'нет'}{RST}")
+                break
+            await asyncio.sleep(0.5)
+
+        if _result is None:
+            print(f"  {Y}→ Ответа нет (120 сек) — крупные карты не использую{RST}")
+        _gift_big_answer_clear()
+        return _result is True
 
     if total <= 0:
         pass
@@ -15449,8 +15523,11 @@ def _set_sms_provider(mode: str) -> bool:
     m = re.search(r"(?m)^(sms:\s*\n)(.*?)(?=^[a-zA-Z_][\w]*:|\Z)", text, re.S)
     if m:
         head, body = m.group(1), m.group(2)
+        # [ \t]*, не \s* — \s захватывает и завершающий \n, из-за чего замена
+        # съедала перевод строки перед следующим корневым ключом и склеивала
+        # "provider: grizzlytelegram_otp:" в один токен (невалидный YAML).
         new_body, n = re.subn(
-            r"(?m)^([ \t]*provider:\s*)(grizzly|pvapins|auto)\s*(#.*)?$",
+            r"(?m)^([ \t]*provider:[ \t]*)(grizzly|pvapins|auto)[ \t]*(#.*)?$",
             rf"\g<1>{mode}\g<3>",
             body,
             count=1,
@@ -15484,6 +15561,50 @@ def _cycle_sms_provider() -> str:
 
 def _sms_provider_menu_label() -> str:
     return _SMS_PROVIDER_LABEL.get(_sms_provider(), _SMS_PROVIDER_LABEL["auto"])
+
+
+def _pvapins_success_summary() -> str:
+    """Свой success-rate PVAPins по операторам (код дошёл / номер отменён)."""
+    try:
+        from pvapins_sms import _load_operator_stats
+        stats = _load_operator_stats()
+        att = sum(int(v.get("attempts", 0)) for v in stats.values())
+        suc = sum(int(v.get("successes", 0)) for v in stats.values())
+        if att:
+            return f"{suc * 100 // att}% ({suc}/{att})"
+    except Exception:
+        pass
+    return "нет данных"
+
+
+def _grizzly_success_summary() -> str:
+    """Success-rate GrizzlySMS из статистики запусков (куплено → профилей)."""
+    try:
+        import grizzly as _gz
+        st = _gz.get_run_stats()
+        bought = int(st.get("numbers_bought") or 0)
+        saved = int(st.get("profiles_saved") or 0)
+        if bought:
+            return f"{saved * 100 // bought}% ({saved}/{bought})"
+    except Exception:
+        pass
+    return "нет данных"
+
+
+def _sms_providers_status_line() -> str:
+    """Строка под переключателем: баланс и успешность обоих провайдеров.
+    Балансы читаются из кэша последнего запуска — без блокирующих HTTP на
+    отрисовке меню (иначе меню «залипает» на сетевых таймаутах)."""
+    parts = []
+    try:
+        import grizzly as _gz
+        _bal = _gz.get_run_stats().get("balance_end")
+        _b = f"${_bal:.2f}" if isinstance(_bal, (int, float)) else "?"
+        parts.append(f"Grizzly {_b} · успех {_grizzly_success_summary()}")
+    except Exception:
+        parts.append("Grizzly ?")
+    parts.append(f"PVAPins · успех {_pvapins_success_summary()}")
+    return "   ·   ".join(parts)
 
 
 def _set_proxy_enabled(enabled: bool) -> bool:
@@ -17166,10 +17287,11 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
         except Exception:
             pass
 
-    async def _send_tg_buy(ph: str) -> None:
+    async def _send_tg_buy(ph: str, aid: str = "") -> None:
         """Отправляет TG-уведомление о покупке номера."""
         if not _tg_notify_enabled():
             return
+        prov = "PVAPins" if str(aid).startswith("pva:") else "GrizzlySMS"
         try:
             import httpx as _hx_b, json as _jb
             _tok = _get_telegram_token()
@@ -17187,7 +17309,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         await _client.post(
                             f"https://api.telegram.org/bot{_tok}/sendMessage",
                             json={"chat_id": _c,
-                                  "text": f"📞 *Номер на Flipkart*\n\n`{ph}`\n_Жду OTP..._",
+                                  "text": f"📞 *Номер на Flipkart*  ·  _{prov}_\n\n`{ph}`\n_Жду OTP..._",
                                   "parse_mode": "Markdown"})
                     except Exception:
                         pass
@@ -17428,7 +17550,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     return False, p1.removeprefix("error:")
 
                 _grizzly_module.mark_phase1_ok(phone_id)
-                await _send_tg_buy(phone_10)
+                await _send_tg_buy(phone_10, phone_id)
 
                 # ── 3b. Параллельный поиск номеров + ожидание OTP ───────────
                 # Все номера ищутся СРАЗУ в фоне, OTP полится у всех параллельно.
@@ -17592,7 +17714,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                         if r2 == "ok":
                             phase1_done = True
                             _grizzly_module.mark_phase1_ok(nid)
-                            await _send_tg_buy(nph10)
+                            await _send_tg_buy(nph10, nid)
                             _pending.append([nid, nph10, npage, time.monotonic(), n_ctx])
                             print(f"  {G}Номер #{n} готов, жду OTP...{RST}")
                         else:
@@ -17789,6 +17911,7 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                 has_otp = False
                                 _loser_login_ok = False
                                 _deadline = time.monotonic() + 180.0
+                                _next_cancel_try = 0.0
                                 try:
                                     while time.monotonic() < _deadline:
                                         try:
@@ -17838,12 +17961,21 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                         elif _lst.get("type") in ("CANCEL", "UNKNOWN"):
                                             break
 
-                                        # Пробуем отменить (кулдаун мог пройти)
-                                        try:
-                                            await sms_client.cancel(o_id)
-                                            break
-                                        except Exception:
-                                            pass
+                                        # Пробуем отменить (кулдаун мог пройти).
+                                        # Grizzly: 1:30, PVAPins: 2 мин — до этого
+                                        # API отвечает отказом, поэтому повторяем
+                                        # раз в _LOSER_CANCEL_RETRY_SEC, а между
+                                        # попытками продолжаем следить за OTP
+                                        # (код мог прийти — тогда номер уже не
+                                        # отменить и его надо доводить до входа).
+                                        _now_lc = time.monotonic()
+                                        if _now_lc >= _next_cancel_try:
+                                            _next_cancel_try = _now_lc + _LOSER_CANCEL_RETRY_SEC
+                                            try:
+                                                await sms_client.cancel(o_id)
+                                                break
+                                            except Exception:
+                                                pass
 
                                         await asyncio.sleep(poll_int)
                                 except Exception: pass
@@ -20034,19 +20166,28 @@ def screen_stop_all() -> None:
         else:
             print(f"  {DIM}○ Активного процесса автоматизации нет.{RST}")
 
-        print(f"  {DIM}Проверяю активные номера GrizzlySMS…{RST}")
+        print(f"  {DIM}Проверяю активные номера (Grizzly + PVAPins)…{RST}")
         try:
-            act = _gz.fetch_active_rentals_status_blocking(timeout=12)
+            act = _gz.fetch_active_rentals_status_blocking(timeout=20)
         except Exception as e:
             act = {"error": str(e)}
         if act.get("error"):
             print(f"  Активные номера: {Y}? ({act['error']}){RST}")
         else:
             n = int(act.get("total") or 0)
-            bal = act.get("balance")
+            _by = act.get("by_provider") or {}
+            _detail = ", ".join(f"{k}: {v}" for k, v in _by.items() if v)
             print(f"  Активных номеров: {(R if n else G)}{BLD}{n}{RST}"
-                  + (f"   {DIM}баланс ${bal:.4f}{RST}"
-                     if isinstance(bal, (int, float)) else ""))
+                  + (f"   {DIM}({_detail}){RST}" if _detail else ""))
+            _bal_g = act.get("balance_grizzly")
+            _bal_p = act.get("balance_pvapins")
+            _bal_parts = []
+            if isinstance(_bal_g, (int, float)):
+                _bal_parts.append(f"GrizzlySMS ${_bal_g:.4f}")
+            if isinstance(_bal_p, (int, float)):
+                _bal_parts.append(f"PVAPins ${_bal_p:.4f}")
+            if _bal_parts:
+                print(f"  Баланс: {DIM}{'   ·   '.join(_bal_parts)}{RST}")
         print()
         opt("1", "🛑 ОСТАНОВИТЬ ВСЁ  (процесс + Chrome + отменить номера)", R)
         opt("2", "Обновить", C)
@@ -20112,6 +20253,7 @@ def screen_main():
 
         section("НАСТРОЙКИ", B)
         opt("М", f"SMS-провайдер: {_sms_provider_menu_label()}", Y)
+        print(f"       {DIM}{_sms_providers_status_line()}{RST}")
         opt("С", "🛑 Остановить процессы / отменить все номера", R)
         opt("0", "Карты для оплаты (добавить / удалить)", C)
         _gc_bal = _gift_balance()
@@ -20801,8 +20943,16 @@ if __name__ == "__main__":
                 print(f"\n  {'─'*48}")
                 print(f"  📊 {BLD}Итоги запуска{RST}")
                 print(f"  {'─'*48}")
-                print(f"  💾  Профилей сохранено : {G}{BLD}{st['profiles_saved']}{RST}")
-                print(f"  ✅  Успешных аккаунтов : {G}{ok_count}/{total}{RST}")
+                # profiles_saved включает «бонусные» входы: если на проигравший
+                # номер всё же пришёл код (отменить его уже нельзя), по нему тоже
+                # доводится вход и сохраняется профиль — их может быть больше,
+                # чем было запрошено.
+                _saved = int(st["profiles_saved"])
+                _bonus = max(0, _saved - ok_count)
+                print(f"  💾  Профилей сохранено : {G}{BLD}{_saved}{RST}"
+                      + (f"  {DIM}(+{_bonus} сверх запроса){RST}" if _bonus else ""))
+                print(f"  ✅  Успешных аккаунтов : {G}{max(ok_count, _saved)}/{total}{RST}"
+                      + (f"  {DIM}(запрошено {total}){RST}" if _saved > total else ""))
                 print(f"  ❌  Неудачных          : {R}{fail_count}{RST}")
                 print(f"  📞  Номеров куплено    : {st['numbers_bought']}")
                 print(f"  ✔   Отменено           : {G}{st['numbers_cancelled']}{RST}")
@@ -20829,8 +20979,9 @@ if __name__ == "__main__":
                         _tg_lines = [
                             "📊 <b>Итоги запуска</b>" + (" ⚠️ прервано" if _interrupted else ""),
                             "━━━━━━━━━━━━━━━━━━━",
-                            f"💾 Профилей сохранено: <b>{st['profiles_saved']}</b>",
-                            f"✅ Успешных аккаунтов: <b>{ok_count}/{total}</b>",
+                            f"💾 Профилей сохранено: <b>{_saved}</b>"
+                            + (f" (+{_bonus} сверх запроса)" if _bonus else ""),
+                            f"✅ Успешных аккаунтов: <b>{max(ok_count, _saved)}/{total}</b>",
                             f"❌ Неудачных: <b>{fail_count}</b>",
                             f"📞 Номеров куплено: <b>{st['numbers_bought']}</b>",
                             f"✔️ Отменено: <b>{st['numbers_cancelled']}</b>",
@@ -20841,6 +20992,12 @@ if __name__ == "__main__":
                             _tg_lines.append(f"💰 Баланс: <b>${b_start:.4f}</b> → <b>${b_end:.4f}</b>")
                         if spent is not None:
                             _tg_lines.append(f"💸 Потрачено: <b>${spent:.4f}</b>")
+                        # Баланс и успешность по каждому провайдеру отдельно —
+                        # чтобы было видно, где деньги и что работает лучше.
+                        _tg_lines.append("━━━━━━━━━━━━━━━━━━━")
+                        _tg_lines.append(f"📶 SMS: <b>{_sms_provider_menu_label()}</b>")
+                        _tg_lines.append(f"   Grizzly: успех {_grizzly_success_summary()}")
+                        _tg_lines.append(f"   PVAPins: успех {_pvapins_success_summary()}")
                         _msg_st = "\n".join(_tg_lines)
                         for _cid_st in _cids_st:
                             try:

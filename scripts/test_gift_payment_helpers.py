@@ -61,7 +61,7 @@ def main() -> None:
     # Gift path: Use Gift Cards checkbox OR left «Have a Flipkart Gift Card?»
     gift_idx = src.find("async def _do_gift_card_payment")
     assert gift_idx > 0
-    gift_chunk = src[gift_idx: gift_idx + 8000]
+    gift_chunk = src[gift_idx: gift_idx + 12000]
     assert "_use_gift_cards_checkbox_state" in gift_chunk
     assert "_select_gift_cards_pay_method" in gift_chunk
     assert "_ensure_voucher_fields" in gift_chunk
