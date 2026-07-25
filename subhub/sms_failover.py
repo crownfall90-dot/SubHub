@@ -57,6 +57,11 @@ class FailoverSMSClient:
             use_fallback = not use_primary and self.fallback is not None
         return use_primary, use_fallback
 
+    def client_for(self, activation_id: str):
+        """Публичный доступ к клиенту конкретного номера — нужен, чтобы
+        показать баланс именно того сервиса, где номер куплен/отменён."""
+        return self._client_for(activation_id)
+
     def _client_for(self, activation_id: str):
         if PVAPinsSMSClient.is_aid(activation_id):
             if self.fallback is None:
@@ -308,8 +313,9 @@ def build_sms_client(
             country=str(p_cfg.get("country") or "india"),
             apps=list(apps) if apps else None,
             max_price=p_cfg.get("max_price"),
-            buy_interval_seconds=float(p_cfg.get("buy_interval_seconds") or 10),
-            min_reject_seconds=float(p_cfg.get("min_reject_seconds") or 180),
+            buy_interval_seconds=float(p_cfg.get("buy_interval_seconds") or 3),
+            min_reject_seconds=float(p_cfg.get("min_reject_seconds") or 120),
+            poll_interval_seconds=float(p_cfg.get("poll_interval_seconds") or 3),
         )
 
     # Режим «только X», но ключа нет — не молча падаем на другой
