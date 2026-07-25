@@ -9,6 +9,7 @@ Browser cleanup is done via OS process kill + shutil.rmtree.
 """
 
 import asyncio
+import contextlib
 import json
 import shutil
 import sys
@@ -169,9 +170,10 @@ def _min_cancel_age_for(aid: str) -> float:
         try:
             with open(_HERE / "config.yaml", encoding="utf-8") as fh:
                 cfg = yaml.safe_load(fh) or {}
-            return float((cfg.get("pvapins") or {}).get("min_reject_seconds", 180.0))
+            # PVAPins: отмена возможна только через 2 мин после покупки (доки)
+            return float((cfg.get("pvapins") or {}).get("min_reject_seconds", 120.0))
         except Exception:
-            return 180.0
+            return 120.0
     return _grizzly_min_cancel_age()
 
 
@@ -195,7 +197,7 @@ async def _make_client_for_aid(aid: str):
             apps=list(cfg["apps"]) if cfg.get("apps") else None,
             max_price=cfg.get("max_price"),
             buy_interval_seconds=float(cfg.get("buy_interval_seconds") or 10),
-            min_reject_seconds=float(cfg.get("min_reject_seconds") or 180),
+            min_reject_seconds=float(cfg.get("min_reject_seconds") or 120),
         )
     if GrizzlySMSClient is None:
         return None
@@ -439,34 +441,61 @@ def start_global_monitor():
     _wd.start()
 
 
+async def _all_provider_clients() -> list:
+    """Клиенты всех настроенных SMS-провайдеров (Grizzly + PVAPins).
+
+    Номера могли остаться от прошлого запуска на ДРУГОМ провайдере, поэтому
+    и просмотр активных, и «отменить всё» должны обходить оба независимо от
+    текущего sms.provider. Caller обязан закрыть клиентов."""
+    clients: list = []
+    key = _get_grizzly_api_key()
+    if key and GrizzlySMSClient is not None:
+        clients.append(GrizzlySMSClient(key, http_timeout=10))
+    p_key = _get_pvapins_api_key()
+    if p_key:
+        with contextlib.suppress(Exception):
+            client = await _make_client_for_aid("pva:")
+            if client is not None:
+                clients.append(client)
+    return clients
+
+
+async def _close_clients(clients: list) -> None:
+    for c in clients:
+        with contextlib.suppress(Exception):
+            await c.close()
+
+
 async def fetch_active_rentals_status() -> dict:
-    """Только чтение: сколько активных номеров и баланс (без отмены)."""
-    result: dict = {"total": 0, "balance": None}
-    api_key = _get_grizzly_api_key()
-    if not api_key:
+    """Только чтение: сколько активных номеров и баланс (без отмены).
+    Считает по ВСЕМ провайдерам (Grizzly + PVAPins)."""
+    result: dict = {"total": 0, "balance": None, "by_provider": {}}
+    clients = await _all_provider_clients()
+    if not clients:
         result["error"] = "no_api_key"
         return result
-    if GrizzlySMSClient is None:
-        result["error"] = "no_client"
-        return result
 
-    client = GrizzlySMSClient(api_key, http_timeout=10)
     try:
-        try:
-            active = await client.get_active_activations() or []
-            result["total"] = len(active)
-        except Exception as exc:
-            result["error"] = str(exc)
-            return result
-        try:
-            result["balance"] = await client.get_balance()
-        except Exception:
-            pass
+        errors = []
+        for client in clients:
+            name = "pvapins" if type(client).__name__.startswith("PVAPins") else "grizzly"
+            try:
+                active = await client.get_active_activations() or []
+                result["total"] += len(active)
+                result["by_provider"][name] = len(active)
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+            try:
+                bal = await client.get_balance()
+                result[f"balance_{name}"] = bal
+                if result["balance"] is None:
+                    result["balance"] = bal
+            except Exception:
+                pass
+        if errors and not result["by_provider"]:
+            result["error"] = "; ".join(errors)
     finally:
-        try:
-            await client.close()
-        except Exception:
-            pass
+        await _close_clients(clients)
     return result
 
 
@@ -489,83 +518,84 @@ def fetch_active_rentals_status_blocking(timeout: float = 12.0) -> dict:
 
 
 async def cancel_all_active_rentals(reason: str = "") -> dict:
-    """Отменяет все активные номера через GrizzlySMS API."""
+    """Отменяет все активные номера по ВСЕМ провайдерам (Grizzly + PVAPins)."""
     result: dict = {
         "total": 0, "cancelled": 0, "failed": 0, "phones": [], "balance": None,
     }
-    api_key = _get_grizzly_api_key()
-    if not api_key:
+    clients = await _all_provider_clients()
+    if not clients:
         result["error"] = "no_api_key"
         return result
-    if GrizzlySMSClient is None:
-        result["error"] = "no_client"
-        return result
 
-    client = GrizzlySMSClient(api_key, http_timeout=15)
+    notify_tasks: list = []
     try:
-        try:
-            active = await client.get_active_activations() or []
-        except Exception as exc:
-            result["error"] = str(exc)
-            return result
-
-        result["total"] = len(active)
-        if not active:
-            return result
-
-        tag = f" ({reason})" if reason else ""
-        print(f"\n  {_Y}[Grizzly] Отмена {len(active)} активных номеров{tag}...{_RST}", flush=True)
-
-        notify_tasks = []
-        for item in active:
-            aid = str(item.get("activationId") or item.get("id") or "")
-            ph_raw = str(item.get("phoneNumber") or item.get("phone") or "")
-            if not aid:
-                continue
-            ph10 = ph_raw[-10:] if len(ph_raw) >= 10 else ph_raw
+        errors = []
+        for client in clients:
+            label = "PVAPins" if type(client).__name__.startswith("PVAPins") else "Grizzly"
             try:
-                await client.cancel(aid)
-                result["cancelled"] += 1
-                result["phones"].append(ph10)
-                _RENTALS.pop(aid, None)
-                _COMPLETED_IDS.add(aid)
-                print(f"  {_G}  ✓ +91 {ph10} (id={aid}){_RST}", flush=True)
-                notify_tasks.append(_tg_cancel_notify(ph10, reason or "Отменён"))
+                active = await client.get_active_activations() or []
             except Exception as exc:
-                err = str(exc)
-                result["failed"] += 1
-                if "BAD_ACTION" in err:
+                errors.append(f"{label}: {exc}")
+                continue
+
+            if not active:
+                continue
+            result["total"] += len(active)
+
+            tag = f" ({reason})" if reason else ""
+            print(f"\n  {_Y}[{label}] Отмена {len(active)} активных номеров{tag}...{_RST}", flush=True)
+
+            for item in active:
+                aid = str(item.get("activationId") or item.get("id") or "")
+                ph_raw = str(item.get("phoneNumber") or item.get("phone") or "")
+                if not aid:
+                    continue
+                ph10 = ph_raw[-10:] if len(ph_raw) >= 10 else ph_raw
+                try:
+                    await client.cancel(aid)
+                    result["cancelled"] += 1
+                    result["phones"].append(ph10)
                     _RENTALS.pop(aid, None)
                     _COMPLETED_IDS.add(aid)
-                    print(f"  {_DIM}  · +91 {ph10} — уже не активен{_RST}", flush=True)
-                else:
-                    print(f"  {_Y}  ✗ +91 {ph10} — {err[:80]}{_RST}", flush=True)
+                    print(f"  {_G}  ✓ +91 {ph10} (id={aid}){_RST}", flush=True)
+                    notify_tasks.append(_tg_cancel_notify(ph10, reason or "Отменён"))
+                except Exception as exc:
+                    err = str(exc)
+                    result["failed"] += 1
+                    if "BAD_ACTION" in err or "not able to reject" in err.lower():
+                        _RENTALS.pop(aid, None)
+                        _COMPLETED_IDS.add(aid)
+                        print(f"  {_DIM}  · +91 {ph10} — уже не активен{_RST}", flush=True)
+                    else:
+                        print(f"  {_Y}  ✗ +91 {ph10} — {err[:80]}{_RST}", flush=True)
 
-        try:
-            result["balance"] = await client.get_balance()
-        except Exception:
-            pass
+            try:
+                bal = await client.get_balance()
+                result[f"balance_{label.lower()}"] = bal
+                if result["balance"] is None:
+                    result["balance"] = bal
+            except Exception:
+                pass
 
-        bal = result.get("balance")
-        bal_s = f" · 💰 ${bal:.4f}" if bal is not None else ""
+        if errors and not result["total"]:
+            result["error"] = "; ".join(errors)
+
+        bal_parts = [f"{n.replace('balance_', '')} ${v:.4f}"
+                     for n, v in result.items()
+                     if n.startswith("balance_") and isinstance(v, (int, float))]
+        bal_s = f" · 💰 {' · '.join(bal_parts)}" if bal_parts else ""
         if result["cancelled"]:
-            print(
-                f"  {_G}[Grizzly] Отменено {result['cancelled']}/{result['total']}{bal_s}{_RST}",
-                flush=True,
-            )
+            print(f"  {_G}Отменено {result['cancelled']}/{result['total']}{bal_s}{_RST}", flush=True)
         elif result["total"]:
             print(
-                f"  {_Y}[Grizzly] Не удалось отменить {result['failed']}/{result['total']}"
-                f" (возможен лимит 1:30){bal_s}{_RST}",
+                f"  {_Y}Не удалось отменить {result['failed']}/{result['total']}"
+                f" (лимит: Grizzly 1:30, PVAPins 2 мин){bal_s}{_RST}",
                 flush=True,
             )
         if notify_tasks:
             await asyncio.gather(*notify_tasks, return_exceptions=True)
     finally:
-        try:
-            await client.close()
-        except Exception:
-            pass
+        await _close_clients(clients)
     return result
 
 

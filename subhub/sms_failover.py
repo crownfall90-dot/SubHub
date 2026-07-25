@@ -5,7 +5,10 @@ Failover SMS: GrizzlySMS (primary) → PVAPins (fallback).
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+import re
+import time
+from pathlib import Path
+from typing import Callable, Optional, Tuple
 
 from loguru import logger
 
@@ -28,11 +31,31 @@ class FailoverSMSClient:
         self,
         primary: Optional[GrizzlySMSClient] = None,
         fallback: Optional[PVAPinsSMSClient] = None,
+        mode_getter: Optional[Callable[[], str]] = None,
     ) -> None:
         if primary is None and fallback is None:
             raise ValueError("Нужен хотя бы один SMS-провайдер (Grizzly или PVAPins)")
         self.primary = primary
         self.fallback = fallback
+        # Переключатель «М» в консоли пишет sms.provider в config.yaml на лету —
+        # mode_getter перечитывает его на каждый вызов get_number*, чтобы уже
+        # запущенная автоматизация подхватывала переключение без перезапуска.
+        self._mode_getter = mode_getter or (lambda: "auto")
+
+    def _active(self) -> tuple[bool, bool]:
+        """(использовать primary?, использовать fallback?) по текущему режиму."""
+        try:
+            mode = self._mode_getter()
+        except Exception:
+            mode = "auto"
+        use_primary = self.primary is not None and mode in ("grizzly", "auto")
+        use_fallback = self.fallback is not None and mode in ("pvapins", "auto")
+        if not use_primary and not use_fallback:
+            # Режим указывает на провайдера без клиента (ключ не задан) — не
+            # блокируем работу молча, используем что есть.
+            use_primary = self.primary is not None
+            use_fallback = not use_primary and self.fallback is not None
+        return use_primary, use_fallback
 
     def _client_for(self, activation_id: str):
         if PVAPinsSMSClient.is_aid(activation_id):
@@ -58,12 +81,14 @@ class FailoverSMSClient:
         await self.close()
 
     async def get_balance(self) -> float:
-        # Для UI/логов — баланс primary, иначе fallback
-        if self.primary is not None:
+        # Баланс активного по ТЕКУЩЕМУ режиму провайдера — раньше всегда
+        # показывал primary (Grizzly), даже в режиме «только PVAPins».
+        use_primary, use_fallback = self._active()
+        if use_primary:
             try:
                 return await self.primary.get_balance()
             except Exception:
-                if self.fallback is None:
+                if not use_fallback:
                     raise
         assert self.fallback is not None
         return await self.fallback.get_balance()
@@ -91,7 +116,8 @@ class FailoverSMSClient:
         retry_delay: float = 15.0,
     ) -> Tuple[str, str, float]:
         last: Exception | None = None
-        if self.primary is not None:
+        use_primary, use_fallback = self._active()
+        if use_primary:
             try:
                 return await self.primary.get_number(
                     service=service, country=country, max_price=max_price,
@@ -99,10 +125,10 @@ class FailoverSMSClient:
                 )
             except (NumberUnavailableError, InsufficientBalanceError, GrizzlySMSError) as exc:
                 last = exc
-                if self.fallback is None:
+                if not use_fallback:
                     raise
                 logger.warning(f"SMS failover Grizzly → PVAPins: {exc}")
-        if self.fallback is not None:
+        if use_fallback:
             return await self.fallback.get_number(
                 service=service, country=country, max_price=max_price,
                 retries=retries, retry_delay=retry_delay,
@@ -121,7 +147,8 @@ class FailoverSMSClient:
         cycle: bool = False,
     ) -> Tuple[str, str, float]:
         last: Exception | None = None
-        if self.primary is not None:
+        use_primary, use_fallback = self._active()
+        if use_primary:
             try:
                 return await self.primary.get_number_parallel(
                     service=service,
@@ -135,16 +162,16 @@ class FailoverSMSClient:
                 )
             except (NumberUnavailableError, InsufficientBalanceError) as exc:
                 last = exc
-                if self.fallback is None:
+                if not use_fallback:
                     raise
                 logger.warning(f"SMS failover Grizzly → PVAPins: {exc}")
             except GrizzlySMSError as exc:
                 last = exc
-                if self.fallback is None:
+                if not use_fallback:
                     raise
                 logger.warning(f"SMS failover Grizzly → PVAPins: {exc}")
 
-        if self.fallback is not None:
+        if use_fallback:
             return await self.fallback.get_number_parallel(
                 service=service,
                 country=country,
@@ -180,15 +207,25 @@ class FailoverSMSClient:
         )
 
     async def get_prices(self, service: str, country: str | int) -> dict:
-        if self.primary is not None:
+        use_primary, use_fallback = self._active()
+        if use_primary:
             return await self.primary.get_prices(service, country)
         assert self.fallback is not None
         return await self.fallback.get_prices(service, country)
 
     async def get_active_activations(self) -> list:
-        if self.primary is not None:
-            return await self.primary.get_active_activations()
-        return []
+        """Активные номера ОБОИХ провайдеров — чтобы «отменить всё» и стартовая
+        очистка «хвостов» видели и Grizzly, и PVAPins независимо от режима
+        (номера могли остаться от предыдущего запуска на другом провайдере)."""
+        out: list = []
+        for client in (self.primary, self.fallback):
+            if client is None:
+                continue
+            try:
+                out.extend(await client.get_active_activations() or [])
+            except Exception as exc:
+                logger.debug(f"get_active_activations({type(client).__name__}): {exc}")
+        return out
 
 
 def _real_key(val) -> bool:
@@ -210,9 +247,34 @@ def _sms_provider_mode(cfg: dict | None = None) -> str:
     return "auto"
 
 
+_LIVE_MODE_TTL = 3.0  # сек — не парсим весь YAML на каждый вызов get_number*
+_live_mode_cache: dict = {"ts": 0.0, "mode": "auto", "path": None}
+
+
+def _read_live_provider_mode(config_path: "Path | str") -> str:
+    """Быстро (без полного yaml.safe_load) перечитывает sms.provider из
+    config.yaml — так переключатель «М» в консоли применяется к уже
+    запущенной автоматизации без перезапуска процесса."""
+    now = time.monotonic()
+    key = str(config_path)
+    if _live_mode_cache["path"] == key and now - _live_mode_cache["ts"] < _LIVE_MODE_TTL:
+        return _live_mode_cache["mode"]
+    mode = "auto"
+    try:
+        text = Path(config_path).read_text(encoding="utf-8")
+        m = re.search(r"(?m)^sms:\s*\n(?:[ \t]+\S.*\n)*?[ \t]*provider:\s*(\S+)", text)
+        if m:
+            mode = _sms_provider_mode({"sms": {"provider": m.group(1)}})
+    except Exception:
+        pass
+    _live_mode_cache.update(ts=now, mode=mode, path=key)
+    return mode
+
+
 def build_sms_client(
     secrets: dict,
     cfg: dict,
+    config_path: "Path | str | None" = None,
 ) -> FailoverSMSClient | GrizzlySMSClient | PVAPinsSMSClient:
     """Собирает клиент из secrets.yaml + config.yaml.
 
@@ -220,7 +282,11 @@ def build_sms_client(
       grizzly — только GrizzlySMS
       pvapins — только PVAPins
       auto    — Grizzly → PVAPins failover (по умолчанию)
-    """
+
+    Если заданы ОБА api_key, собираются оба клиента независимо от текущего
+    режима, а выбор между ними идёт на каждый вызов через `config_path`
+    (если передан) — переключение режима в уже запущенной автоматизации
+    подхватывается без пересоздания клиента/перезапуска процесса."""
     gs = (secrets.get("grizzlysms") or {})
     ps = (secrets.get("pvapins") or {})
     g_key = str(gs.get("api_key") or "").strip()
@@ -230,14 +296,11 @@ def build_sms_client(
     http_timeout = int(g_cfg.get("http_timeout") or p_cfg.get("http_timeout") or 30)
     mode = _sms_provider_mode(cfg)
 
-    want_g = mode in ("grizzly", "auto")
-    want_p = mode in ("pvapins", "auto")
-
     primary = None
     fallback = None
-    if want_g and _real_key(g_key):
+    if _real_key(g_key):
         primary = GrizzlySMSClient(g_key, http_timeout=http_timeout)
-    if want_p and _real_key(p_key):
+    if _real_key(p_key):
         apps = p_cfg.get("apps")
         fallback = PVAPinsSMSClient(
             p_key,
@@ -250,17 +313,17 @@ def build_sms_client(
         )
 
     # Режим «только X», но ключа нет — не молча падаем на другой
-    if mode == "grizzly":
-        if primary is None:
-            raise ValueError("sms.provider=grizzly, но нет grizzlysms.api_key в secrets.yaml")
-        return primary
-    if mode == "pvapins":
-        if fallback is None:
-            raise ValueError("sms.provider=pvapins, но нет pvapins.api_key в secrets.yaml")
-        return fallback
+    if mode == "grizzly" and primary is None:
+        raise ValueError("sms.provider=grizzly, но нет grizzlysms.api_key в secrets.yaml")
+    if mode == "pvapins" and fallback is None:
+        raise ValueError("sms.provider=pvapins, но нет pvapins.api_key в secrets.yaml")
 
     if primary and fallback:
-        return FailoverSMSClient(primary, fallback)
+        mode_getter = (
+            (lambda: _read_live_provider_mode(config_path)) if config_path
+            else (lambda: mode)
+        )
+        return FailoverSMSClient(primary, fallback, mode_getter=mode_getter)
     if primary:
         return primary
     if fallback:
