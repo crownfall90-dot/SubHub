@@ -448,9 +448,11 @@ class GGSellMonitor:
             except RuntimeError as exc:
                 if "shutdown" in str(exc).lower() or "closed" in str(exc).lower():
                     break
-                logger.error(f"GGSell монитор: {exc}")
+                logger.error(f"GGSell монитор: {type(exc).__name__}: {exc}")
             except Exception as exc:
-                logger.error(f"GGSell монитор: {exc}")
+                # str(exc) часто пуст для asyncio.TimeoutError/httpx-обрывов —
+                # без имени типа в логе оставалось "GGSell монитор:" без деталей.
+                logger.error(f"GGSell монитор: {type(exc).__name__}: {exc}")
 
             try:
                 await asyncio.sleep(MSG_POLL_INTERVAL)

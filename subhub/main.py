@@ -85,6 +85,11 @@ def _update_stat(key: str = "", delta: int = 0, money: float = 0.0, balance: Opt
     _save_stats(s)
 
 
+def _sms_provider_label(act_id: str) -> str:
+    """PVAPins activation_id — 'pva:{app}:{country}:{number}', иначе GrizzlySMS."""
+    return "PVAPins" if str(act_id).startswith("pva:") else "GrizzlySMS"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Telegram Bot Manager
 # ─────────────────────────────────────────────────────────────────────────────
@@ -715,7 +720,7 @@ class LoginAutomation:
                 in_active = False  # True когда передали владение в словарь active
                 try:
                     await self._pause.wait()  # пауза перед покупкой номера
-                    logger.info(f"[{index}] Ищу номер GrizzlySMS (#{attempt_num})…")
+                    logger.info(f"[{index}] Ищу номер (#{attempt_num})…")
                     num = await self._acquire_number(index)
                     if num is None:
                         return
@@ -725,7 +730,7 @@ class LoginAutomation:
                     self._all_pending[act_id] = phone  # глобальный реестр для main().finally
                     self._log_number(index, attempt_num, phone, act_id)
                     bal_after = await self._log_balance(f"[{index}] Куплен +{phone}")
-                    await self._notify_bought(phone, cost, bal_after)
+                    await self._notify_bought(phone, cost, bal_after, act_id)
 
                     await self._pause.wait()  # пауза перед запуском браузера
                     logger.info(f"[{index}] Chrome → Flipkart → ввод {phone} → Request OTP")
@@ -1255,7 +1260,7 @@ class LoginAutomation:
     @staticmethod
     def _log_number(index: int, attempt: int, phone: str, act_id: str) -> None:
         logger.info(f"[{index}] ┌─────────────────────────────────────────")
-        logger.info(f"[{index}] │  НОМЕР  #{attempt}: +{phone}")
+        logger.info(f"[{index}] │  НОМЕР  #{attempt}: +{phone}  ({_sms_provider_label(act_id)})")
         logger.info(f"[{index}] │  ACT ID: {act_id}")
         logger.info(f"[{index}] └─────────────────────────────────────────")
 
@@ -1282,12 +1287,14 @@ class LoginAutomation:
             logger.info(f"  {prefix}💰 Баланс: ${bal:.4f}")
         return bal
 
-    async def _notify_bought(self, phone: str, cost: float, bal_after: Optional[float]) -> None:
+    async def _notify_bought(self, phone: str, cost: float, bal_after: Optional[float],
+                              act_id: str = "") -> None:
         """TG-уведомление о покупке номера: точная цена из API + остаток."""
         _update_stat("numbers_bought", delta=1, money=cost, balance=bal_after)
         if not self.tg_client:
             return
-        lines = [f"📲 Куплен номер: `+{phone}`"]
+        prov = _sms_provider_label(act_id)
+        lines = [f"📲 Куплен номер: `+{phone}`  ·  _{prov}_"]
         if cost > 0:
             lines.append(f"💸 Списано: -${cost:.4f}")
         if bal_after is not None:
@@ -2827,7 +2834,7 @@ async def main(tg_mode: str = "none", accounts_target: Optional[int] = None, for
                 _sec = yaml.safe_load(_sp.read_text(encoding="utf-8")) or {}
         except Exception:
             pass
-        sms_client = build_sms_client(_sec, config.config)
+        sms_client = build_sms_client(_sec, config.config, config_path=config_path)
         try:
             if hasattr(sms_client, "get_balances"):
                 bals = await sms_client.get_balances()
