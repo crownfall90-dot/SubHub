@@ -313,15 +313,27 @@ class GGSellClient:
         return []
 
     async def send_message(self, order_id: int, message: str) -> bool:
-        """Отправить сообщение покупателю по ID заказа."""
+        """Отправить сообщение покупателю по ID заказа.
+
+        HTTP 200 сам по себе не означает доставку: GGSell кладёт код в тело
+        ответа (retval != 0 — отказ). Пустое тело провалом не считаем — часть
+        эндпоинтов отвечает без содержимого.
+        """
         try:
             data = await self._post(
                 "/debates/v2",
                 params={"id_i": order_id},
                 json_body={"message": message},
             )
-            logger.info(f"GGSell: сообщение отправлено → заказ #{order_id}")
             logger.debug(f"GGSell send_message response: {data}")
+            if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
+                _desc = data.get("desc") or data.get("retdesc") or ""
+                logger.error(
+                    f"GGSell: сообщение в #{order_id} отклонено API: "
+                    f"retval={data.get('retval')} desc={_desc}"
+                )
+                return False
+            logger.info(f"GGSell: сообщение отправлено → заказ #{order_id}")
             # Запоминаем своё сообщение — чтобы монитор не принял его за покупательское
             try:
                 from .monitor import record_sent_message

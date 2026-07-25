@@ -141,22 +141,14 @@ class GGSellBotHandler:
         profile_path_str = str(profile_path or self._confirm_profile.get(invoice_id, "") or "")
 
         try:
-            f = _DATA_DIR / "ggsel_done.json"
-            try:
-                raw = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                raw = {"done": {}}
-            raw.setdefault("done", {})[str(invoice_id)] = dt_str
-            if link:
-                raw.setdefault("links", {})[str(invoice_id)] = link
+            from . import store
             if not profile_path_str:
-                # Если путь не передан — берём ранее сохранённый (не затираем пустым)
-                profile_path_str = raw.get("profile_paths", {}).get(str(invoice_id), "")
-            if profile_path_str:
-                raw.setdefault("profile_paths", {})[str(invoice_id)] = profile_path_str
-            if buyer_email:
-                raw.setdefault("buyer_emails", {})[str(invoice_id)] = buyer_email
-            f.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+                # Путь не передан — берём последний привязанный (не затираем пустым)
+                _bound = store.get_bound_profiles(invoice_id)
+                profile_path_str = _bound[-1] if _bound else ""
+            # Профиль добавляется к заказу, а не вытесняет предыдущий: одному
+            # заказу может понадобиться вторая ссылка со второго профиля.
+            store.add_binding(invoice_id, profile_path_str, link, buyer_email)
         except Exception:
             pass
 
@@ -307,12 +299,29 @@ class GGSellBotHandler:
         return self._done_links.get(invoice_id, "")
 
     def get_bound_profile(self, invoice_id: int) -> str:
-        """Путь Chrome-профиля, привязанного к заказу (из ggsel_done.json)."""
+        """Путь последнего привязанного к заказу профиля.
+
+        Заказ может обслуживаться несколькими профилями — полный список даёт
+        get_bound_profiles().
+        """
+        profiles = self.get_bound_profiles(invoice_id)
+        return profiles[-1] if profiles else ""
+
+    def get_bound_profiles(self, invoice_id: int) -> list:
+        """Все Chrome-профили, привязанные к заказу, в порядке привязки."""
         try:
-            raw = json.loads((_DATA_DIR / "ggsel_done.json").read_text(encoding="utf-8"))
-            return raw.get("profile_paths", {}).get(str(invoice_id), "")
+            from . import store
+            return store.get_bound_profiles(invoice_id)
         except Exception:
-            return ""
+            return []
+
+    def get_bindings(self, invoice_id: int) -> list:
+        """Привязки заказа: [{profile_path, link, ts, buyer_email}, …]."""
+        try:
+            from . import store
+            return store.get_bindings(invoice_id)
+        except Exception:
+            return []
 
     # ── Метка заказа для кнопок ─────────────────────────────────────────────
 
@@ -470,29 +479,46 @@ class GGSellBotHandler:
         else:
             lines.append("🟢 *Статус: новый*")
 
-        # Привязанный (оплаченный) профиль: номер, короткая ссылка, дата выдачи
-        bound = self.get_bound_profile(invoice_id)
-        if bound:
-            meta = self._read_bound_meta(bound)
-            ph_raw = Path(bound).name.replace("profile_", "")
-            # Ссылка, ВЫДАННАЯ покупателю (что реально у него на руках)
-            issued_link = meta.get("issued_link") or sent_link or ""
-            # Последняя сгенерированная проверкой активации (может отличаться —
-            # каждая проверка «Activate now» создаёт новый entitlement-токен)
-            last_gen = meta.get("black_short_link") or ""
-            primary = issued_link or last_gen or meta.get("black_activation_link") or ""
-            issued_str = issued_dt or meta.get("issued_str") or ""
+        # Привязанные (оплаченные) профили: номер, короткая ссылка, дата выдачи.
+        # Их может быть несколько — покупателю выдавали вторую ссылку.
+        bindings = [b for b in self.get_bindings(invoice_id) if b.get("profile_path")]
+        if bindings:
             lines.append("")
             lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append("📎 *Привязанный профиль*")
-            lines.append(f"📱 `{self._disp_phone(ph_raw)}`")
-            if primary:
-                _lbl = " _(выдана покупателю)_" if issued_link else ""
-                lines.append(f"🔗 `{primary}`{_lbl}")
-            if last_gen and issued_link and last_gen != issued_link:
-                lines.append(f"🆕 `{last_gen}` _(последняя сгенерированная)_")
-            if issued_str:
-                lines.append(f"📅 Выдан: `{issued_str}`")
+            _title = ("📎 *Привязанный профиль*" if len(bindings) == 1
+                      else f"📎 *Привязанные профили*  ·  {len(bindings)}")
+            lines.append(_title)
+            for _i, _b in enumerate(bindings, 1):
+                _bound = _b["profile_path"]
+                meta = self._read_bound_meta(_bound)
+                ph_raw = Path(_bound).name.replace("profile_", "")
+                # Ссылка, ВЫДАННАЯ покупателю (что реально у него на руках)
+                issued_link = _b.get("link") or meta.get("issued_link") or ""
+                if not issued_link and len(bindings) == 1:
+                    issued_link = sent_link or ""
+                # Последняя сгенерированная проверкой активации (может отличаться —
+                # каждая проверка «Activate now» создаёт новый entitlement-токен)
+                last_gen = meta.get("black_short_link") or ""
+                primary = issued_link or last_gen or meta.get("black_activation_link") or ""
+                _ts = _b.get("ts") or 0
+                issued_str = meta.get("issued_str") or ""
+                if _ts:
+                    try:
+                        issued_str = datetime.fromtimestamp(_ts).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+                issued_str = issued_str or issued_dt or ""
+
+                _num = f"*{_i}.* " if len(bindings) > 1 else ""
+                lines.append("")
+                lines.append(f"{_num}📱 `{self._disp_phone(ph_raw)}`")
+                if primary:
+                    _lbl = " _(выдана покупателю)_" if issued_link else ""
+                    lines.append(f"🔗 `{primary}`{_lbl}")
+                if last_gen and issued_link and last_gen != issued_link:
+                    lines.append(f"🆕 `{last_gen}` _(последняя сгенерированная)_")
+                if issued_str:
+                    lines.append(f"📅 Выдан: `{issued_str}`")
         elif sent_link and (invoice_id in done or invoice_id in used_ids):
             # Профиль не привязан, но ссылка покупателю отправлялась
             lines.append(f"🔗 `{sent_link}`")
@@ -548,16 +574,19 @@ class GGSellBotHandler:
             rows.append([{"text": "↩️ Отметить возврат",
                           "callback_data": f"ggsell:mark_refund:{invoice_id}"}])
 
-        # Привязанный профиль: переход и замена ссылки (как в меню профиля)
-        bound = self.get_bound_profile(invoice_id)
-        if bound:
-            bound_phone = Path(bound).name.replace("profile_", "")
+        # Привязанные профили: переход и замена ссылки (как в меню профиля).
+        # Если профилей несколько — по строке на каждый, с номером.
+        bound_list = self.get_bound_profiles(invoice_id)
+        for _i, _bound in enumerate(bound_list, 1):
+            bound_phone = Path(_bound).name.replace("profile_", "")
+            _pfx = f"{_i}. " if len(bound_list) > 1 else ""
             rows.append([
-                {"text": "👤 Перейти к профилю",
+                {"text": f"👤 {_pfx}Перейти к профилю",
                  "callback_data": f"profile:menu:{bound_phone}:active"},
                 {"text": "🔄 Заменить ссылку",
                  "callback_data": f"profile:refresh_link:{bound_phone}"},
             ])
+        if bound_list:
             rows.append([{"text": "📜 История ссылок",
                           "callback_data": f"ggsell:link_history:{invoice_id}"}])
 
@@ -1437,24 +1466,39 @@ class GGSellBotHandler:
 
         done = self.get_done()
         _refunded_lb = self.get_refunded()
-        # Сортировка от старых к новым (возрастающий id)
-        yt_orders.sort(key=lambda o: int(o.get("invoice_id") or o.get("id") or 0))
+        _bcounts = {}
+        try:
+            from . import store
+            _bcounts = store.counts_by_order()
+        except Exception:
+            pass
+
+        def _inv_of(o) -> int:
+            return int(o.get("invoice_id") or o.get("id") or 0)
+
+        # Показываем ВСЕ заказы, а не только незавершённые: ссылку можно
+        # отправить и в уже выданный заказ — тогда к нему привяжется второй
+        # профиль. Незавершённые идут первыми, дальше — от новых к старым.
+        yt_orders.sort(key=lambda o: -_inv_of(o))
         pending = [o for o in yt_orders
-                   if int(o.get("invoice_id") or o.get("id") or 0) not in done
-                   and int(o.get("invoice_id") or o.get("id") or 0) not in _refunded_lb]
+                   if _inv_of(o) not in done and _inv_of(o) not in _refunded_lb]
+        rest = [o for o in yt_orders if o not in pending]
+        pending.sort(key=_inv_of)          # незавершённые — от старых к новым
+        listing = pending + rest
 
         lp = link[8:44] + "…" if len(link) > 52 else link
         lines = [
             "📤 *Отправить ссылку покупателю*",
             "━━━━━━━━━━━━━━━━━━━━━━", "",
             f"🔗 `{lp}`", "",
+            f"🟢 новые: {len(pending)}   ·   всего: {len(listing)}",
             "Выбери заказ:",
         ]
 
-        page = pending[offset:offset + 5]
+        page = listing[offset:offset + 5]
         order_rows = []
         for o in page:
-            inv_i = int(o.get("invoice_id") or o.get("id") or 0)
+            inv_i = _inv_of(o)
             # Email покупателя: из объекта/кэша, иначе дотягиваем через API
             _em = self.parse_order(o).get("email", "")
             if not _em:
@@ -1473,17 +1517,26 @@ class GGSellBotHandler:
             if _dt:
                 parts.append(_dt)
             label = "  ·  ".join(parts) if parts else f"#{inv_i}"
-            order_rows.append([{"text": label[:64],
+            # 🟢 новый · 🟠 возврат · 🔵 уже выдан (+N — сколько профилей привязано)
+            if inv_i in _refunded_lb:
+                _icon = "🟠"
+            elif inv_i in done:
+                _icon = "🔵"
+            else:
+                _icon = "🟢"
+            _nb = _bcounts.get(inv_i, 0)
+            _mark = f" +{_nb}" if _nb else ""
+            order_rows.append([{"text": f"{_icon} {label}{_mark}"[:64],
                                  "callback_data": f"profile:send_to_order:{phone}:{inv_i}"}])
 
         if not page and offset == 0:
-            lines.append("_Нет незавершённых заказов_")
+            lines.append("_Заказов не найдено_")
 
         nav_row = []
         if offset > 0:
             nav_row.append({"text": "◀️ Пред. 5",
                             "callback_data": f"profile:send_to_buyer:{phone}:{offset - 5}"})
-        if offset + 5 < len(pending):
+        if offset + 5 < len(listing):
             nav_row.append({"text": "Следующие 5 ▶️",
                             "callback_data": f"profile:send_to_buyer:{phone}:{offset + 5}"})
 
@@ -1503,6 +1556,8 @@ class GGSellBotHandler:
                                        "callback_data": f"profile:menu:{phone}:active"}]]})
             return
         from ggsell.monitor import get_template
+        # Профили, уже привязанные к заказу ДО этой выдачи
+        _prev = len([b for b in self.get_bindings(invoice_id) if b.get("profile_path")])
         ok = await cli.send_message(invoice_id, get_template("msg_template").format(link=link))
         if ok:
             # Привязываем заказ к профилю по номеру телефона — ссылка не потеряется
@@ -1515,11 +1570,18 @@ class GGSellBotHandler:
             except Exception:
                 profile_path = ""
             self.mark_done(invoice_id, link, profile_path=profile_path)
+            _total = len([b for b in self.get_bindings(invoice_id) if b.get("profile_path")])
+            if _prev and _total > _prev:
+                _note = (f"_Профиль привязан к заказу вторым "
+                         f"(всего профилей: {_total})._")
+            else:
+                _note = "_Профиль привязан к этому заказу._"
             await self._edit(cid, mid,
                 f"✅ *Ссылка отправлена покупателю!*\n\n"
                 f"Заказ: `#{invoice_id}`\n🔗 `{link}`\n\n"
-                f"_Профиль привязан к этому заказу._",
+                f"{_note}",
                 {"inline_keyboard": [
+                    [{"text": "📋 Заказ", "callback_data": f"ggsell:order:{invoice_id}"}],
                     [{"text": "◀️ GGSell", "callback_data": "go:ggsell"}],
                 ]})
         else:
@@ -3298,10 +3360,18 @@ class GGSellBotHandler:
 
         if data.startswith("ggsell:link_history:"):
             invoice_id = int(data.split(":")[2])
-            bound = self.get_bound_profile(invoice_id)
-            meta: dict = {}
-            phone_lh = ""
-            if bound:
+            # История собирается по каждому привязанному профилю отдельно —
+            # к заказу их может быть несколько
+            _bindings_lh = [b for b in self.get_bindings(invoice_id)
+                            if b.get("profile_path")]
+            from datetime import datetime as _dt_lh, timezone as _tz_lh, timedelta as _td_lh
+            _msk = _tz_lh(_td_lh(hours=3))
+            lines = [f"📜 *История ссылок* · заказ `#{invoice_id}`",
+                     "━━━━━━━━━━━━━━━━━━━━━━"]
+            _any = False
+
+            for _bi, _b in enumerate(_bindings_lh, 1):
+                bound = _b["profile_path"]
                 phone_lh = Path(bound).name.replace("profile_", "")
                 meta = self._read_bound_meta(bound)
                 if not meta:
@@ -3314,34 +3384,38 @@ class GGSellBotHandler:
                             meta = json.loads(_recs[0].read_text(encoding="utf-8"))
                     except Exception:
                         pass
-            hist = meta.get("link_history") if isinstance(meta.get("link_history"), list) else []
-            if not hist:
-                _cur = (meta.get("black_short_link") or meta.get("issued_link")
-                        or meta.get("black_activation_link") or self.get_sent_link(invoice_id))
-                if _cur:
-                    hist = [{"ts": meta.get("link_received_ts") or meta.get("issued_ts") or 0,
-                             "link": _cur}]
-            if not hist:
+                hist = meta.get("link_history") if isinstance(meta.get("link_history"), list) else []
+                if not hist:
+                    _cur = (_b.get("link") or meta.get("black_short_link")
+                            or meta.get("issued_link")
+                            or meta.get("black_activation_link"))
+                    if not _cur and len(_bindings_lh) == 1:
+                        _cur = self.get_sent_link(invoice_id)
+                    if _cur:
+                        hist = [{"ts": meta.get("link_received_ts")
+                                       or meta.get("issued_ts") or _b.get("ts") or 0,
+                                 "link": _cur}]
+                if not hist:
+                    continue
+                _any = True
+                _pfx = f"{_bi}. " if len(_bindings_lh) > 1 else ""
+                lines.append(f"\n{_pfx}📱 `{self._disp_phone(phone_lh)}`")
+                _tail = hist[-15:]
+                for i, h in enumerate(_tail, 1):
+                    ts = h.get("ts") or 0
+                    try:
+                        dts = _dt_lh.fromtimestamp(float(ts), _msk).strftime("%d.%m.%Y %H:%M") if ts else "—"
+                    except Exception:
+                        dts = "—"
+                    mark = "  ← текущая" if i == len(_tail) else ""
+                    lines.append(f"\n{i}. 🕒 `{dts}`{mark}")
+                    lines.append(f"`{h.get('link') or ''}`")
+                if len(hist) > 15:
+                    lines.append(f"\n_…показаны последние 15 из {len(hist)}_")
+
+            if not _any:
                 await self._ack(qid, "⚠️ Ссылок по этому заказу ещё не было", alert=True)
                 return
-            from datetime import datetime as _dt_lh, timezone as _tz_lh, timedelta as _td_lh
-            _msk = _tz_lh(_td_lh(hours=3))
-            lines = [f"📜 *История ссылок* · заказ `#{invoice_id}`"]
-            if phone_lh:
-                lines.append(f"📱 `{self._disp_phone(phone_lh)}`")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-            _tail = hist[-15:]
-            for i, h in enumerate(_tail, 1):
-                ts = h.get("ts") or 0
-                try:
-                    dts = _dt_lh.fromtimestamp(float(ts), _msk).strftime("%d.%m.%Y %H:%M") if ts else "—"
-                except Exception:
-                    dts = "—"
-                mark = "  ← текущая" if i == len(_tail) else ""
-                lines.append(f"\n{i}. 🕒 `{dts}`{mark}")
-                lines.append(f"`{h.get('link') or ''}`")
-            if len(hist) > 15:
-                lines.append(f"\n_…показаны последние 15 из {len(hist)}_")
             await self._ack(qid)
             await self._send(cid, "\n".join(lines))
             return

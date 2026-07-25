@@ -8343,6 +8343,13 @@ def screen_profiles():
                     _gpin = f" PIN {g.get('pin')}" if g.get("pin") else ""
                     print(f"             {DIM}₹{int(g.get('denom') or 0):<5} "
                           f"серия {_gnum}{_gpin}  ·  {_gw}{RST}")
+            # Заказы GGSell, к которым привязан профиль
+            _sel_orders = _ggs_profile_orders(selected["path"])
+            if _sel_orders:
+                print(f"  Заказ GGSell: {M}"
+                      f"{', '.join('#' + str(x) for x in _sel_orders)}{RST}")
+            else:
+                print(f"  Заказ GGSell: {DIM}не привязан{RST}")
             print()
 
             opt("1",     "Открыть в Chrome  →  flipkart-black-store", C)
@@ -8351,6 +8358,13 @@ def screen_profiles():
             opt("5",     "Заполнить рандомный адрес доставки (Индия)", Y)
             opt("6",     "Полный цикл: адрес → email → оплата → ссылка  (авто)", G)
             print(f"  {DIM}           ⚠  Для 4, 5, 6 закройте Chrome с этим профилем заранее{RST}")
+            if _sel_slink:
+                opt("О",     "Отправить ссылку в заказ GGSell  (и привязать профиль)", G)
+            opt("З",     ("Привязать к заказу GGSell  (без отправки)"
+                          if not _sel_orders
+                          else "Привязать к другому заказу GGSell"), M)
+            if _sel_orders:
+                opt("Ф",     "Убрать привязку к заказу GGSell", Y)
             if not selected.get("issued_ts"):
                 opt("2 / В", "Пометить «Выдан»        (активен, передан клиенту)", B)
             opt("3 / И", "Пометить «Использован»   (завершён, перенести в архив)", M)
@@ -8366,6 +8380,38 @@ def screen_profiles():
 
             if action in ("0", ""):
                 break
+
+            # ── Привязка профиля к заказу GGSell ────────────────────────────
+            if action in ("О", "O") and _sel_slink:
+                if _ggs_bind_profile(selected, send_link=True):
+                    selected = _read_profile_meta(selected["path"])
+                continue
+
+            if action in ("З", "Z"):
+                if _ggs_bind_profile(selected, send_link=False):
+                    selected = _read_profile_meta(selected["path"])
+                continue
+
+            if action in ("Ф", "F") and _sel_orders:
+                if len(_sel_orders) == 1:
+                    _inv_un = _sel_orders[0]
+                else:
+                    cls()
+                    header("ОТВЯЗАТЬ ОТ ЗАКАЗА", C)
+                    print()
+                    for _i, _o in enumerate(_sel_orders, 1):
+                        print(f"  {BLD}{Y}[{_i}]{RST}  {W}#{_o}{RST}")
+                    print()
+                    try:
+                        _c = input(f"  {BLD}Заказ [1-{len(_sel_orders)}] или 0: {RST}").strip()
+                        _inv_un = _sel_orders[int(_c) - 1] if _c.isdigit() and \
+                            1 <= int(_c) <= len(_sel_orders) else 0
+                    except (EOFError, ValueError):
+                        _inv_un = 0
+                if _inv_un:
+                    _ggs_detach_profile_from_order(_inv_un)
+                    selected = _read_profile_meta(selected["path"])
+                continue
 
             if action in ("П", "7"):
                 _uname  = selected["username"]
@@ -19986,6 +20032,452 @@ def _ggs_reviews_screen(api_key: str, seller_id: int) -> None:
     pause()
 
 
+# ── GGSell: привязка профилей к заказам ──────────────────────────────────────
+
+def _same_path(a, b) -> bool:
+    """Один и тот же профиль? Пути приходят и абсолютные, и относительные.
+
+    Относительные заданы от корня проекта (как в ggsel_done.json), а не от
+    текущего каталога — достраиваем их сами.
+    """
+    def _r(x):
+        p = Path(x)
+        return (p if p.is_absolute() else (_HERE / p)).resolve()
+    try:
+        return _r(a) == _r(b)
+    except Exception:
+        return str(a).strip().lower() == str(b).strip().lower()
+
+
+def _ggs_profile_link(meta: dict) -> str:
+    """Ссылка активации профиля: короткая в приоритете (её и выдаём)."""
+    return (meta.get("black_short_link") or meta.get("black_activation_link")
+            or meta.get("issued_link") or "")
+
+
+def _ggs_bindings(inv: int) -> list[dict]:
+    """Привязки заказа: [{profile_path, link, ts, buyer_email}, …]."""
+    try:
+        from ggsell import store
+        return [b for b in store.get_bindings(inv) if b.get("profile_path")]
+    except Exception:
+        return []
+
+
+def _ggs_profile_orders(profile_path) -> list[int]:
+    """Заказы GGSell, к которым привязан профиль."""
+    try:
+        from ggsell import store
+        return store.get_orders_for_profile(profile_path)
+    except Exception:
+        return []
+
+
+def _ggs_print_bindings(inv: int, indent: str = "  ") -> int:
+    """Печатает привязанные к заказу профили и выданные с них ссылки."""
+    bindings = _ggs_bindings(inv)
+    if not bindings:
+        return 0
+    _ttl = ("Привязанный профиль" if len(bindings) == 1
+            else f"Привязанные профили  [{len(bindings)}]")
+    section(_ttl, C)
+    print()
+    for i, b in enumerate(bindings, 1):
+        pp = Path(b["profile_path"])
+        meta = _read_profile_meta(pp) if pp.exists() else {}
+        phone = meta.get("username") or pp.name.replace("profile_", "")
+        link = b.get("link") or _ggs_profile_link(meta)
+        gone = "" if pp.exists() else f"  {DIM}(в архиве){RST}"
+        num = f"{BLD}{Y}[{i}]{RST} " if len(bindings) > 1 else ""
+        print(f"{indent}{num}{W}{_disp_phone(phone)}{RST}{gone}")
+        if link:
+            print(f"{indent}    {C}🔗 {link}{RST}")
+        _ts = b.get("ts") or 0
+        if _ts:
+            print(f"{indent}    {DIM}выдан {_fmt_msk(_ts)}{RST}")
+    return len(bindings)
+
+
+def _ggs_load_all_orders(api_key: str, seller_id: int) -> list[dict]:
+    """Все заказы GGSell для пикера (с email покупателей)."""
+    try:
+        _bal, orders = asyncio.run(_ggs_overview(api_key, seller_id))
+    except Exception as e:
+        print(f"  {R}Ошибка GGSell API: {e}{RST}")
+        return []
+    return orders if isinstance(orders, list) else []
+
+
+def _ggs_pick_order(api_key: str, seller_id: int, *, title: str,
+                    hint: str = "") -> dict | None:
+    """Выбор заказа GGSell из полного списка.
+
+    Показываем все заказы, а не только новые: ссылку можно отправить и в уже
+    выданный заказ — тогда к нему привяжется ещё один профиль. Незавершённые
+    (ссылка не выдана, возврата нет) подсвечены зелёным и идут первыми.
+    Возвращает выбранный заказ или None.
+    """
+    cls()
+    header(title, C)
+    print(f"  {DIM}Загружаю заказы GGSell…{RST}")
+    orders = _ggs_load_all_orders(api_key, seller_id)
+    if not orders:
+        print(f"\n  {DIM}Заказов нет.{RST}")
+        pause()
+        return None
+
+    try:
+        from ggsell import store
+        done, refunded = store.get_done(), store.get_refunded()
+        counts = store.counts_by_order()
+    except Exception:
+        done, refunded, counts = {}, {}, {}
+
+    def _inv(o: dict) -> int:
+        try:
+            return int(o.get("invoice_id") or o.get("id") or 0)
+        except Exception:
+            return 0
+
+    pending = [o for o in orders if _inv(o) not in done and _inv(o) not in refunded]
+    others  = [o for o in orders if o not in pending]
+    pending.sort(key=_inv)              # незавершённые — от старых к новым
+    others.sort(key=_inv, reverse=True)  # остальные — от новых к старым
+    shown = pending + others
+
+    while True:
+        cls()
+        header(title, C)
+        if hint:
+            print(f"  {hint}")
+        print(f"\n  {G}🟢 незавершённые: {len(pending)}{RST}   {DIM}·{RST}   "
+              f"{DIM}всего: {len(shown)}{RST}")
+        section("Заказы GGSell", C)
+        print()
+        for i, o in enumerate(shown, 1):
+            p = _ggs_parse_order(o)
+            inv = p["inv"]
+            if inv in refunded:
+                mark, col = f"{R}🟠 возврат{RST}", DIM
+            elif inv in done:
+                mark, col = f"{B}🔵 выдан{RST}", W
+            else:
+                mark, col = f"{G}🟢 новый{RST}", G
+            nb = counts.get(inv, 0)
+            badge = f"   {M}👤 профилей: {nb}{RST}" if nb else ""
+            print(f"  {BLD}{Y}[{i:>2}]{RST}  {col}#{inv}{RST}  "
+                  f"{DIM}{p['date']:<16}{RST}  {col}{p['email'] or '—'}{RST}"
+                  f"   {mark}{badge}")
+        print()
+        opt("0", "Отмена", R)
+        print()
+        try:
+            ch = input(f"  {BLD}Заказ [1-{len(shown)}] или 0: {RST}").strip()
+        except EOFError:
+            return None
+        if ch in ("0", ""):
+            return None
+        try:
+            idx = int(ch) - 1
+            if not (0 <= idx < len(shown)):
+                raise ValueError
+        except ValueError:
+            continue
+        return shown[idx]
+
+
+def _ggs_bind_profile(profile: dict, *, send_link: bool) -> bool:
+    """Привязывает профиль к выбранному заказу GGSell.
+
+    send_link=True — сначала отправляем ссылку покупателю в чат заказа, затем
+    привязываем; False — только привязка, без сообщения.
+    Возвращает True, если привязка выполнена.
+    """
+    api_key, seller_id = _ggs_keys()
+    if not api_key or not seller_id:
+        print(f"\n  {Y}GGSell не настроен (secrets.yaml → ggsel).{RST}")
+        pause()
+        return False
+
+    pp = Path(profile["path"])
+    meta = _read_profile_meta(pp)
+    phone = meta.get("username") or profile.get("username") or pp.name
+    link = _ggs_profile_link(meta)
+    if send_link and not link:
+        print(f"\n  {Y}У профиля нет ссылки активации — отправлять нечего.{RST}")
+        print(f"  {DIM}Сначала получите ссылку (покупка / проверка активации).{RST}")
+        pause()
+        return False
+
+    title = ("GGSELL — ОТПРАВИТЬ ССЫЛКУ В ЗАКАЗ" if send_link
+             else "GGSELL — ПРИВЯЗАТЬ ПРОФИЛЬ К ЗАКАЗУ")
+    hint = f"{W}Профиль: {_disp_phone(phone)}{RST}"
+    if link:
+        hint += f"\n  {C}🔗 {link}{RST}"
+    order = _ggs_pick_order(api_key, seller_id, title=title, hint=hint)
+    if not order:
+        return False
+
+    inv = int(order.get("invoice_id") or order.get("id") or 0)
+    p = _ggs_parse_order(order)
+    existing = _ggs_bindings(inv)
+    # Заказ уже с профилем — этот станет вторым, спрашиваем явно
+    already = any(_same_path(b["profile_path"], pp) for b in existing)
+
+    cls()
+    header(title, C)
+    print(f"\n  Заказ     : {W}#{inv}{RST}   {DIM}{p['date']}{RST}")
+    print(f"  Покупатель: {C}{p['email'] or '—'}{RST}")
+    print(f"  Профиль   : {W}{_disp_phone(phone)}{RST}")
+    if link:
+        print(f"  Ссылка    : {C}{link}{RST}")
+    if existing:
+        print()
+        _ggs_print_bindings(inv)
+        if already:
+            print(f"\n  {Y}Этот профиль уже привязан к заказу — обновим ссылку.{RST}")
+        else:
+            print(f"\n  {Y}⚠ К заказу уже привязан(ы) профиль(и). "
+                  f"Этот станет №{len(existing) + 1}.{RST}")
+    print()
+    _act = "Отправить ссылку и привязать профиль" if send_link else "Привязать профиль"
+    try:
+        confirm = input(f"  {BLD}{_act}? [Д/Н]: {RST}").strip().lower()
+    except EOFError:
+        return False
+    if confirm not in ("д", "y", "да", "yes"):
+        return False
+
+    sent_ok = True
+    if send_link:
+        try:
+            from ggsell.monitor import get_template
+            text = get_template("msg_template").format(link=link)
+        except Exception:
+            text = link
+        print(f"\n  {DIM}Отправляю сообщение покупателю…{RST}")
+        try:
+            sent_ok = asyncio.run(_ggs_send_msg(api_key, seller_id, inv, text))
+        except Exception as e:
+            sent_ok = False
+            print(f"  {R}Ошибка отправки: {e}{RST}")
+        if not sent_ok:
+            print(f"  {R}❌ Сообщение не отправлено — привязку не делаем.{RST}")
+            pause()
+            return False
+        print(f"  {G}✅ Ссылка отправлена покупателю{RST}")
+
+    try:
+        from ggsell import store
+        total = store.add_binding(inv, str(pp), link,
+                                  p["email"] or "", mark_done=send_link)
+    except Exception as e:
+        print(f"  {R}Не удалось сохранить привязку: {e}{RST}")
+        pause()
+        return False
+
+    # Метка в самом профиле — чтобы он показывался как «выданный»
+    try:
+        from ggsell import store as _st
+        _save_meta_field(pp, **_st.bind_meta_fields(inv, link, p["email"] or ""))
+    except Exception:
+        pass
+
+    print(f"\n  {G}✅ Профиль привязан к заказу #{inv}{RST}")
+    if total > 1:
+        print(f"  {M}👤 Всего профилей у заказа: {total}{RST}")
+    pause()
+    return True
+
+
+def _ggs_attach_profile_to_order(inv: int, parsed: dict) -> bool:
+    """Привязка со стороны заказа: выбираем профиль из списка готовых.
+
+    Сначала показываем свободные (не привязанные ни к одному заказу), затем
+    остальные — их тоже можно привязать вторым профилем к другому заказу.
+    """
+    api_key, seller_id = _ggs_keys()
+    profiles = _load_done_profiles(force=True) or []
+    if not profiles:
+        print(f"\n  {DIM}Готовых профилей нет.{RST}")
+        pause()
+        return False
+
+    bound_now = [b["profile_path"] for b in _ggs_bindings(inv)]
+    rows: list[tuple[dict, list[int], str]] = []
+    for pr in profiles:
+        pp = Path(pr["path"])
+        if any(_same_path(b, pp) for b in bound_now):
+            continue  # уже привязан к этому заказу
+        rows.append((pr, _ggs_profile_orders(pp), _ggs_profile_link(pr)))
+    # Свободные профили — вперёд
+    rows.sort(key=lambda t: (bool(t[1]), -(t[0].get("login_ts") or 0)))
+    if not rows:
+        print(f"\n  {DIM}Все профили уже привязаны к этому заказу.{RST}")
+        pause()
+        return False
+
+    while True:
+        cls()
+        header(f"ЗАКАЗ #{inv} — ПРИВЯЗАТЬ ПРОФИЛЬ", C)
+        print(f"\n  Покупатель: {C}{parsed.get('email') or '—'}{RST}   "
+              f"{DIM}{parsed.get('date') or ''}{RST}")
+        _free = sum(1 for _, o, _l in rows if not o)
+        print(f"  {G}🟢 свободных: {_free}{RST}   {DIM}·   всего: {len(rows)}{RST}")
+        section("Профили", C)
+        print()
+        for i, (pr, orders_of, link) in enumerate(rows[:40], 1):
+            col = G if not orders_of else DIM
+            tag = (f"{G}🟢 свободен{RST}" if not orders_of
+                   else f"{DIM}🔗 заказ(ы): {', '.join('#' + str(x) for x in orders_of)}{RST}")
+            _lnk = f"   {C}есть ссылка{RST}" if link else f"   {DIM}без ссылки{RST}"
+            print(f"  {BLD}{Y}[{i:>2}]{RST}  {col}{_disp_phone(pr['username'])}{RST}"
+                  f"   {tag}{_lnk}")
+        if len(rows) > 40:
+            print(f"\n  {DIM}…показаны первые 40 из {len(rows)}{RST}")
+        print()
+        opt("0", "Отмена", R)
+        print()
+        try:
+            ch = input(f"  {BLD}Профиль [1-{min(len(rows), 40)}] или 0: {RST}").strip()
+        except EOFError:
+            return False
+        if ch in ("0", ""):
+            return False
+        try:
+            idx = int(ch) - 1
+            if not (0 <= idx < min(len(rows), 40)):
+                raise ValueError
+        except ValueError:
+            continue
+
+        pr, orders_of, link = rows[idx]
+        pp = Path(pr["path"])
+        cls()
+        header(f"ЗАКАЗ #{inv} — ПРИВЯЗАТЬ ПРОФИЛЬ", C)
+        print(f"\n  Заказ   : {W}#{inv}{RST}")
+        print(f"  Профиль : {W}{_disp_phone(pr['username'])}{RST}")
+        if link:
+            print(f"  Ссылка  : {C}{link}{RST}")
+        if orders_of:
+            print(f"\n  {Y}⚠ Профиль уже привязан к заказам: "
+                  f"{', '.join('#' + str(x) for x in orders_of)}{RST}")
+        _ex = _ggs_bindings(inv)
+        if _ex:
+            print(f"  {Y}⚠ У заказа уже есть профиль(и) — этот станет "
+                  f"№{len(_ex) + 1}.{RST}")
+        print()
+        _send = False
+        if link:
+            try:
+                _s = input(f"  {BLD}Отправить ссылку покупателю в чат заказа? "
+                           f"[Д/Н]: {RST}").strip().lower()
+            except EOFError:
+                return False
+            _send = _s in ("д", "y", "да", "yes")
+        try:
+            confirm = input(f"  {BLD}Привязать профиль к заказу #{inv}? "
+                            f"[Д/Н]: {RST}").strip().lower()
+        except EOFError:
+            return False
+        if confirm not in ("д", "y", "да", "yes"):
+            continue
+
+        if _send:
+            try:
+                from ggsell.monitor import get_template
+                text = get_template("msg_template").format(link=link)
+            except Exception:
+                text = link
+            print(f"\n  {DIM}Отправляю сообщение покупателю…{RST}")
+            try:
+                ok = asyncio.run(_ggs_send_msg(api_key, seller_id, inv, text))
+            except Exception as e:
+                ok = False
+                print(f"  {R}Ошибка отправки: {e}{RST}")
+            if not ok:
+                print(f"  {R}❌ Сообщение не отправлено — привязку не делаем.{RST}")
+                pause()
+                return False
+            print(f"  {G}✅ Ссылка отправлена покупателю{RST}")
+
+        try:
+            from ggsell import store
+            total = store.add_binding(inv, str(pp), link,
+                                      parsed.get("email") or "", mark_done=_send)
+            _save_meta_field(pp, **store.bind_meta_fields(
+                inv, link, parsed.get("email") or ""))
+        except Exception as e:
+            print(f"  {R}Не удалось сохранить привязку: {e}{RST}")
+            pause()
+            return False
+
+        print(f"\n  {G}✅ Профиль привязан к заказу #{inv}{RST}")
+        if total > 1:
+            print(f"  {M}👤 Всего профилей у заказа: {total}{RST}")
+        pause()
+        return True
+
+
+def _ggs_detach_profile_from_order(inv: int) -> bool:
+    """Снятие привязки профиля с заказа (сам профиль остаётся на месте)."""
+    bindings = _ggs_bindings(inv)
+    if not bindings:
+        return False
+    cls()
+    header(f"ЗАКАЗ #{inv} — УБРАТЬ ПРИВЯЗКУ", C)
+    print()
+    _ggs_print_bindings(inv)
+    print()
+    opt("0", "Отмена", R)
+    print()
+    try:
+        ch = input(f"  {BLD}Какой профиль отвязать [1-{len(bindings)}] или 0: {RST}").strip()
+    except EOFError:
+        return False
+    if ch in ("0", ""):
+        return False
+    try:
+        idx = int(ch) - 1
+        if not (0 <= idx < len(bindings)):
+            raise ValueError
+    except ValueError:
+        return False
+
+    pp = Path(bindings[idx]["profile_path"])
+    try:
+        confirm = input(f"  {BLD}Отвязать {_disp_phone(pp.name.replace('profile_', ''))} "
+                        f"от заказа #{inv}? [Д/Н]: {RST}").strip().lower()
+    except EOFError:
+        return False
+    if confirm not in ("д", "y", "да", "yes"):
+        return False
+
+    try:
+        from ggsell import store
+        ok = store.remove_binding(inv, str(pp))
+    except Exception as e:
+        print(f"  {R}Ошибка: {e}{RST}")
+        pause()
+        return False
+
+    # Профиль больше ни к какому заказу не привязан — снимаем метку «выдан»,
+    # чтобы он снова считался доступным (ключи удаляем, а не обнуляем)
+    if ok and pp.exists() and not _ggs_profile_orders(pp):
+        try:
+            _mf = pp / ".profile_meta.json"
+            _md = json.loads(_mf.read_text(encoding="utf-8")) if _mf.exists() else {}
+            for _k in ("issued_ts", "issued_str", "issued_invoice_id", "issued_link"):
+                _md.pop(_k, None)
+            _atomic_write_text(_mf, json.dumps(_md, ensure_ascii=False, indent=2))
+            _invalidate_done_profiles_cache()
+        except Exception:
+            pass
+    print(f"\n  {G}✅ Привязка снята{RST}" if ok else f"\n  {Y}Ничего не изменилось{RST}")
+    pause()
+    return ok
+
+
 def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
     inv = int(order.get("invoice_id") or order.get("id") or 0)
     try:
@@ -20017,6 +20509,7 @@ def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
                   f"{G}продавцу {p['sum_sell'] or '—'}{RST}")
         for k, v in p["options"]:
             print(f"  {DIM}{k}:{RST} {W}{v}{RST}")
+        _n_bound = _ggs_print_bindings(inv)
         section("Переписка с покупателем")
         print()
         if not msgs:
@@ -20043,13 +20536,23 @@ def _ggs_order_detail(api_key: str, seller_id: int, order: dict) -> None:
                 print(f"    {W}{txt}{RST}")
         print()
         opt("С", "Написать сообщение покупателю", G)
+        opt("П", "Привязать профиль к заказу", M)
+        if _n_bound:
+            opt("У", "Убрать привязку профиля", Y)
         opt("R", "Обновить", C)
         opt("0", "Назад", R)
         print()
-        ch = input(f"  {BLD}Действие [С/R/0]: {RST}").strip().upper()
+        _keys = "С/П/" + ("У/" if _n_bound else "") + "R/0"
+        ch = input(f"  {BLD}Действие [{_keys}]: {RST}").strip().upper()
         if ch in ("0", ""):
             return
         if ch in ("R", "К", "K"):
+            continue
+        if ch in ("П", "P"):
+            _ggs_attach_profile_to_order(inv, p)
+            continue
+        if _n_bound and ch in ("У", "U", "Y"):
+            _ggs_detach_profile_from_order(inv)
             continue
         if ch in ("С", "C", "S"):
             text = _ggs_pick_reply(inv)
