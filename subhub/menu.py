@@ -79,9 +79,6 @@ except Exception:
 # Константы, которые ещё читают оставшиеся ветки (уйдут вместе с ними).
 _VPN_PING_PROFILE_DIR = _HERE / "data" / "_vpn_ping_profile"
 _VPN_DEFAULT_COUNTRY  = "us"
-_VPN_SITE_HOSTS = (
-    "flipkart.com", "google.com", "google.co.", "accounts.google", "gmail.com",
-)
 
 def _vpn_enabled() -> bool:
     return False
@@ -1711,16 +1708,6 @@ _MENU_USER_AGENTS = [
 
 
 
-def _resolve_extension_base(base: Path) -> str | None:
-    """manifest.json в base или в единственной подпапке."""
-    if not base.exists():
-        return None
-    if (base / "manifest.json").exists():
-        return str(base.resolve())
-    for sub in base.iterdir():
-        if sub.is_dir() and (sub / "manifest.json").exists():
-            return str(sub.resolve())
-    return None
 
 
 
@@ -1751,9 +1738,6 @@ def _needs_load_extension(profile_path: Path | str | None) -> bool:
 # VPN только для Flipkart / Google (не для фоновых вкладок и простоя)
 
 
-def _url_needs_vpn(url: str) -> bool:
-    u = (url or "").lower()
-    return any(h in u for h in _VPN_SITE_HOSTS)
 
 
 # UI-имена бесплатных локаций VeepN (скролл по списку «Бесплатные локации»)
@@ -1836,61 +1820,6 @@ async def _close_extension_startup_tabs(context) -> None:
     await _close_extra_blank_tabs(context)
 
 
-async def _bg_install_extensions_on_profiles(browser_only: bool = False) -> int:
-    """Установка расширения: только копирование файлов. Браузер — только по кнопке вручную."""
-    if not _vpn_extension_dir():
-        return 0
-    if not browser_only:
-        return install_extensions_filesystem_all()
-
-    # Только успешные done-профили — вход/поиск номеров без расширения
-    missing = [
-        p for p in _iter_profile_dirs()
-        if _profile_is_successful_done(p) and not _profile_has_vpn_extension(p)
-    ]
-    if not missing:
-        return 0
-
-    from playwright.async_api import async_playwright
-    installed = 0
-    with _chrome_window_hider():
-        for i, profile_path in enumerate(missing, 1):
-            if _install_extension_filesystem(profile_path):
-                installed += 1
-                continue
-            _set_vpn_bg_status("warming", f"Браузер [{i}/{len(missing)}] {profile_path.name}…")
-            print(f"  {DIM}[{i}/{len(missing)}] Браузер (headless) → {profile_path.name}{RST}")
-            if i > 1:
-                await _vpn_chrome_cooldown(extra=2.0)
-            pw = await async_playwright().start()
-            ctx = None
-            try:
-                kw = _browser_launch_kw(
-                    headless=True, profile_path=profile_path,
-                    use_bundled_chromium=True, background_install=True,
-                )
-                kw["args"] = _hidden_chrome_args(kw.get("args", []))
-                ctx = await pw.chromium.launch_persistent_context(
-                    str(profile_path.resolve()), **kw)
-                await _close_extension_startup_tabs(ctx)
-                await asyncio.sleep(3.0)
-                await _close_extension_startup_tabs(ctx)
-                if _profile_has_vpn_extension(profile_path):
-                    installed += 1
-                    print(f"  {G}✔ {profile_path.name}{RST}")
-            except Exception as exc:
-                print(f"  {Y}⚠ {profile_path.name}: {exc}{RST}")
-            finally:
-                if ctx:
-                    try:
-                        await ctx.close()
-                    finally:
-                        _note_chromium_closed()
-                try:
-                    await pw.stop()
-                except Exception:
-                    pass
-    return installed
 
 
 
@@ -2909,47 +2838,6 @@ def _win_press_escape() -> None:
     user32.keybd_event(VK_ESCAPE, 0, 2, 0)
 
 
-def _win_find_extensions_flyout(main_hwnd: int, puzzle_x: int, puzzle_y: int):
-    """Опционально: отдельное HWND меню (часто нет — меню внутри Chrome)."""
-    if os.name != "nt" or not main_hwnd:
-        return None
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    best = {"hwnd": 0, "area": 0, "rect": None}
-    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-
-    def _cb(hwnd, _):
-        if int(hwnd) == int(main_hwnd):
-            return True
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        cls = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(hwnd, cls, 256)
-        if "chrome" not in cls.value.lower():
-            return True
-        r = wintypes.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(r))
-        w = r.right - r.left
-        h = r.bottom - r.top
-        if w < 200 or w > 560 or h < 80 or h > 950:
-            return True
-        if r.top < puzzle_y - 30 or r.top > puzzle_y + 140:
-            return True
-        if r.left > puzzle_x + 40:
-            return True
-        area = w * h
-        if area > 500_000:
-            return True
-        if area > best["area"]:
-            best["area"] = area
-            best["hwnd"] = int(hwnd)
-            best["rect"] = (int(r.left), int(r.top), int(r.right), int(r.bottom))
-        return True
-
-    user32.EnumWindows(WNDENUMPROC(_cb), 0)
-    return best["rect"]
 
 
 def _win_click_screen(x: int, y: int) -> None:
@@ -2968,22 +2856,6 @@ def _win_click_screen(x: int, y: int) -> None:
 
 
 
-def _win_click_chrome_extensions_then_vpn() -> bool:
-    """Синх: найти пазл → клик → найти строку VeePN → клик."""
-    hwnd = _win_ensure_chrome_maximized()
-    if not hwnd:
-        return False
-    c = _win_chrome_puzzle_menu_coords(hwnd)
-    if not c:
-        return False
-    px, py = c["puzzle_x"], c["puzzle_y"]
-    print(f"  {DIM}VeepN: 1) пазл ({px},{py}) found={c.get('found')}…{RST}")
-    _win_click_screen(px, py)
-    time.sleep(0.95)
-    offs = c.get("veepn_offsets") or [(-140, 155)]
-    _win_click_veepn_row_near_puzzle(px, py, offs, hwnd=hwnd)
-    time.sleep(0.7)
-    return True
 
 
 
@@ -3006,125 +2878,6 @@ def _win_click_chrome_extensions_then_vpn() -> bool:
 
 
 
-async def _open_extension_popup_page(context, eid: str, popup_paths: list[str] | None = None):
-    """Открывает popup. Для VeepN — только src/popup/popup.html (иначе ERR_BLOCKED)."""
-    paths = list(popup_paths or _vpn_popup_rel_paths())
-    if _vpn_is_veepn():
-        paths = [p for p in paths if "src/popup" in p] or _veepn_popup_rel_paths()
-
-    pop = None
-    prefix = f"chrome-extension://{eid}"
-
-    async def _page_blocked(pg) -> bool:
-        with contextlib.suppress(Exception):
-            title = await pg.title()
-            body = ""
-            with contextlib.suppress(Exception):
-                body = await pg.evaluate(
-                    "() => (document.body && document.body.innerText || '').slice(0, 300)"
-                )
-            if _page_shows_client_block(pg.url or "", title, body or ""):
-                return True
-        u = (pg.url or "").lower()
-        return "chrome-error://" in u or "chromewebdata" in u
-
-    for p in list(context.pages):
-        try:
-            if await _page_blocked(p):
-                if len(context.pages) > 1:
-                    with contextlib.suppress(Exception):
-                        await p.close()
-                continue
-            if _is_extension_popup_url(p.url or "", eid):
-                pop = p
-                break
-        except Exception:
-            pass
-
-    async def _open_via_cdp(url: str):
-        anchor = context.pages[0] if context.pages else await context.new_page()
-        cdp = await context.new_cdp_session(anchor)
-        try:
-            created = await cdp.send("Target.createTarget", {"url": url})
-            target_id = created.get("targetId")
-            if not target_id:
-                return None
-            for _ in range(40):
-                for pg in list(context.pages):
-                    try:
-                        if await _page_blocked(pg):
-                            if len(context.pages) > 1:
-                                with contextlib.suppress(Exception):
-                                    await pg.close()
-                            continue
-                        if _is_extension_popup_url(pg.url or "", eid):
-                            return pg
-                    except Exception:
-                        pass
-                await asyncio.sleep(0.25)
-        finally:
-            with contextlib.suppress(Exception):
-                await cdp.detach()
-        return None
-
-    if not pop:
-        for rel in paths:
-            url = f"{prefix}/{rel.lstrip('/')}"
-            pop = await _open_via_cdp(url)
-            if pop and not await _page_blocked(pop):
-                break
-            pop = None
-            page = await context.new_page()
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
-                if await _page_blocked(page):
-                    print(f"  {Y}VeepN: вкладка popup заблокирована (ERR_BLOCKED) — закрываю{RST}")
-                    with contextlib.suppress(Exception):
-                        await page.close()
-                    continue
-                if _is_extension_popup_url(page.url or "", eid):
-                    pop = page
-                    break
-            except Exception:
-                with contextlib.suppress(Exception):
-                    await page.close()
-
-    if pop and not _is_extension_popup_url(pop.url or "", eid):
-        for rel in paths:
-            with contextlib.suppress(Exception):
-                await pop.goto(
-                    f"{prefix}/{rel.lstrip('/')}",
-                    wait_until="domcontentloaded",
-                    timeout=15_000,
-                )
-                if await _page_blocked(pop):
-                    continue
-                if _is_extension_popup_url(pop.url or "", eid):
-                    break
-
-    if pop and await _page_blocked(pop):
-        with contextlib.suppress(Exception):
-            await pop.close()
-        pop = None
-
-    if pop:
-        with contextlib.suppress(Exception):
-            await pop.wait_for_load_state("domcontentloaded", timeout=12_000)
-        for _ in range(8):
-            if await _veepn_popup_ui_ready(pop):
-                return pop
-            await asyncio.sleep(0.25)
-        if await _veepn_popup_is_blank(pop):
-            recovered = await _veepn_recover_blank_popup(context, eid, blank_page=pop)
-            if recovered:
-                return recovered
-
-    if not pop or await _veepn_popup_is_blank(pop):
-        recovered = await _veepn_recover_blank_popup(context, eid, blank_page=pop)
-        if recovered:
-            return recovered
-
-    return pop
 
 
 
@@ -3155,17 +2908,6 @@ _LAST_CHROMIUM_CLOSED_AT: float = 0.0
 
 
 
-def scan_profiles_extension_status() -> dict:
-    """Быстрая проверка профилей на VPN-расширение (без браузера)."""
-    profiles = _iter_profile_dirs()
-    with_ext = [p for p in profiles if _profile_has_vpn_extension(p)]
-    missing = [p for p in profiles if not _profile_has_vpn_extension(p)]
-    return {
-        "total": len(profiles),
-        "with_ext": len(with_ext),
-        "missing": len(missing),
-        "missing_names": [p.name for p in missing],
-    }
 
 
 
@@ -3324,49 +3066,6 @@ async def _ensure_extension_in_profile(profile_path: Path) -> bool:
 
 
 
-async def _prepare_profile_vpn(profile_path: Path | str, *, label: str = "") -> tuple[bool, str]:
-    """Фон: расширение (если нет) + VPN + проверка Flipkart. Браузер закрывается."""
-    if not _vpn_extension_dir():
-        return True, ""
-    profile_path = Path(profile_path)
-    tag = label or _phone_from_path(profile_path) or profile_path.name
-    if _is_profile_locked(profile_path):
-        _clear_stale_profile_locks(profile_path)
-    _set_vpn_bg_status("warming", f"VPN фон · {profile_path.name}")
-    print(f"  {DIM}[{tag}] VPN в фоне: расширение + подключение…{RST}")
-    if not await _ensure_extension_in_profile(profile_path):
-        _set_vpn_bg_status("error", f"Нет расширения · {profile_path.name}")
-        return False, "VPN-расширение не установлено в профиль"
-    await _vpn_chrome_cooldown(extra=1.0)
-    pw = None
-    ctx = None
-    try:
-        from playwright.async_api import async_playwright
-        pw = await async_playwright().start()
-        _pre_inject_chrome_prefs(profile_path)
-        kw = _browser_launch_kw(
-            headless=False, profile_path=profile_path, background_install=True,
-        )
-        ctx = await pw.chromium.launch_persistent_context(
-            str(profile_path.resolve()), **kw)
-        await _close_extension_startup_tabs(ctx)
-        if not await _vpn_connect_on_use(ctx, profile_path):
-            _set_vpn_bg_status("error", "VPN не подключился")
-            return False, "VPN не подключился (фон)"
-        page = await _main_work_page(ctx)
-        if not await _verify_flipkart_reachable(page, "https://www.flipkart.com/"):
-            _set_vpn_bg_status("error", "Flipkart недоступен после VPN")
-            return False, "Flipkart недоступен после VPN"
-        print(f"  {G}✔ [{tag}] VPN готов — можно открывать Flipkart{RST}")
-        _set_vpn_bg_status("ready", f"VPN OK · {profile_path.name}")
-        return True, ""
-    except Exception as exc:
-        err = str(exc)[:120]
-        _set_vpn_bg_status("error", err)
-        return False, err
-    finally:
-        await _close_browser_session(ctx, pw, profile_path, disconnect_vpn=True)
-        await _vpn_chrome_cooldown(extra=2.0)
 
 
 
