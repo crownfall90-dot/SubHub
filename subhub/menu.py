@@ -35,6 +35,14 @@ if os.name == "nt":
         os.system("")   # fallback
 
 import console_ui as _console_ui         # noqa: E402
+from housekeeping import (                 # noqa: E402  (уборка на диске)
+    PROFILES_DIR, DONE_PROFILES_DIR, USED_PROFILES_DIR, BACKUP_PROFILES_DIR,
+    _PROFILE_CACHE_DIRS, _PROFILE_SLIM_ARGS, _prune_profile_cache,
+    _all_profile_dirs, _rotate_debug_dir, _DEBUG_KEEP_FILES, _DEBUG_KEEP_DAYS,
+)
+from cookie_restore import (               # noqa: E402  (бэкапы куков)
+    _cookies_backup_for_phone, _cookie_backup_state, _COOKIE_DEAD_HINT,
+)
 from gift_cards import (                   # noqa: E402  (гифт-карты: слой данных)
     GIFT_CARDS_FILE, GIFT_USED_FILE, GIFT_DENOMS,
     _load_gift_cards, _save_gift_cards, _parse_gift_cards, _gift_bytes_to_text,
@@ -58,10 +66,6 @@ except Exception:
     _PKG = Path(__file__).resolve().parent
     _HERE = _PKG.parent  # repo root (config/data/profiles)
 
-PROFILES_DIR        = _HERE / "chrome_profiles"
-DONE_PROFILES_DIR   = _HERE / "chrome_profiles_done"
-USED_PROFILES_DIR   = _HERE / "chrome_profiles_used"
-BACKUP_PROFILES_DIR = _HERE / "chrome_profiles_backup"
 _VPN_PING_PROFILE_DIR = _HERE / "data" / "_vpn_ping_profile"
 _OPEN_CHROME_LOCK = threading.Lock()
 _OPEN_CHROME_SESSIONS: dict[str, threading.Thread] = {}
@@ -953,67 +957,6 @@ def _delete_oos_profile(profile_path, username: str = "", note: str = "") -> boo
     print(f"  {M}🗑 {_who} — Currently out of stock{(' ' + note) if note else ''}: "
           f"брак аккаунта, профиль удалён.{RST}")
     return True
-
-
-def _cookies_backup_for_phone(phone: str) -> Path | None:
-    """Путь к cookies_backup/cookies_*.json по 10-значному номеру."""
-    phone10 = "".join(ch for ch in str(phone or "") if ch.isdigit())[-10:]
-    if not phone10:
-        return None
-    bk_dir = Path("cookies_backup")
-    if not bk_dir.is_dir():
-        return None
-    direct = bk_dir / f"cookies_{phone10}.json"
-    if direct.exists():
-        return direct
-    for p in sorted(bk_dir.glob(f"cookies_*{phone10}.json")):
-        if p.is_file():
-            return p
-    return None
-
-
-def _cookie_backup_state(cookies_json_path) -> tuple[str, str]:
-    """Проверяет срок жизни токенов в бэкапе куков БЕЗ запуска браузера.
-
-    Flipkart: `at` (access token) живёт ~30 минут — просроченный `at` это норма,
-    сессию поднимает `rt` (refresh token, ~180 дней). Если истёк `rt` — куками
-    не поднять вообще, нужен свежий вход по OTP.
-    Возвращает (state, описание): "ok" | "at_expired" | "dead" | "unknown".
-    """
-    import base64 as _b64
-    try:
-        raw = json.loads(Path(cookies_json_path).read_text(encoding="utf-8"))
-    except Exception as e:
-        return "unknown", f"не прочитал JSON: {e}"
-    if not isinstance(raw, list) or not raw:
-        return "dead", "JSON пустой — куков нет"
-    vals = {c.get("name"): c.get("value") for c in raw if isinstance(c, dict)}
-
-    def _exp(tok: str) -> float | None:
-        parts = str(tok or "").split(".")
-        if len(parts) < 2:
-            return None
-        try:
-            pl = json.loads(_b64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
-            e = float(pl.get("exp") or 0)
-        except Exception:
-            return None
-        return (e / 1000 if e > 1e11 else e) or None
-
-    now = time.time()
-    at_e, rt_e = _exp(vals.get("at")), _exp(vals.get("rt"))
-    if "rt" not in vals:
-        return "dead", "в бэкапе нет rt (refresh-token) — сессию не поднять"
-    if rt_e and rt_e <= now:
-        return "dead", f"rt истёк {_fmt_msk(rt_e)} — нужен свежий вход по OTP"
-    _rt_txt = f"rt действителен до {_fmt_msk(rt_e)}" if rt_e else "срок rt неизвестен"
-    if at_e and at_e <= now:
-        return "at_expired", f"at истёк {_fmt_msk(at_e)}, {_rt_txt} — поднимаем через rt"
-    return "ok", _rt_txt
-
-
-_COOKIE_DEAD_HINT = ("сервер отозвал сессию (вход с другого устройства / logout) — "
-                     "тот же файл куков уже не поможет, нужен свежий вход по OTP")
 
 
 async def _auto_restore_flipkart_session(ctx, page, profile_path: Path) -> bool:
@@ -2393,62 +2336,6 @@ async def _vpn_disconnect(context) -> bool:
     raw = await _veepn_eval_js(context, eid, _js)
     disconnected = bool(raw)
     return disconnected
-
-
-# Кэши Chrome, которые можно удалять: браузер пересоздаёт их сам. Сессия живёт
-# в Default/Network/* (куки), Default/Preferences, Local State и
-# .profile_meta.json — их здесь нет и быть не должно. Только явные пути,
-# никаких glob'ов, чтобы нельзя было случайно снести сессию.
-_PROFILE_CACHE_DIRS = (
-    "BrowserMetrics", "GrShaderCache", "ShaderCache", "GraphiteDawnCache",
-    "Crashpad", "component_crx_cache", "extensions_crx_cache",
-    # Скачиваемые Chrome компоненты и ML-модели: в самом крупном профиле это
-    # 120 МБ из 282. Нужны для голоса/подсказок/фишинга — нашим сценариям нет.
-    "Safe Browsing", "optimization_guide_model_store", "WasmTtsEngine",
-    "OnDeviceHeadSuggestModel", "ActorSafetyLists", "SafetyTips",
-    "AutofillStates", "TrustTokenKeyCommitments", "MEIPreload",
-    "PrivacySandboxAttestationsPreloaded", "ClientSidePhishing",
-    "OriginTrials", "Subresource Filter", "FileTypePolicies",
-    "Default/Cache", "Default/Code Cache", "Default/GPUCache",
-    "Default/DawnCache", "Default/DawnGraphiteCache", "Default/DawnWebGPUCache",
-    "Default/Service Worker/CacheStorage", "Default/Service Worker/ScriptCache",
-)
-
-
-# Аргументы Chrome, не дающие профилю разрастаться. Выделены отдельно, чтобы
-# бенчмарк мог запустить браузер и с ними, и без них (scripts/bench_slim_args.py).
-_PROFILE_SLIM_ARGS = (
-    "--disable-component-update",      # не качать Safe Browsing / ML-модели
-    "--disable-breakpad",              # не писать Crashpad-дампы
-    "--disable-gpu-shader-disk-cache",
-    "--disk-cache-size=1048576",
-    "--media-cache-size=1048576",
-)
-
-
-def _prune_profile_cache(profile_path, measure: bool = False) -> int:
-    """Удаляет кэши Chrome внутри профиля, не затрагивая сессию.
-
-    measure=True — посчитать освобождённое (медленно: обход файлов). На закрытии
-    браузера считать незачем, там важна скорость.
-    Возвращает освобождённые байты (0 при measure=False).
-    """
-    import shutil as _sh_pc
-    p = Path(profile_path)
-    # Страховка от чужого пути: без этих признаков это не профиль Chrome
-    if not (p / "Default").is_dir() and not (p / "Local State").exists():
-        return 0
-    freed = 0
-    for rel in _PROFILE_CACHE_DIRS:
-        d = p / rel
-        if not d.is_dir():
-            continue
-        before = _dir_size(d) if measure else 0
-        _sh_pc.rmtree(str(d), ignore_errors=True)
-        if measure:
-            # Chrome мог держать часть файлов — считаем только реально удалённое
-            freed += max(0, before - (_dir_size(d) if d.exists() else 0))
-    return freed
 
 
 async def _close_browser_session(
@@ -20680,15 +20567,6 @@ def screen_stop_all() -> None:
             return
 
 
-def _all_profile_dirs() -> list:
-    """Все папки профилей во всех каталогах (done / новые / used / backup)."""
-    out = []
-    for _d in (DONE_PROFILES_DIR, PROFILES_DIR, USED_PROFILES_DIR, BACKUP_PROFILES_DIR):
-        if _d.exists():
-            out.extend(p for p in sorted(_d.glob("profile_*")) if p.is_dir())
-    return out
-
-
 def screen_prune_caches():
     """Освободить место: удалить кэши Chrome во всех профилях.
 
@@ -21223,44 +21101,6 @@ def _migrate_config() -> None:
                 print(f"  {Y}[Предупреждение] Не удалось записать config.yaml: {_we}{RST}")
     except Exception as _e:
         print(f"  {Y}[Предупреждение] Не удалось обновить config.yaml: {_e}{RST}")
-
-
-_DEBUG_KEEP_FILES = 50
-_DEBUG_KEEP_DAYS  = 7.0
-
-
-def _rotate_debug_dir(keep: int = _DEBUG_KEEP_FILES,
-                      max_age_days: float = _DEBUG_KEEP_DAYS) -> int:
-    """Оставляет в debug/ только свежую диагностику: не старше max_age_days и
-    не больше keep файлов (самые новые). Возвращает освобождённые байты.
-
-    Скриншоты пишут больше десятка мест по всему коду; ротация одна на старте —
-    дешевле, чем ограничение в каждом месте записи. Старый скриншот не нужен:
-    разбираем всегда последний прогон.
-    """
-    dbg = _HERE / "debug"
-    if not dbg.is_dir():
-        return 0
-    files = []
-    for f in dbg.rglob("*"):
-        with contextlib.suppress(OSError):
-            if f.is_file():
-                st = f.stat()
-                files.append((st.st_mtime, st.st_size, f))
-    if not files:
-        return 0
-    files.sort(reverse=True)                      # новые первыми
-    cutoff = time.time() - max_age_days * 86400
-    freed = 0
-    for i, (mtime, size, f) in enumerate(files):
-        if i < keep and mtime >= cutoff:
-            continue
-        try:
-            f.unlink()
-            freed += size
-        except OSError:
-            pass
-    return freed
 
 
 def _startup_cleanup() -> None:
