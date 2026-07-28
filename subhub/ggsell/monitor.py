@@ -213,6 +213,33 @@ _OWN_TEMPLATE_SNIPPETS = tuple(
 )
 
 
+def direction_from_flags(msg: dict):
+    """Направление сообщения по служебным полям GGSell: True — наше,
+    False — покупателя, None — не берёмся судить.
+
+    API не отдаёт ни одного из полей is_seller/sender/role, зато отдаёт
+    `buyer`/`seller`/`date_seen`. Замер на 37 сообщениях двух чатов
+    (2026-07-28): НАШИ сообщения — `buyer=0, seller=0, date_seen=null`,
+    сообщения покупателя — `buyer=1, seller=1` с заполненным `date_seen`.
+    Совпало на всех, включая наши шаблонные автоответы. Смешанных комбинаций
+    (1,0)/(0,1) в выборке не было — на них не гадаем, пусть решают прежние
+    эвристики: ошибка «наше» вместо «покупателя» глушит живой вопрос клиента,
+    это дороже лишнего пинга.
+    """
+    b, s = msg.get("buyer"), msg.get("seller")
+    if b is None or s is None:
+        return None
+    try:
+        b, s = int(b), int(s)
+    except (TypeError, ValueError):
+        return None
+    if b == 1 and s == 1:
+        return False
+    if b == 0 and s == 0 and not msg.get("date_seen"):
+        return True
+    return None
+
+
 def classify_is_seller(invoice_id, msg: dict) -> bool:
     """Определить, что сообщение чата отправлено НАМИ (продавцом), а не покупателем.
 
@@ -222,7 +249,7 @@ def classify_is_seller(invoice_id, msg: dict) -> bool:
     """
     text = str(msg.get("text") or msg.get("message") or msg.get("body") or "")
     norm = _norm_msg(text)
-    return bool(
+    known_ours = bool(
         msg.get("is_current_user")
         or msg.get("is_seller")
         or msg.get("is_seller_msg")
@@ -238,6 +265,12 @@ def classify_is_seller(invoice_id, msg: dict) -> bool:
         or (text and is_own_sent(invoice_id, text))
         or (norm and any(norm.startswith(s) for s in _OWN_TEMPLATE_SNIPPETS if s))
     )
+    if known_ours:
+        return True
+    # Наши ручные ответы с сайта GGSell не попадают ни в is_own_sent, ни в
+    # шаблоны — они и подписывались «от покупателя». Решают служебные флаги.
+    by_flags = direction_from_flags(msg)
+    return by_flags if by_flags is not None else False
 
 
 # ── Хранение и загрузка шаблонов сообщений ───────────────────────────────────
