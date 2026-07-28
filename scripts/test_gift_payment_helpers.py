@@ -38,6 +38,26 @@ def main() -> None:
     p2, t2 = m._select_gift_cards(50, dirty)
     assert p2 and t2 == 50 and p2[0]["number"] == "3"
 
+    # Формат «номер / PIN на следующей строке» (без даты и номинала)
+    two_line = """6000170825521426
+291692
+6000170820014434
+279714"""
+    cards, errs = m._parse_gift_cards(two_line, 500)
+    assert not errs, errs
+    assert [(c["number"], c["pin"], c["denom"]) for c in cards] == [
+        ("6000170825521426", "291692", 500),
+        ("6000170820014434", "279714", 500),
+    ], cards
+    # PIN из 4 цифр, совпадающий с номиналом, не должен съедаться как denom
+    cards2, errs2 = m._parse_gift_cards("6000170825275058\n1000", 500)
+    assert not errs2 and cards2[0]["pin"] == "1000" and cards2[0]["denom"] == 500, cards2
+    # Старый однострочный формат «Серия PIN Дата» продолжает работать
+    cards3, errs3 = m._parse_gift_cards("6000170524661453  281697  2027-05-25", 200)
+    assert not errs3 and cards3 == [
+        {"denom": 200, "number": "6000170524661453", "pin": "281697", "used": False}
+    ], cards3
+
     rep, bal2, need, short = m._gift_shortage_report(343)
     assert "Осталось покрыть:" in rep and need % 50 == 0 and short >= 0 and bal2 >= 0
     # short==0 must NOT say «Не хватает: ₹0» (путали остаток заказа со складом)

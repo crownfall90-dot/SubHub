@@ -797,56 +797,8 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "◀️ Назад", "callback_data": "go:other"}],
             ]}
 
-        def _parse_gift_cards(text, default_denom=None):
-            """Парсит гифт-карты из текста/CSV. Реальный формат Flipkart:
-               «Серия  PIN  Дата» → 6000170524661453  281697  2027-05-25.
-               Номер — 14–19 цифр, PIN — 4–8 цифр, дата истечения игнорируется.
-               Номинал: default_denom (выбран при добавлении) или число из строки,
-               совпадающее с GIFT_DENOMS. Заголовки таблиц пропускаются.
-               Возвращает (список_карт, список_ошибок)."""
-            import re as _re
-            denoms = set(_m("GIFT_DENOMS"))
-            out, errs = [], []
-            for _ln in text.splitlines():
-                s = _ln.strip()
-                if not s:
-                    continue
-                low = s.lower()
-                # Пропускаем строки-заголовки таблицы / название карты
-                if (("серия" in low or "series" in low)
-                        or ("pin" in low and ("дата" in low or "expir" in low or "истеч" in low))
-                        or ("flipkart" in low and "inr" in low)):
-                    continue
-                # Убираем даты, чтобы не путать с PIN/номером
-                s2 = _re.sub(r"\d{4}[-/.]\d{2}[-/.]\d{2}", " ", s)
-                s2 = _re.sub(r"\d{2}[-/.]\d{2}[-/.]\d{2,4}", " ", s2)
-                # Номер карты — самая длинная последовательность 14–19 цифр
-                m = _re.search(r"\b(\d{14,19})\b", s2)
-                number = m.group(1) if m else ""
-                rest = s2.replace(number, " ", 1) if number else s2
-                # Номинал из строки, если совпадает с GIFT_DENOMS
-                denom = default_denom
-                for t in _re.findall(r"\b(\d{2,4})\b", rest):
-                    if int(t) in denoms:
-                        denom = int(t)
-                        rest = rest.replace(t, " ", 1)
-                        break
-                # PIN — 4–8 цифр из остатка
-                pin = ""
-                for t in _re.findall(r"\b(\d{4,8})\b", rest):
-                    pin = t
-                    break
-                if not number:
-                    errs.append(f"«{s[:40]}» — не нашёл номер (14–19 цифр)")
-                    continue
-                if not pin:
-                    errs.append(f"«{s[:40]}» — не нашёл PIN (4–8 цифр)")
-                    continue
-                if not denom:
-                    errs.append(f"«{s[:40]}» — не указан номинал")
-                    continue
-                out.append({"denom": int(denom), "number": number, "pin": pin, "used": False})
-            return out, errs
+        # Парсер гифт-карт живёт в menu.py — единый формат для консоли и бота
+        _parse_gift_cards = _m("_parse_gift_cards")
 
         def _gift_bytes_to_text(fname, raw):
             """Извлекает текст из присланного файла в строки «серия pin дата».

@@ -973,6 +973,35 @@ def _ask_delete_profile_console(profile_path, username: str, error_text: str) ->
     return False
 
 
+def _delete_oos_profile(profile_path, username: str = "", note: str = "") -> bool:
+    """Удаляет профиль с «Currently out of stock» БЕЗ вопросов.
+
+    OOS не предугадать и не убрать — это брак самого аккаунта, держать его
+    смысла нет: он будет выбираться снова и снова и жечь время. Вызывающий
+    после этого должен взять следующий профиль/номер.
+    """
+    import shutil as _sh_oos
+    _p = Path(profile_path)
+    _who = _disp_phone(username) if username else _p.name
+    # Chrome мог ещё не отпустить папку — под живым процессом rmtree на Windows
+    # молча оставляет файлы, и «удалённый» профиль всплывает снова.
+    _kill_chrome_for_profile(_p)
+    for _attempt in range(5):
+        if not _p.exists():
+            break
+        _sh_oos.rmtree(str(_p), ignore_errors=True)
+        if not _p.exists():
+            break
+        time.sleep(1.0)          # ждём освобождения файловых блокировок
+    if _p.exists():
+        print(f"  {R}⚠ {_who} — OOS, но папку профиля удалить не удалось "
+              f"(Chrome ещё держит файлы): {_p.name}{RST}")
+        return False
+    print(f"  {M}🗑 {_who} — Currently out of stock{(' ' + note) if note else ''}: "
+          f"брак аккаунта, профиль удалён.{RST}")
+    return True
+
+
 def _cookies_backup_for_phone(phone: str) -> Path | None:
     """Путь к cookies_backup/cookies_*.json по 10-значному номеру."""
     phone10 = "".join(ch for ch in str(phone or "") if ch.isdigit())[-10:]
@@ -990,6 +1019,50 @@ def _cookies_backup_for_phone(phone: str) -> Path | None:
     return None
 
 
+def _cookie_backup_state(cookies_json_path) -> tuple[str, str]:
+    """Проверяет срок жизни токенов в бэкапе куков БЕЗ запуска браузера.
+
+    Flipkart: `at` (access token) живёт ~30 минут — просроченный `at` это норма,
+    сессию поднимает `rt` (refresh token, ~180 дней). Если истёк `rt` — куками
+    не поднять вообще, нужен свежий вход по OTP.
+    Возвращает (state, описание): "ok" | "at_expired" | "dead" | "unknown".
+    """
+    import base64 as _b64
+    try:
+        raw = json.loads(Path(cookies_json_path).read_text(encoding="utf-8"))
+    except Exception as e:
+        return "unknown", f"не прочитал JSON: {e}"
+    if not isinstance(raw, list) or not raw:
+        return "dead", "JSON пустой — куков нет"
+    vals = {c.get("name"): c.get("value") for c in raw if isinstance(c, dict)}
+
+    def _exp(tok: str) -> float | None:
+        parts = str(tok or "").split(".")
+        if len(parts) < 2:
+            return None
+        try:
+            pl = json.loads(_b64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+            e = float(pl.get("exp") or 0)
+        except Exception:
+            return None
+        return (e / 1000 if e > 1e11 else e) or None
+
+    now = time.time()
+    at_e, rt_e = _exp(vals.get("at")), _exp(vals.get("rt"))
+    if "rt" not in vals:
+        return "dead", "в бэкапе нет rt (refresh-token) — сессию не поднять"
+    if rt_e and rt_e <= now:
+        return "dead", f"rt истёк {_fmt_msk(rt_e)} — нужен свежий вход по OTP"
+    _rt_txt = f"rt действителен до {_fmt_msk(rt_e)}" if rt_e else "срок rt неизвестен"
+    if at_e and at_e <= now:
+        return "at_expired", f"at истёк {_fmt_msk(at_e)}, {_rt_txt} — поднимаем через rt"
+    return "ok", _rt_txt
+
+
+_COOKIE_DEAD_HINT = ("сервер отозвал сессию (вход с другого устройства / logout) — "
+                     "тот же файл куков уже не поможет, нужен свежий вход по OTP")
+
+
 async def _auto_restore_flipkart_session(ctx, page, profile_path: Path) -> bool:
     """Сразу восстановить сессию из cookies_backup в уже открытом Chrome.
     Без вопросов — если бэкап есть, применяем и проверяем вход."""
@@ -1000,7 +1073,11 @@ async def _auto_restore_flipkart_session(ctx, page, profile_path: Path) -> bool:
     if not bk:
         print(f"  {Y}🔒 не залогинен — нет cookies_backup для …{phone[-10:] if phone else '?'}{RST}")
         return False
-    print(f"  {Y}🔒 не залогинен — сразу восстанавливаю из {bk.name}…{RST}")
+    _st, _desc = _cookie_backup_state(bk)
+    if _st == "dead":
+        print(f"  {R}🔒 не залогинен, а бэкап {bk.name} нерабочий: {_desc}{RST}")
+        return False
+    print(f"  {Y}🔒 не залогинен — сразу восстанавливаю из {bk.name} ({_desc})…{RST}")
     try:
         raw = _jc.loads(bk.read_text(encoding="utf-8"))
     except Exception as e:
@@ -1047,7 +1124,7 @@ async def _auto_restore_flipkart_session(ctx, page, profile_path: Path) -> bool:
         print(f"  {R}❌ restore inject: {e}{RST}")
         return False
     if await _page_logged_out(page):
-        print(f"  {R}❌ куки не дали входа (устарели?){RST}")
+        print(f"  {R}❌ куки применились, но входа нет — {_COOKIE_DEAD_HINT}{RST}")
         return False
     print(f"  {G}✔ сессия восстановлена из куков — продолжаю{RST}")
     return True
@@ -1062,7 +1139,14 @@ def _console_offer_restore(profile_path, username: str) -> bool:
         print(f"  {DIM}Бэкапа куков нет (cookies_backup/cookies_{phone}.json).{RST}")
         print(f"  {DIM}Нужны свежие куки — пункт «К» в главном меню.{RST}")
         return False
-    print(f"  {DIM}Сразу восстанавливаю сессию из {bk.name}…{RST}")
+    _st, _desc = _cookie_backup_state(bk)
+    if _st == "dead":
+        print(f"  {R}❌ Бэкап {bk.name} нерабочий: {_desc}{RST}")
+        print(f"  {DIM}Восстановление отменено — этим файлом сессию не поднять.{RST}")
+        print(f"  {DIM}Нужен свежий вход по OTP (пункт 1 «Вход на ПК») "
+              f"и новый экспорт куков.{RST}")
+        return False
+    print(f"  {DIM}Сразу восстанавливаю сессию из {bk.name} ({_desc})…{RST}")
     try:
         ok, msg = asyncio.run(_restore_profile_from_cookies(bk, phone, Path(profile_path)))
     except Exception as e:
@@ -1070,7 +1154,9 @@ def _console_offer_restore(profile_path, username: str) -> bool:
     if ok:
         print(f"  {G}✅ Сессия восстановлена. Запустите операцию снова.{RST}")
         return True
-    print(f"  {R}❌ Куки не дали входа: {msg}. Нужны свежие куки (пункт «К»).{RST}")
+    print(f"  {R}❌ Не восстановил: {msg}{RST}")
+    print(f"  {DIM}Нужен свежий вход по OTP (пункт 1 «Вход на ПК») "
+          f"и новый экспорт куков — повтор пункта «К» с этим же файлом не поможет.{RST}")
     return False
 
 
@@ -7238,7 +7324,17 @@ def screen_run_auto(tg_mode: str = "none", stop_at_email: bool = False):
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = subprocess.Popen(args, creationflags=creationflags, cwd=str(_HERE))
         set_automation_proc(proc.pid, "login", "console")
-        proc.wait()
+        # Не proc.wait() без таймаута: на Windows это один блокирующий
+        # WaitForSingleObject(INFINITE), который не отпускает поток обратно
+        # в байткод, поэтому отложенный Ctrl+C (KeyboardInterrupt) не может
+        # доставиться, пока дочерний процесс сам не завершится. Опрос
+        # короткими таймаутами прерывается мгновенно.
+        while True:
+            try:
+                proc.wait(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                continue
         code = proc.returncode
     except KeyboardInterrupt:
         print(f"\n\n{Y}  [!] Остановка по Ctrl+C — отменяю номера…{RST}")
@@ -8560,16 +8656,12 @@ def screen_profiles():
                         print(f"\n  {G}{BLD}✅ {msg6}{RST}")
                         pause()
                     elif msg6.startswith("OUT_OF_STOCK"):
-                        addr_info = msg6.split("|", 1)[1] if "|" in msg6 else ""
-                        if addr_info:
-                            print(f"  {G}✔ {addr_info}{RST}")
-                        _ag = " (адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg6 else ""
-                        if _ask_delete_profile_console(
-                            selected["path"], selected["username"],
-                            f"Currently out of stock{_ag} — товар недоступен для этого профиля."):
-                            time.sleep(2)
-                            break
-                        time.sleep(1)
+                        _ag = "(адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg6 else ""
+                        _delete_oos_profile(selected["path"], selected["username"], _ag)
+                        print(f"  {DIM}Возьмите следующий профиль — или пункт «Б» "
+                              f"в главном меню подберёт сам.{RST}")
+                        time.sleep(2)
+                        break
                     elif any(x in msg6.lower() for x in ("не залогинен", "нет входа", "not logged")):
                         # Профиль слетел — сразу предлагаем восстановить сессию из куков
                         _console_offer_restore(selected["path"], selected["username"])
@@ -13559,6 +13651,13 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
     if not pw_cookies:
         return False, "JSON пустой — куки не найдены"
 
+    # Мёртвый бэкап видно по JWT — не тратим запуск Chrome + VPN впустую
+    _ck_state, _ck_desc = _cookie_backup_state(cookies_json_path)
+    if _ck_state == "dead":
+        return False, f"бэкап куков нерабочий: {_ck_desc}"
+    if _ck_state == "at_expired":
+        print(f"  {DIM}Куки: {_ck_desc}{RST}")
+
     # Определяем папку профиля
     phone_digits = "".join(filter(str.isdigit, phone))
     if profile_path is not None:
@@ -13625,7 +13724,7 @@ async def _restore_profile_from_cookies(cookies_json_path: Path, phone: str,
         logged_in = _acct or not _has_login_btn
 
         if not logged_in:
-            return False, "Куки не дали входа — сессия недействительна (нужен свежий вход)"
+            return False, f"куки применились, но входа нет: {_COOKIE_DEAD_HINT}"
 
         # Сохраняем метаданные — СЛИВАЕМ с существующими, чтобы не потерять
         # link_history, привязку к заказу (issued_invoice_id), ссылки и т.п.
@@ -16557,10 +16656,14 @@ async def _do_buy_membership(profile_path: Path, months: int, card: dict | None 
                         body_r = (await page.evaluate(
                             "() => (document.body && document.body.textContent) || ''"
                         )).lower()
+                    # OOS = профиль под удаление: браузер обязан закрыться, иначе
+                    # Chrome держит папку и rmtree у вызывающего уходит в пустоту.
                     if any(p in body_r for p in _OOS_PHRASES):
+                        _keep_open = False
                         return False, "OUT_OF_STOCK|DELETE_PROFILE"
                     reached = await _viewcheckout_to_payments(page, profile_path)
                     if reached == "OUT_OF_STOCK":
+                        _keep_open = False
                         return False, "OUT_OF_STOCK|DELETE_PROFILE"
                     if reached == "CAPTCHA":
                         return False, (
@@ -16889,16 +16992,9 @@ def screen_buy_membership():
         if ok:
             print(f"  {G}{msg}{RST}")
         elif msg.startswith("OUT_OF_STOCK"):
-            print(f"  {R}✘ Currently out of stock — с этим профилем уже ничего не сделать.{RST}")
-            print(f"  {Y}→ Рекомендуется удалить профиль и купить со следующим доступным.{RST}")
-            print()
-            confirm = input(f"  {BLD}Удалить профиль сейчас? [Д/Н]: {RST}").strip().lower()
-            if confirm in ("д", "y"):
-                try:
-                    shutil.rmtree(str(selected["path"]))
-                    print(f"\n  {M}🗑 Профиль удалён.{RST}")
-                except Exception as exc:
-                    print(f"\n  {R}Ошибка удаления: {exc}{RST}")
+            _ag = "(адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg else ""
+            _delete_oos_profile(selected["path"], selected.get("username", ""), _ag)
+            print(f"  {DIM}Пункт «Б» в главном меню подберёт следующий профиль сам.{RST}")
         else:
             print(f"  {R}❌ Ошибка: {msg}{RST}")
         pause()
@@ -18829,28 +18925,41 @@ def screen_all_in_one():
             if ok:
                 ok_count += 1
             else:
-                # Новый аккаунт не вышел — пробуем оплату на всех существующих профилях
-                _done_pfs = (sorted(DONE_PROFILES_DIR.glob("profile_*"))
-                             if DONE_PROFILES_DIR.exists() else [])
+                # Новый аккаунт не вышел — добираем оплату на уже готовых профилях.
+                # Берём только годные (сначала «с данными»), а не всё подряд:
+                # оплаченные/выданные перебирать бессмысленно.
+                _cand_data, _cand_plain = _buy_candidates()
+                _done_pfs = _cand_data + _cand_plain
                 if _done_pfs:
-                    print(f"\n  {Y}⟳ Пробую оплату на {len(_done_pfs)} существующих профилях...{RST}")
+                    print(f"\n  {Y}⟳ Пробую оплату на {len(_done_pfs)} годных профилях "
+                          f"{DIM}(с данными: {len(_cand_data)}){RST}...{RST}")
                     _fallback_ok = False
-                    for _pp in _done_pfs:
+                    for _cp in _done_pfs:
+                        _pp = Path(_cp["path"])
                         try:
                             print(f"  {DIM}  → {_pp.name}{RST}")
                             _pok, _pmsg = asyncio.run(
                                 _do_buy_membership(_pp, months, card=selected_card, _skip_ping=True))
-                            print(f"  {'✅' if _pok else '❌'} {_pp.name}: {_pmsg}")
                             if _pok:
+                                print(f"  ✅ {_pp.name}: {_pmsg}")
                                 ok_count += 1
                                 _fallback_ok = True
                                 break
+                            # OOS — брак аккаунта: удаляем сразу и идём к следующему
+                            if str(_pmsg).startswith("OUT_OF_STOCK"):
+                                _delete_oos_profile(
+                                    _pp, _cp.get("username", ""),
+                                    "(адрес введён 2 раза)" if "OUT_OF_STOCK_2" in _pmsg else "")
+                                continue
+                            print(f"  ❌ {_pp.name}: {_pmsg}")
                         except KeyboardInterrupt:
                             raise
                         except Exception as _pe:
                             print(f"  ❌ {_pp.name}: {_pe}")
                     if not _fallback_ok:
-                        print(f"  {R}  Ни один из существующих профилей не смог оплатить.{RST}")
+                        print(f"  {R}  Ни один из годных профилей не смог оплатить.{RST}")
+                else:
+                    print(f"  {DIM}  Годных профилей для добора оплаты нет.{RST}")
         except KeyboardInterrupt:
             print(f"\n\n  {Y}[!] Остановка по Ctrl+C...{RST}")
             break
@@ -19385,8 +19494,27 @@ def _parse_gift_cards(text: str, default_denom: int | None = None) -> tuple[list
     import re as _re
     denoms = set(GIFT_DENOMS)
     out, errs = [], []
-    for _ln in text.splitlines():
-        s = _ln.strip()
+    # Формат «номер на строке, PIN на следующей» → склеиваем в одну запись
+    _lines = [ln.strip() for ln in text.splitlines()]
+    items, _i = [], 0
+    while _i < len(_lines):
+        s = _lines[_i]
+        if (_re.fullmatch(r"\d{14,19}", s) and _i + 1 < len(_lines)
+                and _re.fullmatch(r"\d{4,8}", _lines[_i + 1])):
+            items.append((s, _lines[_i + 1]))
+            _i += 2
+            continue
+        items.append(s)
+        _i += 1
+    for s in items:
+        if isinstance(s, tuple):
+            number, pin = s
+            if not default_denom:
+                errs.append(f"«{number}» — не указан номинал")
+                continue
+            out.append({"denom": int(default_denom), "number": number,
+                        "pin": pin, "used": False})
+            continue
         if not s:
             continue
         low = s.lower()
@@ -20827,6 +20955,106 @@ def screen_stop_all() -> None:
             return
 
 
+def _buy_candidates(profiles: list | None = None) -> tuple[list, list]:
+    """Профили, годные для автопокупки: (с_данными, доступные).
+    Пропускаются выданные, уже оплаченные и без мета-файла — те же признаки,
+    что и в статусах screen_profiles."""
+    profiles = _load_done_profiles() if profiles is None else profiles
+    with_data, plain = [], []
+    for p in profiles:
+        if not p.get("login_ts") or p.get("issued_ts"):
+            continue
+        if (p.get("black_valid_till") or p.get("paid_ready")
+                or p.get("status") in ("activated", "explore_now", "activate_now")):
+            continue
+        if (p.get("prepared_ts") or p.get("buyer_email")
+                or p.get("status") == "email_completed"):
+            with_data.append(p)
+        else:
+            plain.append(p)
+    return with_data, plain
+
+
+# Сколько профилей перебрать, если на первом покупка сорвалась (OOS / слетел вход)
+_AUTO_BUY_MAX_TRIES = 3
+
+
+def screen_auto_buy():
+    """Купить: сам подбирает профиль и гонит полный цикл (как пункт 6 в профиле).
+    Сначала берёт профили «С данными», потом любые «Доступные»."""
+    cls()
+    header("КУПИТЬ — АВТОПОДБОР ПРОФИЛЯ", G)
+    with_data, plain = _buy_candidates()
+    cands = with_data + plain
+    if not cands:
+        print(f"  {R}❌ Нет подходящих профилей для покупки.{RST}")
+        print(f"  {DIM}Все профили уже оплачены / выданы / без данных.{RST}")
+        print(f"  {DIM}Добавьте профили: пункт 1 «Вход на ПК» или 9 «Полный цикл».{RST}")
+        pause()
+        return
+    print(f"  Подходящих профилей : {W}{BLD}{len(cands)}{RST}"
+          f"  {DIM}(с данными: {len(with_data)}, доступных: {len(plain)}){RST}")
+    _first = cands[0]
+    _kind = "с данными" if with_data else "доступный"
+    print(f"  Возьму первым       : {W}{BLD}{_disp_phone(_first['username'])}{RST}"
+          f"  {DIM}({_kind}){RST}")
+    print()
+    opt("1", "3 месяца  — ₹343  (скидка 20%)", G)
+    opt("2", "12 месяцев — ₹1,499", C)
+    print()
+    opt("0", "Отмена", R)
+    print()
+    tariff = input(f"  {BLD}Тариф [1/2/0]: {RST}").strip()
+    if tariff not in ("1", "2"):
+        return
+    months = 3 if tariff == "1" else 12
+    label  = "3 месяца / ₹343" if tariff == "1" else "12 месяцев / ₹1,499"
+    print(f"\n  {DIM}Цепочка: вход → адрес → email → оплата → ссылка  ({label}){RST}")
+    print(f"  {DIM}Карты берутся по установленному порядку (data/card_order.json){RST}")
+
+    # OOS — это брак аккаунта, а не неудачная попытка: такой профиль удаляем и
+    # сразу берём следующий, не расходуя лимит попыток.
+    _tries = _oos = 0
+    for p in cands:
+        if _tries >= _AUTO_BUY_MAX_TRIES:
+            break
+        print(f"\n  {BLD}[{_tries + _oos + 1}]{RST} Профиль {W}{_disp_phone(p['username'])}{RST} "
+              f"{DIM}— запускаю браузер…{RST}")
+        try:
+            ok, msg = asyncio.run(_do_buy_membership(p["path"], months, card=None))
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n  {Y}Отменено.{RST}")
+            pause()
+            return
+        except Exception as e:
+            ok, msg = False, str(e)
+        if ok:
+            print(f"\n  {G}{BLD}✅ {msg}{RST}")
+            pause()
+            return
+        if msg.startswith("OUT_OF_STOCK"):
+            _oos += 1
+            _delete_oos_profile(
+                p["path"], p["username"],
+                "(адрес введён 2 раза)" if "OUT_OF_STOCK_2" in msg else "")
+            print(f"  {Y}↻ Беру следующий профиль…{RST}")
+            continue
+        _tries += 1
+        if any(x in msg.lower() for x in ("не залогинен", "нет входа", "not logged")):
+            _console_offer_restore(p["path"], p["username"])
+        else:
+            print(f"\n  {R}❌ {msg}{RST}")
+        if _tries < _AUTO_BUY_MAX_TRIES:
+            print(f"  {Y}↻ Пробую следующий профиль…{RST}")
+    print(f"\n  {R}❌ Покупка не удалась.{RST}"
+          + (f"  {DIM}Удалено бракованных (OOS): {_oos}{RST}" if _oos else ""))
+    if len(cands) > _tries + _oos:
+        print(f"  {DIM}Остались непробованные профили — запустите ещё раз.{RST}")
+    else:
+        print(f"  {DIM}Нужны новые профили — пункт 1 «Вход на ПК» или 9 «Полный цикл».{RST}")
+    pause()
+
+
 def screen_main():
     """Главное меню."""
     while True:
@@ -20849,6 +21077,10 @@ def screen_main():
         opt("2", "Запуск | Подбор аккаунта TG", G)
         opt("8", "Запуск | Вход с данными", G)
         opt("9", "Запуск | Полный цикл", G)
+        _bd, _bp = _buy_candidates()
+        opt("Б", f"💳 Купить  {DIM}(сам подберёт профиль: адрес → email → оплата → ссылка){RST}"
+                 + (f"  {DIM}[{len(_bd) + len(_bp)} годных]{RST}" if (_bd or _bp)
+                    else f"  {R}[нет профилей]{RST}"), G)
 
         section("ПРОФИЛИ", C)
         opt("3", "Открыть сохранённый профиль Chrome", C)
@@ -20918,6 +21150,8 @@ def screen_main():
                 screen_stop_all()
             elif choice == "9":
                 screen_all_in_one()
+            elif choice == "Б":   # латинскую B не берём — её путают с «В» (выход)
+                screen_auto_buy()
             elif choice in ("П", "P"):
                 screen_check_all_activated()
             elif choice in ("К", "K"):
