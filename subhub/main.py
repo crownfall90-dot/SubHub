@@ -2083,17 +2083,45 @@ class LoginAutomation:
             """, [otp_info["x"], otp_info["y"]])
             if otp_code not in actual:
                 logger.warning(f"[{index}] OTP не совпал с ожидаемым, пробую fill...")
-                await page.evaluate("""
-                    ([x, y, val]) => {
-                        const el = document.elementFromPoint(x, y);
-                        if (!el) return;
-                        const nativeInput = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value');
-                        nativeInput.set.call(el, val);
-                        el.dispatchEvent(new Event('input',  {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
-                    }
-                """, [otp_info["x"], otp_info["y"], otp_code])
+                # elementFromPoint часто отдаёт обёртку поля, а не сам <input>.
+                # Сеттер HTMLInputElement.value на такой обёртке кидал
+                # «TypeError: Illegal invocation» — исключение уходило наверх и
+                # губило весь вход с уже полученным OTP. Ищем настоящее поле и
+                # никогда не роняем фазу входа из-за необязательного fallback.
+                try:
+                    _fill_res = await page.evaluate("""
+                        ([x, y, val]) => {
+                            // Берём ВЕСЬ стек элементов в точке: поле ввода часто
+                            // лежит под оверлеем-соседом, до которого обходом от
+                            // верхнего элемента не добраться.
+                            const stack = document.elementsFromPoint(x, y) || [];
+                            let el = stack.find(e => e instanceof HTMLInputElement
+                                                  || e instanceof HTMLTextAreaElement);
+                            if (!el) {
+                                for (const e of stack) {
+                                    const inner = e.querySelector
+                                        && e.querySelector('input, textarea');
+                                    if (inner) { el = inner; break; }
+                                }
+                            }
+                            if (!el) return stack.length ? 'no_input' : 'no_element';
+                            const proto = (el instanceof HTMLTextAreaElement)
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype;
+                            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                            if (!desc || !desc.set) return 'no_setter';
+                            desc.set.call(el, val);
+                            el.dispatchEvent(new Event('input',  {bubbles: true}));
+                            el.dispatchEvent(new Event('change', {bubbles: true}));
+                            return 'ok';
+                        }
+                    """, [otp_info["x"], otp_info["y"], otp_code])
+                    if _fill_res != "ok":
+                        logger.warning(f"[{index}] fill OTP: {_fill_res} — "
+                                       f"полагаюсь на набранное с клавиатуры")
+                except Exception as _fill_exc:
+                    logger.warning(f"[{index}] fill OTP не сработал ({_fill_exc}) — "
+                                   f"продолжаю с набранным с клавиатуры")
                 await asyncio.sleep(0.1)
             logger.info(f"[{index}] OTP введён в поле для +{phone}")
         await asyncio.sleep(0.2)
