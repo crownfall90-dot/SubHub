@@ -487,8 +487,23 @@ class GrizzlySMSClient:
     async def cancel(self, activation_id: str) -> None:
         """Отменить активацию (вернуть деньги, если ещё не получена SMS)."""
         raw = await self.set_status(activation_id, self.STATUS_CANCEL)
-        if raw != "ACCESS_CANCEL":
-            raise GrizzlySMSError(f"Отмена {activation_id} не удалась: {raw}")
+        if raw == "ACCESS_CANCEL":
+            return
+        if raw == "BAD_ACTION":
+            # Отмена запрещена в текущем статусе — чаще всего SMS уже пришла.
+            # Такую активацию закрывают завершением (6). Возврата не будет (номер
+            # отработал), но она перестаёт висеть до истечения и занимать лимит
+            # параллельных номеров. Если активации и правда нет — 6 тоже не
+            # пройдёт, и мы штатно уйдём в ошибку ниже.
+            raw6 = await self.set_status(activation_id, self.STATUS_COMPLETE)
+            if raw6 in ("ACCESS_ACTIVATION", "ACCESS_CANCEL"):
+                logger.info(f"Активация {activation_id}: отмена запрещена "
+                            f"(SMS получена) — закрыл завершением")
+                return
+            raise GrizzlySMSError(
+                f"Отмена {activation_id} не удалась: BAD_ACTION, "
+                f"завершение тоже не прошло: {raw6}")
+        raise GrizzlySMSError(f"Отмена {activation_id} не удалась: {raw}")
 
     # ── Wait for SMS ─────────────────────────────────────────────────────────
 
