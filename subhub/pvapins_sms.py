@@ -105,6 +105,7 @@ class PVAPinsSMSClient:
         buy_interval_seconds: float = 10.0,
         min_reject_seconds: float = 120.0,
         poll_interval_seconds: float = 3.0,
+        parallel_slots: int = 4,
     ) -> None:
         self.api_key = api_key.strip()
         if not self.api_key or self.api_key.upper().startswith(("YOUR_", "ВАШ_")):
@@ -114,6 +115,10 @@ class PVAPinsSMSClient:
             "Flipkart22", "Flipkart1", "Flipkart", "Flipkart33", "Flipkart2",
         ]) if str(a).strip()]
         self.max_price = max_price
+        # Дефолт ширины волны для get_number_parallel() при вызове через
+        # FailoverSMSClient (см. sms_failover.py) — сколько операторов
+        # проверять с самого первого круга, а не расширяться по одному.
+        self.parallel_slots = max(1, int(parallel_slots or 1))
         # Интервал между бронями. Жёсткий пол был 10с (6 номеров/мин) и полностью
         # съедал выигрыш от параллельного поиска; берём значение из config.yaml,
         # не опускаясь ниже 2с — при 429 всё равно включается общий бэкофф.
@@ -439,7 +444,7 @@ class PVAPinsSMSClient:
                         self._bought_at[aid] = time.monotonic()
                         self._costs[aid] = cost
                         logger.warning(f"PVAPins {app} ${cost} > max_price ${cap} — reject later")
-                        asyncio.create_task(self._delayed_reject(aid))
+                        self._schedule_delayed_reject(aid)
                         continue
                     aid = self.make_aid(app, self.country, number)
                     self._bought_at[aid] = time.monotonic()
@@ -518,6 +523,17 @@ class PVAPinsSMSClient:
             cost = 0.0
         _ = app
         return number, cost
+
+    def _schedule_delayed_reject(self, activation_id: str) -> None:
+        """Планирует _delayed_reject на persistent bg loop (grizzly._get_bg_loop),
+        а не на asyncio.create_task: тот вешает задачу на loop текущего
+        asyncio.run() автоматизации профиля — как только тот заканчивается,
+        loop закрывается и неотправленный reject молча исчезает, номер
+        остаётся висеть в заморозке до автоосвобождения PVAPins (20 мин)."""
+        from grizzly import _get_bg_loop
+        asyncio.run_coroutine_threadsafe(
+            self._delayed_reject(activation_id), _get_bg_loop()
+        )
 
     async def _delayed_reject(self, activation_id: str) -> None:
         """Фоновая отмена после кулдауна (cancel() больше не спит сам).
@@ -655,7 +671,7 @@ class PVAPinsSMSClient:
                 if isinstance(res, tuple) and res is not winner:
                     aid = res[0]
                     logger.debug(f"PVAPins: лишний номер {aid} — отменяю")
-                    asyncio.create_task(self._delayed_reject(aid))
+                    self._schedule_delayed_reject(aid)
         if winner is not None:
             return winner
         if isinstance(last_err, InsufficientBalanceError):
@@ -679,7 +695,7 @@ class PVAPinsSMSClient:
         if cap is not None and rate > float(cap) + 1e-9:
             # Подстраховка: прайс разошёлся с фактической ценой — не берём.
             logger.warning(f"PVAPins {app} ${rate} > лимит ${cap} — отменяю")
-            asyncio.create_task(self._delayed_reject(aid))
+            self._schedule_delayed_reject(aid)
             raise NumberUnavailableError(f"PVAPins {app}: дороже лимита")
         phone = number if number.startswith("91") else f"91{number}"
         logger.info(f"PVAPins номер: +{phone} | app={app} | ${rate}")

@@ -177,11 +177,15 @@ class FailoverSMSClient:
                 logger.warning(f"SMS failover Grizzly → PVAPins: {exc}")
 
         if use_fallback:
+            # Раньше здесь стояла жёсткая 1 — расширяющийся круг рос по одному
+            # оператору за раунд, хотя _buy_gate (pvapins_sms.py) и так разносит
+            # реальные запросы во времени; ширина волны это не ускоряет, только
+            # мешает первому же кругу опросить сразу нескольких операторов.
             return await self.fallback.get_number_parallel(
                 service=service,
                 country=country,
                 max_price=max_price,
-                parallel_slots=1,
+                parallel_slots=self.fallback.parallel_slots,
                 poll_delay=poll_delay,
                 timeout=timeout,
                 price_tiers=price_tiers,
@@ -316,6 +320,7 @@ def build_sms_client(
             buy_interval_seconds=float(p_cfg.get("buy_interval_seconds") or 3),
             min_reject_seconds=float(p_cfg.get("min_reject_seconds") or 120),
             poll_interval_seconds=float(p_cfg.get("poll_interval_seconds") or 3),
+            parallel_slots=int(p_cfg.get("parallel_slots") or 4),
         )
 
     # Режим «только X», но ключа нет — не молча падаем на другой
