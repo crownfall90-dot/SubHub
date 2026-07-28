@@ -2462,6 +2462,17 @@ _PROFILE_CACHE_DIRS = (
 )
 
 
+# Аргументы Chrome, не дающие профилю разрастаться. Выделены отдельно, чтобы
+# бенчмарк мог запустить браузер и с ними, и без них (scripts/bench_slim_args.py).
+_PROFILE_SLIM_ARGS = (
+    "--disable-component-update",      # не качать Safe Browsing / ML-модели
+    "--disable-breakpad",              # не писать Crashpad-дампы
+    "--disable-gpu-shader-disk-cache",
+    "--disk-cache-size=1048576",
+    "--media-cache-size=1048576",
+)
+
+
 def _dir_size(path: Path) -> int:
     """Суммарный размер каталога в байтах (0 — если нет или недоступен)."""
     total = 0
@@ -7117,6 +7128,12 @@ def _browser_launch_kw(headless: bool = False, use_bundled_chromium: bool = Fals
         "--disable-session-crashed-bubble",
         "--disable-infobars",
         f"--window-size={vp['width']},{vp['height'] + 74}",
+        # ── Чтобы профиль не разрастался (см. _PROFILE_CACHE_DIRS) ────────────
+        # Скачиваемые компоненты и ML-модели давали до 120 МБ на профиль
+        # (Safe Browsing, optimization_guide, WasmTtsEngine) и нашим сценариям
+        # не нужны. Кэш ограничен 1 МБ: странице Flipkart он не помогает, мы
+        # каждый раз ходим по свежей сессии.
+        *_PROFILE_SLIM_ARGS,
     ]
     kw: dict = {
         "headless": headless,
