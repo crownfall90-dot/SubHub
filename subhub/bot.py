@@ -45,6 +45,11 @@ except ImportError:
 R = "\033[91m"; G = "\033[92m"; Y = "\033[93m"
 DIM = "\033[90m"; BLD = "\033[1m"; RST = "\033[0m"
 
+def escape_html(t: str) -> str:
+    """Экранирование для Telegram parse_mode=HTML (было 13 копий по файлу)."""
+    return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 # ── Ленивый доступ к menu.py ──────────────────────────────────────────────────
 def _m(name):
     import sys as _s, importlib as _i
@@ -307,11 +312,7 @@ def _menu_tg_bot_thread() -> None:
                     "normal": "🖥 Запуск | Вход на ПК (обычный)",
                     "headless": "🌑 Запуск | Вход на ПК (фоновый)"}.get(m, m)
 
-        def _disp_phone(ph: str) -> str:
-            u = str(ph).strip()
-            if len(u) == 12 and u.startswith("91") and u.isdigit():
-                return f"+91 {u[2:]}"
-            return f"+91 {u}"
+        _disp_phone = _m("_disp_phone")
 
         def _cnt_profiles():
             avail  = sum(1 for p in DONE_PROFILES_DIR.glob("profile_*")
@@ -889,23 +890,10 @@ def _menu_tg_bot_thread() -> None:
         # ── Порядок карт ──────────────────────────────────────────────────────
         _CARD_ORDER_FILE = ROOT / "data" / "card_order.json"
 
-        def _load_card_order():
-            try:
-                if _CARD_ORDER_FILE.exists():
-                    v = json.loads(_CARD_ORDER_FILE.read_text(encoding="utf-8"))
-                    if isinstance(v, list):
-                        return v
-            except Exception:
-                pass
-            return []
-
-        def _save_card_order(order):
-            try:
-                _CARD_ORDER_FILE.parent.mkdir(parents=True, exist_ok=True)
-                _CARD_ORDER_FILE.write_text(
-                    json.dumps(order, ensure_ascii=False), encoding="utf-8")
-            except Exception:
-                pass
+        # Порядок карт живёт в menu.py: там запись атомарная, здесь была
+        # обычная — при обрыве процесса файл мог остаться обрезанным.
+        _load_card_order = _m("_load_card_order")
+        _save_card_order = _m("_save_card_order")
 
         def _card_label(c: dict, n: int) -> str:
             name = (c.get("nickname") or c.get("name") or "Карта")[:20]
@@ -1516,8 +1504,6 @@ def _menu_tg_bot_thread() -> None:
                 vt  = (result.get("valid_till") or "") if isinstance(result, dict) else ""
                 err = (result.get("error") or "")     if isinstance(result, dict) else str(result)
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 err_safe = escape_html(err)
 
                 if st == "activate_now":
@@ -1566,8 +1552,6 @@ def _menu_tg_bot_thread() -> None:
                               "callback_data": "go:main"}],
                         ]})
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка проверки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
@@ -1640,8 +1624,6 @@ def _menu_tg_bot_thread() -> None:
             _bg_ops[phone] = "running"
             await _send(cid, f"🔄 Обновляю ссылку для <code>{phone}</code>...", parse_mode="HTML")
 
-            def escape_html(t: str) -> str:
-                return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
             try:
                 pp = _find_profile(phone)
@@ -1765,8 +1747,6 @@ def _menu_tg_bot_thread() -> None:
                     _m("_do_fill_address")(pp, addr)))
                 ok, msg2 = _unpack(raw)
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 msg2_safe = escape_html(msg2)
                 addr_str = escape_html(f"{addr.get('pincode','')} {addr.get('city','')}")
 
@@ -1783,8 +1763,6 @@ def _menu_tg_bot_thread() -> None:
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {msg2_safe}", parse_mode="HTML")
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка адреса <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
@@ -1824,8 +1802,6 @@ def _menu_tg_bot_thread() -> None:
                     _m("_do_fill_address")(pp, addr, stop_at_payment=True)))
                 ok, msg2 = _unpack(raw)
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
                 if ok:
                     addr_str = escape_html(f"{addr.get('pincode','')} {addr.get('city','')}")
@@ -1842,8 +1818,6 @@ def _menu_tg_bot_thread() -> None:
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b>: {escape_html(msg2)}", parse_mode="HTML")
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
@@ -1921,8 +1895,6 @@ def _menu_tg_bot_thread() -> None:
                 caption = f"🍪 Файл кук {phone_code} ({len(cookies_out)} шт.)"
                 fname = f"cookies_{phone}.json"
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
                 safe_json = escape_html(cookies_json_compact)
                 _hdr = f"Куки {phone} ({len(cookies_out)} шт.)"
@@ -1944,8 +1916,6 @@ def _menu_tg_bot_thread() -> None:
                 await client.post(f"{api}/sendMessage",
                                   json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка куки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
@@ -1973,8 +1943,6 @@ def _menu_tg_bot_thread() -> None:
                 caption = f"🍪 Файл кук {phone_code} ({len(cookies_out)} шт.)"
                 fname = f"cookies_{phone}.json"
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
                 safe_json = escape_html(cookies_json_compact)
                 _hdr = f"Куки {phone} ({len(cookies_out)} шт.)"
@@ -1996,8 +1964,6 @@ def _menu_tg_bot_thread() -> None:
                 await client.post(f"{api}/sendMessage",
                                   json={"chat_id": cid, "text": text_msg, "parse_mode": "HTML"})
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка куки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
 
         async def _bg_buy(cid, phone, months):
@@ -2046,8 +2012,6 @@ def _menu_tg_bot_thread() -> None:
                     _m("_do_buy_membership")(pp, months, None)))
                 ok, msg_r = _unpack(raw)
 
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 msg_r_safe = escape_html(msg_r)
 
                 if ok:
@@ -2062,8 +2026,6 @@ def _menu_tg_bot_thread() -> None:
                 else:
                     await _send(cid, f"⚠️ <b>{phone}</b> — не куплено\n<i>{msg_r_safe or 'неизвестно'}</i>", parse_mode="HTML")
             except Exception as e:
-                def escape_html(t: str) -> str:
-                    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 await _send(cid, f"❌ Ошибка покупки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
             finally:
                 _bg_ops.pop(phone, None)
