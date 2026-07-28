@@ -47,7 +47,7 @@ from gift_cards import (                   # noqa: E402  (гифт-карты: �
     GIFT_CARDS_FILE, GIFT_USED_FILE, GIFT_DENOMS,
     _load_gift_cards, _save_gift_cards, _parse_gift_cards, _gift_bytes_to_text,
     _add_gift_cards_from_text, _gift_balance, _select_gift_cards,
-    _gift_shortage_report, _load_gift_used, _mark_gift_used,
+    _gift_shortage_report, _load_gift_used, _mark_gift_used, _mask_gift,
 )
 from common import (                      # noqa: E402  (общие помощники)
     MSK,
@@ -66,7 +66,155 @@ except Exception:
     _PKG = Path(__file__).resolve().parent
     _HERE = _PKG.parent  # repo root (config/data/profiles)
 
+
+# ── VPN-расширения удалены ────────────────────────────────────────────────────
+# Раньше здесь жила подсистема VeePN/VPNLY (~3400 строк): установка расширения
+# в профиль, клики по попапу, выбор страны, переподключение. Теперь VPN держит
+# сам пользователь на ПК, а Chrome ходит напрямую.
+# Заглушки ниже возвращают ровно то, что подсистема отдавала при выключенном
+# расширении (config.yaml: vpn.enabled=false) — то есть живое поведение не
+# меняется. Они удаляются вместе с вызывающими ветками следующим шагом.
+
+
+# Константы, которые ещё читают оставшиеся ветки (уйдут вместе с ними).
 _VPN_PING_PROFILE_DIR = _HERE / "data" / "_vpn_ping_profile"
+_VPN_DEFAULT_COUNTRY  = "us"
+_VPN_SITE_HOSTS = (
+    "flipkart.com", "google.com", "google.co.", "accounts.google", "gmail.com",
+)
+
+def _vpn_enabled() -> bool:
+    return False
+
+
+def _vpn_extension_dir(*_a, **_k) -> None:
+    return None
+
+
+def _vpn_is_veepn() -> bool:
+    return False
+
+
+def _vpn_ext_id_for_install() -> None:
+    return None
+
+
+def _vpn_free_country_codes_static() -> list:
+    return []
+
+
+def _vpn_normalize_cc(cc: str) -> str:
+    return str(cc or "").lower()
+
+
+def _vpn_popup_rel_paths() -> list:
+    return []
+
+
+def _veepn_popup_rel_paths() -> list:
+    return []
+
+
+def _profile_has_vpn_extension(*_a, **_k) -> bool:
+    return False
+
+
+def _register_vpn_extension_prefs(*_a, **_k) -> None:
+    return None
+
+
+def _set_vpn_bg_status(*_a, **_k) -> None:
+    return None
+
+
+def _is_vpn_junk_url(_url: str) -> bool:
+    return False
+
+
+def _win_click_veepn_row_near_puzzle(*_a, **_k) -> bool:
+    return False
+
+
+def _vpn_browser_launch_kw(profile_path=None) -> dict:
+    return _browser_launch_kw(headless=False, profile_path=profile_path,
+                              background_install=True, use_vpn=False)
+
+
+async def _vpn_ext_id(*_a, **_k) -> None:
+    return None
+
+
+async def _vpn_chrome_cooldown(*_a, **_k) -> None:
+    return None
+
+
+async def _close_vpn_extension_tabs(*_a, **_k) -> None:
+    return None
+
+
+async def _dismiss_all_veepn_welcome(*_a, **_k) -> None:
+    return None
+
+
+async def _block_vpn_junk_routes(*_a, **_k) -> None:
+    return None
+
+
+async def _vpn_disconnect(*_a, **_k) -> bool:
+    return True
+
+
+async def _vpn_is_proxy_active(*_a, **_k) -> bool:
+    return False
+
+
+async def _ensure_vpn_connected(*_a, **_k) -> bool:
+    return False
+
+
+async def _vpn_connect_on_use(*_a, **_k) -> bool:
+    return True
+
+
+async def _vpn_connect_for_profile(*_a, **_k) -> bool:
+    return True
+
+
+async def _vpn_connect_country(*_a, **_k) -> bool:
+    return False
+
+
+async def _vpn_fresh_connect_usa(*_a, **_k) -> bool:
+    return False
+
+
+async def _flipkart_vpn_country_queue(*_a, **_k) -> list:
+    return []
+
+
+async def _veepn_connected_country_hint(*_a, **_k) -> str:
+    return ""
+
+
+async def _veepn_connect_country_prefer_api(*_a, **_k) -> bool:
+    return False
+
+
+async def _veepn_ui_reconnect_country(*_a, **_k) -> bool:
+    return False
+
+
+async def _veepn_popup_ui_ready(*_a, **_k) -> bool:
+    return False
+
+
+async def _veepn_popup_is_blank(*_a, **_k) -> bool:
+    return False
+
+
+async def _veepn_recover_blank_popup(*_a, **_k):
+    return None
+
 _OPEN_CHROME_LOCK = threading.Lock()
 _OPEN_CHROME_SESSIONS: dict[str, threading.Thread] = {}
 _AUTOMATION_LOG     = _HERE / "data" / "automation.log"
@@ -1377,36 +1525,6 @@ def _browser_label(exe: str | None) -> str:
     return Path(exe).name
 
 
-def _connect_vpn_over_cdp(port: int, target_url: str | None = None) -> bool:
-    """Подключается к уже запущенному (subprocess) браузеру по CDP, включает VPN,
-    затем при необходимости открывает target_url. Браузер остаётся открытым."""
-    async def _run() -> bool:
-        from playwright.async_api import async_playwright as _ap
-        async with _ap() as pw:
-            br = None
-            for _ in range(30):
-                try:
-                    br = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-                    break
-                except Exception:
-                    await asyncio.sleep(0.5)
-            if not br or not br.contexts:
-                return False
-            ctx = br.contexts[0]
-            ok = await _ensure_vpn_connected(ctx)
-            if ok and target_url:
-                try:
-                    await _close_junk_tabs(ctx)
-                    page = await _main_work_page(ctx)
-                    await page.goto(target_url, wait_until="domcontentloaded", timeout=45_000)
-                except Exception:
-                    pass
-            # НЕ вызываем br.close() — иначе закроется весь браузер.
-            return ok
-    try:
-        return asyncio.run(_run())
-    except Exception:
-        return False
 
 
 def open_chrome(profile_path: Path, url: str | None = None) -> bool:
@@ -1587,54 +1705,10 @@ _MENU_USER_AGENTS = [
 ]
 
 
-def _vpn_provider() -> str:
-    """Провайдер VPN из config.yaml: veepn (по умолчанию) или vpnly."""
-    try:
-        import yaml as _yaml
-        cfg_path = _HERE / "config.yaml"
-        if cfg_path.exists():
-            with open(cfg_path, encoding="utf-8") as fh:
-                cfg = _yaml.safe_load(fh) or {}
-            p = (cfg.get("vpn") or {}).get("provider", "veepn")
-            return str(p).strip().lower()
-    except Exception:
-        pass
-    return "veepn"
 
 
-def _vpn_enabled() -> bool:
-    """VPN-расширения удалены из проекта — всегда False.
-
-    Сеть: прокси (тумблер в Настройках) или личный VPN на ПК (напрямую).
-    """
-    return False
 
 
-def _set_vpn_enabled(enabled: bool) -> bool:
-    """Пишет vpn.enabled в config.yaml точечно (сохраняет комментарии вокруг блока)."""
-    cfg_path = _HERE / "config.yaml"
-    try:
-        text = cfg_path.read_text(encoding="utf-8")
-    except Exception:
-        return False
-    m = re.search(r"(?m)^(vpn:\s*\n)(.*?)(?=^[a-zA-Z_][\w]*:|\Z)", text, re.S)
-    if not m:
-        return False
-    head, body = m.group(1), m.group(2)
-    new_body, n = re.subn(
-        r"(?m)^([ \t]*enabled:\s*)(true|false|True|False)\s*$",
-        rf"\g<1>{'true' if enabled else 'false'}",
-        body,
-        count=1,
-    )
-    if n == 0:
-        new_body = f"  enabled: {'true' if enabled else 'false'}\n" + body
-    new_text = text[: m.start()] + head + new_body + text[m.end() :]
-    try:
-        cfg_path.write_text(new_text, encoding="utf-8")
-        return True
-    except Exception:
-        return False
 
 
 def _resolve_extension_base(base: Path) -> str | None:
@@ -1649,80 +1723,16 @@ def _resolve_extension_base(base: Path) -> str | None:
     return None
 
 
-def _vpn_extension_dir(*, ignore_toggle: bool = False) -> str | None:
-    """VPN-расширения удалены из проекта — всегда None.
-
-    Весь VeepN/VPNLY-код в menu.py остаётся мёртвым (не вызывается):
-    сеть — прокси или личный VPN на ПК (напрямую).
-    """
-    return None
 
 
-def _vpn_is_veepn() -> bool:
-    ext = _vpn_extension_dir()
-    if not ext:
-        return _vpn_provider() != "vpnly"
-    try:
-        m = json.loads((Path(ext) / "manifest.json").read_text(encoding="utf-8"))
-        blob = f"{m.get('name', '')} {m.get('homepage_url', '')} {ext}".lower()
-        return "veepn" in blob
-    except Exception:
-        return _vpn_provider() != "vpnly"
 
 
-def _vpn_ext_id_from_path(ext_path: str | None = None) -> str | None:
-    """ID unpacked-расширения без manifest.key (VeepN) — хеш пути, как в Chrome."""
-    try:
-        import hashlib as _hl
-        path = str(Path(ext_path or _vpn_extension_dir() or "").resolve())
-        if not path or path.endswith("."):
-            return None
-        h = _hl.sha256(path.encode("utf-16-le")).hexdigest()[:32]
-        return "".join(chr(ord("a") + int(c, 16)) for c in h)
-    except Exception:
-        return None
 
 
-def _vpn_ext_id_for_install() -> str | None:
-    """ID для копирования расширения в профиль."""
-    if _vpn_is_veepn():
-        return _vpn_ext_id_from_path()
-    return _vpn_ext_id_from_key()
 
 
-def _vpn_ext_id_from_key() -> str | None:
-    """Детерминированный ID расширения из поля manifest.key (как считает Chrome:
-    sha256 от DER публичного ключа, первые 16 байт → буквы a-p). Работает без
-    ожидания service worker (в MV3 он ленивый и может не стартовать сам)."""
-    try:
-        _ext = _vpn_extension_dir()
-        if not _ext:
-            return None
-        import json as _j, base64 as _b64, hashlib as _hl
-        m = _j.loads((Path(_ext) / "manifest.json").read_text(encoding="utf-8"))
-        key = m.get("key")
-        if not key:
-            return None
-        der = _b64.b64decode(key)
-        h = _hl.sha256(der).hexdigest()[:32]
-        return "".join(chr(ord("a") + int(c, 16)) for c in h)
-    except Exception:
-        return None
 
 
-def _profile_has_vpn_extension(profile_path: Path | str | None) -> bool:
-    """True, если VPN-расширение уже сохранено в профиле Chrome."""
-    eid = _vpn_ext_id_for_install()
-    if not eid or not profile_path:
-        return False
-    p = Path(profile_path)
-    ext_root = p / "Default" / "Extensions" / eid
-    if not ext_root.is_dir():
-        return False
-    try:
-        return any(ext_root.iterdir())
-    except Exception:
-        return False
 
 
 def _needs_load_extension(profile_path: Path | str | None) -> bool:
@@ -1735,117 +1745,26 @@ def _needs_load_extension(profile_path: Path | str | None) -> bool:
 
 
 # Бесплатные серверы из vpn_extension/background.js (без de-hub — дубликат DE).
-_VPN_FREE_SERVERS: list[dict] = [
-    {
-        "host": "ge-hub.freeruproxy.ink", "port": 443, "proto": "https",
-        "user": "openproxy", "pass": "7a379d234cd89887",
-        "uuid": "a96a6e7c-7156-4f27-92f5-a9c4668fea36",
-        "city": {"name": "Dusseldorf", "country": {"code": "de", "name": "Germany", "continent": "eu"}},
-    },
-    {
-        "host": "us-hub.freeruproxy.ink", "port": 443, "proto": "https",
-        "user": "openproxy", "pass": "685ce62bfdf0d359",
-        "uuid": "6bb572d9-3080-49c8-b193-2124973bbf31",
-        "city": {"name": "Chicago", "country": {"code": "us", "name": "United States of America", "continent": "us"}},
-    },
-    {
-        "host": "fr-hub.freeruproxy.ink", "port": 443, "proto": "https",
-        "user": "openproxy", "pass": "abc21f3a79de33dc",
-        "uuid": "b30d6e4e-c9af-4485-b895-e9998718a60a",
-        "city": {"name": "Paris", "country": {"code": "fr", "name": "France", "continent": "eu"}},
-    },
-    {
-        "host": "nl-hub.freeruproxy.ink", "port": 443, "proto": "https",
-        "user": "openproxy", "pass": "2ad5c3cece9f19f6",
-        "uuid": "3644e630-067b-4885-a510-02eeda1d0172",
-        "city": {"name": "Amsterdam", "country": {"code": "nl", "name": "Netherlands", "continent": "eu"}},
-    },
-]
 
 # Порядок стран VPN: USA → остальные бесплатные из списка VeepN.
-_VPN_DEFAULT_COUNTRY = "us"
-_VPN_FLIPKART_COUNTRY_ORDER = (
-    _VPN_DEFAULT_COUNTRY, "ca", "fr", "de", "nl", "gb", "sg", "ru",
-)
 # обратная совместимость
-_VPNLY_FLIPKART_COUNTRY_ORDER = _VPN_FLIPKART_COUNTRY_ORDER
 # VPN только для Flipkart / Google (не для фоновых вкладок и простоя)
-_VPN_SITE_HOSTS = (
-    "flipkart.com",
-    "google.com",
-    "google.co.",
-    "accounts.google",
-    "gmail.com",
-)
 
 
 def _url_needs_vpn(url: str) -> bool:
     u = (url or "").lower()
     return any(h in u for h in _VPN_SITE_HOSTS)
 
-_VEEPN_CC_PATTERNS: dict[str, tuple[str, str]] = {
-    "us": ("US", r"united states|oregon|virginia|chicago|new york|los angeles|miami|dallas|america"),
-    "ca": ("CA", r"canada|toronto|montreal|vancouver|ottawa"),
-    "fr": ("FR", r"france|paris"),
-    "de": ("DE", r"germany|dusseldorf|frankfurt|berlin|munich"),
-    "nl": ("NL", r"netherlands|amsterdam"),
-    "gb": ("GB", r"united kingdom|\buk\b|london|britain|england"),
-    "uk": ("GB", r"united kingdom|\buk\b|london|britain|england"),
-    "sg": ("SG", r"singapore"),
-    "ru": ("RU", r"russia|saint petersburg|st\.?\s*petersburg|москва|russia"),
-}
 
 # UI-имена бесплатных локаций VeepN (скролл по списку «Бесплатные локации»)
-_VEEPN_UI_COUNTRY_NAMES: dict[str, list[str]] = {
-    "us": ["United States", "USA", "United States of America", "США"],
-    "ca": ["Canada", "Канада"],
-    "fr": ["France", "Франция"],
-    "de": ["Germany", "Deutschland", "Германия"],
-    "nl": ["Netherlands", "Нидерланды"],
-    "gb": ["United Kingdom", "UK", "Britain", "Великобритания"],
-    "uk": ["United Kingdom", "UK", "Britain"],
-    "sg": ["Singapore", "Сингапур"],
-    "ru": ["Russia", "Russian Federation", "Россия"],
-}
-_VEEPN_UI_US_STATES = ("Oregon", "Virginia", "New York", "Chicago", "Los Angeles", "Miami", "Dallas")
 
 
-def _vpnly_country_code(server: dict) -> str:
-    return str(
-        (server.get("city") or {}).get("country", {}).get("code") or ""
-    ).lower()
 
 
-def _vpn_normalize_cc(cc: str) -> str:
-    c = (cc or "").lower().strip()
-    if c == "uk":
-        return "gb"
-    return c
 
 
-def _vpn_free_country_codes_static() -> list[str]:
-    """USA → CA → остальные: сначала фиксированный порядок, потом VPNLY free servers."""
-    out: list[str] = []
-    for cc in _VPN_FLIPKART_COUNTRY_ORDER:
-        n = _vpn_normalize_cc(cc)
-        if n and n not in out:
-            out.append(n)
-    for s in _VPN_FREE_SERVERS:
-        n = _vpn_normalize_cc(_vpnly_country_code(s))
-        if n and n not in out:
-            out.append(n)
-    return out
 
 
-def _vpnly_servers_for_flipkart(*, exclude: frozenset[str] = frozenset()) -> list[dict]:
-    order = {cc: i for i, cc in enumerate(_vpn_free_country_codes_static())}
-    excl = {_vpn_normalize_cc(c) for c in exclude}
-    servers = [
-        s for s in _VPN_FREE_SERVERS
-        if _vpn_normalize_cc(_vpnly_country_code(s)) not in excl
-    ]
-    servers.sort(key=lambda s: order.get(_vpn_normalize_cc(_vpnly_country_code(s)), 99))
-    return servers
 
 
 def _iter_profile_dirs() -> list[Path]:
@@ -1860,39 +1779,6 @@ def _iter_profile_dirs() -> list[Path]:
     return out
 
 
-async def _close_vpn_extension_tabs(context, eid: str | None = None) -> None:
-    """Закрыть вкладки popup/offscreen VPN — не показывать popup вместо Flipkart."""
-    if not eid:
-        eid = await _vpn_ext_id(context) or _vpn_ext_id_for_install() or _vpn_ext_id_from_key()
-    prefix = f"chrome-extension://{eid}" if eid else "chrome-extension://"
-
-    def _is_ext_tab(url: str) -> bool:
-        u = (url or "").lower()
-        if _is_vpn_junk_url(u):
-            return True
-        if u.startswith("chrome-extension://"):
-            if not eid:
-                return True
-            return eid in u or u.startswith(prefix)
-        return False
-
-    ext_pages = [p for p in context.pages if _is_ext_tab(p.url or "")]
-    work_pages = [p for p in context.pages if not _is_ext_tab(p.url or "")]
-    if ext_pages and not work_pages:
-        with contextlib.suppress(Exception):
-            await context.new_page()
-
-    for p in list(context.pages):
-        try:
-            u = p.url or ""
-            if not _is_ext_tab(u):
-                continue
-            if len(context.pages) > 1:
-                await p.close()
-            elif _is_vpn_junk_url(u):
-                await p.goto("about:blank", wait_until="domcontentloaded", timeout=10_000)
-        except Exception:
-            pass
 
 
 async def _close_extension_startup_tabs(context) -> None:
@@ -2007,47 +1893,6 @@ async def _bg_install_extensions_on_profiles(browser_only: bool = False) -> int:
     return installed
 
 
-async def _bg_vpn_warmup_ping() -> bool:
-    """Фон: ping-профиль — расширение + подключение VPN (скрытое окно)."""
-    if not _vpn_extension_dir():
-        return False
-    _VPN_PING_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    profile = _VPN_PING_PROFILE_DIR
-    if not _profile_has_vpn_extension(profile):
-        await _bg_install_extensions_on_profiles()
-    _set_vpn_bg_status("warming", "Проверка VPN (фон)…")
-    try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as pw:
-            kw = _vpn_browser_launch_kw(profile)
-            with _chrome_window_hider():
-                ctx = await pw.chromium.launch_persistent_context(
-                    str(profile.resolve()), **kw)
-            try:
-                ok = await _vpn_connect_on_use(ctx, profile)
-                scan = scan_profiles_extension_status()
-                if ok:
-                    _set_vpn_bg_status(
-                        "ready",
-                        f"VPN OK · расширение {scan['with_ext']}/{scan['total']} проф.",
-                    )
-                else:
-                    _set_vpn_bg_status(
-                        "error",
-                        f"VPN не подключился · расширение {scan['with_ext']}/{scan['total']}",
-                    )
-                return ok
-            finally:
-                if ctx:
-                    with contextlib.suppress(Exception):
-                        await _vpn_disconnect(ctx)
-                    try:
-                        await ctx.close()
-                    finally:
-                        _note_chromium_closed()
-    except Exception as exc:
-        _set_vpn_bg_status("error", f"VPN: {str(exc)[:80]}")
-        return False
 
 
 def _profile_is_successful_done(profile_path: Path | str | None) -> bool:
@@ -2204,138 +2049,10 @@ def _profile_allows_vpn(
     return _profile_is_successful_done(pp)
 
 
-def _veepn_reset_session_js() -> str:
-    """Сброс таймера VeepN (connectedAt=0) + выкл auto-connect в storage."""
-    return """async () => {
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
-        const msg = async (type, data = {}) => {
-            try { return await chrome.runtime.sendMessage({ type, data }); }
-            catch (e) { return { ok: false, error: String(e) }; }
-        };
-        try {
-            await msg('set-auto-connect-setting', { status: false });
-        } catch (e) {}
-        // Официальный disconnect сбрасывает connectedAt внутри расширения
-        await msg('disconnect', {});
-        await sleep(800);
-        await msg('disconnect', {});
-        await sleep(400);
-        // Явный сброс таймера (на случай если disconnect не дошёл)
-        try {
-            const all = await chrome.storage.local.get(['connection']);
-            const conn = (all.connection && typeof all.connection === 'object')
-                ? all.connection : {};
-            await chrome.storage.local.set({
-                connection: {
-                    ...conn,
-                    connectedAt: 0,
-                    useAutoConnect: false,
-                },
-            });
-        } catch (e) {}
-        try {
-            await chrome.proxy.settings.clear({ scope: 'regular' });
-        } catch (e) {}
-        await sleep(300);
-        try {
-            const mode = await chrome.proxy.settings.get({});
-            const m = (mode?.value?.mode) || 'direct';
-            return !m || m === 'direct' || m === 'system' || m === 'auto_detect';
-        } catch (e) { return true; }
-    }"""
 
 
-async def _veepn_eval_js(context, eid: str, js: str):
-    """Выполнить JS в service worker VeepN (предпочтительно) или на вкладке расширения."""
-    sw = await _wait_vpn_service_worker(context, eid, timeout=10.0)
-    if sw:
-        with contextlib.suppress(Exception):
-            return await sw.evaluate(js)
-    for p in list(context.pages):
-        u = (p.url or "").lower()
-        if u.startswith(f"chrome-extension://{eid.lower()}"):
-            with contextlib.suppress(Exception):
-                return await p.evaluate(js)
-    # Последний шанс: коротко открыть background/offscreen-подобную страницу расширения
-    page = None
-    try:
-        page = await context.new_page()
-        await page.goto(
-            f"chrome-extension://{eid}/background.html",
-            wait_until="domcontentloaded", timeout=8_000,
-        )
-        return await page.evaluate(js)
-    except Exception:
-        with contextlib.suppress(Exception):
-            if page:
-                await page.goto(
-                    f"chrome-extension://{eid}/src/popup/popup.html",
-                    wait_until="domcontentloaded", timeout=8_000,
-                )
-                return await page.evaluate(js)
-        return None
-    finally:
-        if page:
-            with contextlib.suppress(Exception):
-                await page.close()
 
 
-async def _vpn_disconnect(context) -> bool:
-    """Отключает VeepN/VPNLY в расширении (перед закрытием Chrome / сменой страны)."""
-    if not _vpn_extension_dir(ignore_toggle=True) or context is None:
-        return True
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        return False
-
-    disconnected = False
-    if _vpn_is_veepn():
-        print(f"  {DIM}VeepN: выключаю перед закрытием…{RST}")
-        raw = await _veepn_eval_js(context, eid, _veepn_reset_session_js())
-        disconnected = bool(raw)
-        with contextlib.suppress(Exception):
-            await _veepn_clear_autoconnect(context, eid)
-        # UI-питание, если API не снял proxy
-        still = False
-        with contextlib.suppress(Exception):
-            still = await _vpn_is_proxy_active(context, eid)
-        if still or not disconnected:
-            with contextlib.suppress(Exception):
-                pop = await _open_extension_popup_page(
-                    context, eid, _veepn_popup_rel_paths(),
-                )
-                if pop:
-                    await pop.bring_to_front()
-                    await pop.wait_for_timeout(400)
-                    if await _veepn_popup_is_blank(pop):
-                        pop = await _veepn_recover_blank_popup(
-                            context, eid, blank_page=pop,
-                        ) or pop
-                    st = await _veepn_connection_label(pop)
-                    if st == "on":
-                        await _veepn_ui_click_power(pop)
-                        await _veepn_wait_until_off(pop, seconds=12.0)
-                    with contextlib.suppress(Exception):
-                        disconnected = not await _vpn_is_proxy_active(context, eid)
-        await _close_vpn_extension_tabs(context, eid)
-        if not disconnected:
-            with contextlib.suppress(Exception):
-                disconnected = not await _vpn_is_proxy_active(context, eid)
-        print(f"  {DIM}✔ VeepN выкл{RST}" if disconnected else f"  {DIM}VeepN: выкл (best-effort){RST}")
-        return True  # не блокируем закрытие Chrome
-
-    _js = """async () => {
-        try {
-            await chrome.runtime.sendMessage({type: 'disconnect', data: {}});
-            await new Promise(r => setTimeout(r, 900));
-            const mode = await chrome.proxy.settings.get({});
-            const m = (mode?.value?.mode) || 'direct';
-            return !m || m === 'direct' || m === 'system';
-        } catch (e) { return false; }
-    }"""
-    raw = await _veepn_eval_js(context, eid, _js)
-    disconnected = bool(raw)
-    return disconnected
 
 
 async def _close_browser_session(
@@ -2370,353 +2087,30 @@ async def _close_browser_session(
 # другой (иконка пазла не находится, клик уходит не в то окно). Лок пропускает
 # к экрану только один поток за раз; поиск номеров, ввод и OTP остаются
 # параллельными, т.к. выполняются вне этих функций.
-_veepn_screen_locks: "dict" = {}   # loop -> asyncio.Lock
-_veepn_screen_owner: "dict" = {}   # loop -> задача-владелец
 
 
-class _VeepnScreenGuard:
-    """Реентрантный per-loop лок экранной активации VeepN.
-
-    В пределах одной задачи вложенный вход — no-op (connect → внутри reconnect
-    не блокирует сам себя); между разными задачами — строгая очередь.
-    """
-
-    def __init__(self, loop) -> None:
-        self._loop = loop
-        self._held = False
-
-    async def __aenter__(self):
-        lk = _veepn_screen_locks.get(self._loop)
-        if lk is None:
-            lk = asyncio.Lock()
-            _veepn_screen_locks[self._loop] = lk
-        cur = asyncio.current_task()
-        if _veepn_screen_owner.get(self._loop) is cur:
-            return self  # уже держим в этой задаче — реентрантно
-        await lk.acquire()
-        _veepn_screen_owner[self._loop] = cur
-        self._held = True
-        return self
-
-    async def __aexit__(self, *exc) -> bool:
-        if self._held:
-            _veepn_screen_owner.pop(self._loop, None)
-            _veepn_screen_locks[self._loop].release()
-        return False
 
 
-def _veepn_screen_guard():
-    """Async-контекст: для VeepN — реентрантный per-loop лок экрана, иначе no-op."""
-    if not _vpn_is_veepn():
-        return contextlib.nullcontext()
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return contextlib.nullcontext()
-    return _VeepnScreenGuard(loop)
 
 
-async def _vpn_connect_on_use(
-    context, profile_path: Path | str | None = None, *,
-    max_attempts: int = 3, quick: bool = False, ping_check: bool = False,
-) -> bool:
-    """Включает VPN при использовании профиля; экранная активация сериализована."""
-    async with _veepn_screen_guard():
-        return await _vpn_connect_on_use_impl(
-            context, profile_path,
-            max_attempts=max_attempts, quick=quick, ping_check=ping_check,
-        )
 
 
-async def _vpn_connect_on_use_impl(
-    context, profile_path: Path | str | None = None, *,
-    max_attempts: int = 3, quick: bool = False, ping_check: bool = False,
-) -> bool:
-    """Включает VPN при использовании профиля (расширение уже в профиле или только что загружено)."""
-    if getattr(context, "_subhub_via_proxy", False):
-        print(f"  {DIM}Браузер на прокси — VeepN/VPNLY не трогаем{RST}")
-        return True
-    if not _vpn_extension_dir():
-        return True
-    if profile_path is not None and not _profile_allows_vpn(profile_path, ping_check=ping_check):
-        tag = Path(profile_path).name
-        print(f"  {DIM}VPN: нет активного сценария для {tag} — подключение пропущено{RST}")
-        return False
-    await _close_junk_tabs(context)
-    await _activate_vpn_extension_via_chrome_page(context)
-    wait = 3.0 if quick else (4.0 if profile_path and _profile_has_vpn_extension(profile_path) else 6.0)
-    await asyncio.sleep(wait)
-    for attempt in range(max_attempts):
-        if attempt > 0:
-            print(f"  {Y}Повторная попытка подключить VPN ({attempt + 1}/{max_attempts})…{RST}")
-            await _vpn_chrome_cooldown(extra=1.0 if quick else 2.0)
-        if await _ensure_vpn_connected(context, quick=quick):
-            eid = await _vpn_ext_id(context)
-            if eid:
-                await _close_vpn_extension_tabs(context, eid)
-            try:
-                wp = await _main_work_page(context)
-                await wp.bring_to_front()
-            except Exception:
-                pass
-            return True
-    return False
 
 
-async def _vpn_connect_for_profile(
-    context, profile_path: Path | str | None = None, *,
-    timeout: float = 120.0, max_attempts: int = 3, quick: bool = False,
-    ping_check: bool = False,
-) -> bool:
-    """VPN для профиля; экранная активация VeepN сериализована между потоками."""
-    async with _veepn_screen_guard():
-        return await _vpn_connect_for_profile_impl(
-            context, profile_path, timeout=timeout,
-            max_attempts=max_attempts, quick=quick, ping_check=ping_check,
-        )
 
 
-async def _vpn_connect_for_profile_impl(
-    context, profile_path: Path | str | None = None, *,
-    timeout: float = 120.0, max_attempts: int = 3, quick: bool = False,
-    ping_check: bool = False,
-) -> bool:
-    """VPN → закрыть popup → рабочая вкладка (единый сценарий для всех потоков).
-
-    Если proxy уже жив — не переподключаем (Flipkart мог открыться; рвать нельзя).
-    """
-    if getattr(context, "_subhub_via_proxy", False):
-        print(f"  {DIM}Браузер на прокси — VeepN/VPNLY не трогаем{RST}")
-        return True
-    if not _vpn_extension_dir():
-        return True
-    if profile_path is not None and not _profile_allows_vpn(profile_path, ping_check=ping_check):
-        tag = Path(profile_path).name
-        print(f"  {DIM}VPN: нет активного сценария для {tag} — подключение пропущено{RST}")
-        return False
-    await _close_junk_tabs(context)
-    eid0 = await _vpn_ext_id(context)
-    if eid0 and await _vpn_is_proxy_active(context, eid0):
-        print(f"  {G}✔ VPN уже активен — без переподключения{RST}")
-        await _close_vpn_extension_tabs(context, eid0)
-        with contextlib.suppress(Exception):
-            wp = await _main_work_page(context)
-            await wp.bring_to_front()
-        return True
-    # Файлы уже в профиле → chrome://extensions/ выбрать и включить
-    await _activate_vpn_extension_via_chrome_page(context)
-    wait = 2.5 if quick else (3.5 if profile_path and _profile_has_vpn_extension(profile_path) else 5.0)
-    await asyncio.sleep(wait)
-    deadline = time.monotonic() + timeout
-    connected = False
-    for attempt in range(max_attempts):
-        if time.monotonic() >= deadline:
-            break
-        if attempt > 0:
-            print(f"  {Y}Повторная попытка подключить VPN ({attempt + 1}/{max_attempts})…{RST}")
-            await _vpn_chrome_cooldown(extra=1.0 if quick else 2.0)
-        if await _ensure_vpn_connected(context, quick=quick):
-            connected = True
-            break
-    if not connected:
-        # Последний шанс: перебор стран Flipkart (USA→FR→DE)
-        print(f"  {Y}⚠ VPN: базовое подключение не удалось — перебор стран…{RST}")
-        ok_rc, _cc = await _vpn_reconnect_for_flipkart(context, profile_path)
-        connected = bool(ok_rc)
-    if not connected:
-        print(f"  {Y}⚠ VPN: не подключился за {int(timeout)}s{RST}")
-        return False
-    eid = await _vpn_ext_id(context)
-    if eid:
-        # Flipkart: зафиксировать USA только если ещё не online; живой proxy не трогаем
-        if _vpn_is_veepn() and not await _vpn_is_proxy_active(context, eid):
-            with contextlib.suppress(Exception):
-                await _veepn_ensure_usa_for_flipkart(context, eid)
-        await _close_vpn_extension_tabs(context, eid)
-        if not await _wait_vpn_proxy_ready(context, eid, timeout=8.0):
-            await _wait_vpn_proxy_ready(context, eid, timeout=15.0)
-    with contextlib.suppress(Exception):
-        wp = await _main_work_page(context)
-        await wp.bring_to_front()
-    return True
 
 
-async def _veepn_switch_country(context, eid: str, country_code: str) -> bool:
-    """Полный цикл VeepN: disconnect (+сброс таймера) → страна → connect."""
-    cc = country_code.lower()
-    iso, _ = _VEEPN_CC_PATTERNS.get(cc, (cc.upper(), cc))
-    label = cc.upper()
-    print(f"  {DIM}VeepN → {label}…{RST}")
-    # Жёсткий disconnect + connectedAt=0, иначе UI показывает старый таймер
-    await _veepn_eval_js(context, eid, _veepn_reset_session_js())
-    await asyncio.sleep(1.0)
-    _js = f"""async () => {{
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
-        const msg = async (type, data = {{}}) => {{
-            try {{ return await chrome.runtime.sendMessage({{ type, data }}); }}
-            catch (e) {{ return null; }}
-        }};
-        await msg('update-locations-data', {{}});
-        await sleep(800);
-        {_veepn_location_pick_js(cc)}
-        await sleep(600);
-        // Новый connect → setConnectedAt() внутри VeepN → таймер с 00:00:00
-        const r = await msg('connect', {{}});
-        await sleep(4500);
-        const st = await msg('get-connection-state', {{}});
-        const mode = await chrome.proxy.settings.get({{}});
-        const m = (mode?.value?.mode) || 'direct';
-        const proxyOn = m && m !== 'direct' && m !== 'system' && m !== 'auto_detect';
-        const status = (st?.data?.status || st?.status || '').toLowerCase();
-        return proxyOn || status === 'connected';
-    }}"""
-    ok = False
-    raw = await _veepn_eval_js(context, eid, _js)
-    ok = bool(raw)
-    if ok:
-        await _veepn_finalize_connected(context, eid, via=label)
-        return True
-    return False
 
 
-async def _veepn_discover_free_country_codes(context, eid: str) -> list[str]:
-    """Коды стран из бесплатных локаций VeepN (если расширение их отдаёт)."""
-    js = """async () => {
-        const codes = new Set();
-        const walk = (node, depth = 0, preferFree = null) => {
-            if (!node || depth > 18) return;
-            if (Array.isArray(node)) {
-                for (const x of node) walk(x, depth + 1, preferFree);
-                return;
-            }
-            if (typeof node !== 'object') return;
-            const freeHint = (
-                node.free === true || node.isFree === true || node.premium === false
-                || node.isPremium === false || node.tier === 'free' || node.type === 'free'
-                || node.plan === 'free'
-            );
-            const paidHint = (
-                node.free === false || node.isFree === false || node.premium === true
-                || node.isPremium === true || node.tier === 'premium' || node.type === 'premium'
-            );
-            let nextPrefer = preferFree;
-            if (freeHint) nextPrefer = true;
-            if (paidHint) nextPrefer = false;
-            const code = String(
-                node.code || node.countryCode || node.isoCode || node.iso || ''
-            ).toLowerCase();
-            if (code.length === 2 && /^[a-z]{2}$/.test(code)) {
-                // Берём явно free; если флагов нет — тоже пробуем (бесплатный тариф VeepN)
-                if (nextPrefer === true || (nextPrefer === null && !paidHint)) {
-                    codes.add(code);
-                }
-            }
-            for (const v of Object.values(node)) walk(v, depth + 1, nextPrefer);
-        };
-        try { walk(await chrome.storage.local.get(null)); } catch (e) {}
-        try {
-            await chrome.runtime.sendMessage({ type: 'update-locations-data', data: {} });
-        } catch (e) {}
-        try {
-            const r = await chrome.runtime.sendMessage({ type: 'get-locations', data: {} });
-            walk(r && (r.data !== undefined ? r.data : r));
-        } catch (e) {}
-        return Array.from(codes);
-    }"""
-    out: list[str] = []
-    sw = await _wait_vpn_service_worker(context, eid, timeout=8.0)
-    raw = None
-    if sw:
-        with contextlib.suppress(Exception):
-            raw = await sw.evaluate(js)
-    if not isinstance(raw, list):
-        return out
-    for item in raw:
-        n = _vpn_normalize_cc(str(item or ""))
-        if n and n not in out:
-            out.append(n)
-    return out
 
 
-async def _flipkart_vpn_country_queue(context=None) -> list[str]:
-    """USA → CA → остальные: статический список + free из VeepN/VPNLY."""
-    order = _vpn_free_country_codes_static()
-    if context is not None and _vpn_is_veepn():
-        eid = await _vpn_ext_id(context)
-        if eid:
-            for cc in await _veepn_discover_free_country_codes(context, eid):
-                n = _vpn_normalize_cc(cc)
-                if n and n not in order:
-                    order.append(n)
-    return order
 
 
-async def _vpn_connect_country(
-    context, country_code: str, profile_path=None,
-) -> bool:
-    """Полный выкл → включить конкретную страну (VeepN или VPNLY free)."""
-    cc = _vpn_normalize_cc(country_code)
-    if not cc or not _vpn_extension_dir():
-        return False
-    if profile_path is not None and not _profile_allows_vpn(profile_path):
-        return False
-    print(f"  {Y}⚠ Flipkart — VPN выкл → {cc.upper()}…{RST}")
-    await _vpn_disconnect(context)
-    await asyncio.sleep(1.2)
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        return False
-    ok = False
-    if _vpn_is_veepn():
-        ok = await _veepn_switch_country(context, eid, cc)
-    else:
-        servers = [
-            s for s in _vpnly_servers_for_flipkart()
-            if _vpn_normalize_cc(_vpnly_country_code(s)) == cc
-        ]
-        for server in servers or []:
-            if await _vpnly_enable_server(context, eid, server):
-                ok = True
-                break
-        if not ok and cc == _VPN_DEFAULT_COUNTRY:
-            ok = await _vpn_send_enable_proxy(context, eid)
-    if not ok:
-        return False
-    if not await _wait_vpn_proxy_ready(context, eid, timeout=14.0):
-        await _wait_vpn_proxy_ready(context, eid, timeout=10.0)
-    await _close_vpn_extension_tabs(context, eid)
-    with contextlib.suppress(Exception):
-        wp = await _main_work_page(context)
-        await wp.bring_to_front()
-    return True
 
 
-async def _veepn_reconnect_for_flipkart(
-    context, profile_path=None, *,
-    exclude_countries: frozenset[str] = frozenset(),
-) -> tuple[bool, str]:
-    """VeepN: перебор бесплатных стран для Flipkart (USA → CA → …)."""
-    if not _vpn_is_veepn():
-        return False, ""
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        return False, ""
-    excl = {_vpn_normalize_cc(c) for c in exclude_countries}
-    await _vpn_disconnect(context)
-    await asyncio.sleep(1.2)
-    for cc in await _flipkart_vpn_country_queue(context):
-        if cc in excl:
-            continue
-        if await _veepn_switch_country(context, eid, cc):
-            if await _wait_vpn_proxy_ready(context, eid, timeout=14.0):
-                return True, cc
-    return False, ""
 
 
-async def _veepn_reconnect_india(context, profile_path=None) -> bool:
-    """Совместимость: переподключение VeepN для Flipkart (USA приоритет)."""
-    ok, _ = await _veepn_reconnect_for_flipkart(context, profile_path)
-    return ok
 
 
 def _is_flipkart_nav_error(err: str) -> bool:
@@ -2777,202 +2171,20 @@ async def _flipkart_page_blocked(page) -> bool:
         return False
 
 
-async def _veepn_connected_country_hint(context, eid: str) -> str:
-    """Код страны VeepN ('us', 'nl', …) или '' если неизвестно."""
-    for p in list(context.pages):
-        u = (p.url or "").lower()
-        if not u.startswith(f"chrome-extension://{eid.lower()}"):
-            continue
-        with contextlib.suppress(Exception):
-            blob = (await p.evaluate(
-                "() => (document.body?.innerText || '').slice(0, 500)"
-            )).lower()
-            for cc, (_, pat) in _VEEPN_CC_PATTERNS.items():
-                if re.search(pat, blob, re.I):
-                    return _vpn_normalize_cc(cc)
-    sw = await _wait_vpn_service_worker(context, eid, timeout=5.0)
-    if sw:
-        with contextlib.suppress(Exception):
-            raw = await sw.evaluate("""async () => {
-                try {
-                    const r = await chrome.runtime.sendMessage({type: 'get-connection-state', data: {}});
-                    return JSON.stringify(r?.data || r || {});
-                } catch (e) { return ''; }
-            }""")
-            low = (raw or "").lower()
-            for cc, (_, pat) in _VEEPN_CC_PATTERNS.items():
-                if re.search(pat, low, re.I):
-                    return _vpn_normalize_cc(cc)
-    return ""
 
 
-async def _veepn_connect_country_prefer_api(context, eid: str, country_code: str) -> bool:
-    """Сразу UI (карточка → список → штат → питание). API VeepN US почти не закрепляет."""
-    cc = _vpn_normalize_cc(country_code) or _VPN_DEFAULT_COUNTRY
-    print(f"  {DIM}VeepN: {cc.upper()} через UI (страна → питание)…{RST}")
-    ok_ui = await _veepn_ui_reconnect_country(context, cc)
-    if ok_ui:
-        print(f"  {G}✔ VeepN: {cc.upper()} по UI{RST}")
-        return True
-    # Last resort — старый API (редко помогает)
-    print(f"  {DIM}VeepN: UI не вышел — пробую API…{RST}")
-    if await _veepn_switch_country(context, eid, cc):
-        for _ in range(16):
-            if await _vpn_is_proxy_active(context, eid):
-                print(f"  {G}✔ VeepN: {cc.upper()} по API{RST}")
-                return True
-            await asyncio.sleep(0.35)
-    return False
 
 
-async def _veepn_ensure_usa_for_flipkart(context, eid: str) -> bool:
-    """Flipkart: United States по API; UI — только если API не выбрал страну."""
-    cc = await _veepn_connected_country_hint(context, eid)
-    if await _vpn_is_proxy_active(context, eid):
-        # Любая живая free-страна ок для первого захода; USA — после fail в resilient
-        if cc == _VPN_DEFAULT_COUNTRY or not cc:
-            print(f"  {G}✔ VeepN: VPN жив ({(cc or 'US?').upper()}){RST}")
-            return True
-        # Уже жив не-US — не рвём до Access Denied / timeout на сайте
-        print(f"  {DIM}VeepN: жив {(cc or '?').upper()} — Flipkart без смены страны{RST}")
-        return True
-    print(f"  {DIM}VeepN: включаю USA (сейчас {(cc or 'выкл').upper()})…{RST}")
-    if await _veepn_connect_country_prefer_api(context, eid, _VPN_DEFAULT_COUNTRY):
-        return True
-    print(f"  {DIM}VeepN: USA не закрепился — другие free-страны…{RST}")
-    for want in _vpn_free_country_codes_static():
-        if want == _VPN_DEFAULT_COUNTRY:
-            continue
-        if await _veepn_connect_country_prefer_api(context, eid, want):
-            return True
-    return await _vpn_is_proxy_active(context, eid)
 
 
-async def _vpn_fresh_connect_usa(
-    context, profile_path=None, *, quick: bool = False,
-) -> bool:
-    """Перед Flipkart: USA-подключение VeepN; экранная активация сериализована."""
-    async with _veepn_screen_guard():
-        return await _vpn_fresh_connect_usa_impl(context, profile_path, quick=quick)
 
 
-async def _vpn_fresh_connect_usa_impl(
-    context, profile_path=None, *, quick: bool = False,
-) -> bool:
-    """Перед Flipkart: если VPN уже жив (US) — не трогать; иначе UI USA.
-
-    Не рвать рабочий VeepN через _vpn_disconnect — это закрывает popup и ломает сценарий.
-    """
-    if not _vpn_extension_dir():
-        return True
-    if profile_path is not None and not _profile_allows_vpn(profile_path):
-        tag = Path(profile_path).name
-        print(f"  {DIM}VPN: нет активного сценария для {tag} — сброс пропущен{RST}")
-        return False
-
-    eid = await _vpn_ext_id(context)
-    if eid and await _vpn_is_proxy_active(context, eid):
-        cc = ""
-        with contextlib.suppress(Exception):
-            cc = await _veepn_connected_country_hint(context, eid)
-        if cc in (_VPN_DEFAULT_COUNTRY, "", "us"):
-            print(f"  {G}✔ VPN уже жив ({(cc or 'US').upper()}) — Flipkart без переподключения{RST}")
-            with contextlib.suppress(Exception):
-                await _veepn_finalize_connected(context, eid, via=(cc or "US").upper())
-            return True
-        print(f"  {DIM}VPN: жив {(cc or '?').upper()} → UI на USA…{RST}")
-    else:
-        print(f"  {DIM}VPN: выкл → USA UI (пазл/щит → страна → питание)…{RST}")
-
-    ok = False
-    if eid and _vpn_is_veepn():
-        with contextlib.suppress(Exception):
-            ok = await _veepn_ui_reconnect_country(context, _VPN_DEFAULT_COUNTRY)
-    if not ok:
-        ok = await _ensure_vpn_connected(context, quick=quick, flipkart=True)
-    if not ok:
-        print(f"  {Y}⚠ VPN: не удалось включить{RST}")
-        return False
-    eid = await _vpn_ext_id(context)
-    if eid:
-        await _close_vpn_extension_tabs(context, eid)
-        with contextlib.suppress(Exception):
-            await _wait_vpn_proxy_ready(context, eid, timeout=8.0)
-    with contextlib.suppress(Exception):
-        wp = await _main_work_page(context)
-        await wp.bring_to_front()
-    print(f"  {G}✔ VPN готов (US) — открываю Flipkart{RST}")
-    return True
 
 
-async def _vpn_toggle_same_country(
-    context, profile_path=None, *, quick: bool = True,
-) -> bool:
-    """Access Denied шаг 2: выкл VPN → вкл снова (та же страна), без смены страны."""
-    if not _vpn_extension_dir():
-        return False
-    if profile_path is not None and not _profile_allows_vpn(profile_path):
-        tag = Path(profile_path).name
-        print(f"  {DIM}VPN: нет активного сценария для {tag} — toggle пропущен{RST}")
-        return False
-    eid = await _vpn_ext_id(context)
-    print(f"  {Y}⚠ Flipkart Access Denied — VPN выкл → вкл (та же страна)…{RST}")
-    await _vpn_disconnect(context)
-    await asyncio.sleep(1.5)
-    # flipkart=False: иначе ensure сразу утащит на USA и сломает шаг «сначала toggle»
-    connected = await _ensure_vpn_connected(context, quick=quick, flipkart=False)
-    if not connected:
-        return False
-    if eid and not await _wait_vpn_proxy_ready(context, eid, timeout=14.0):
-        await _wait_vpn_proxy_ready(context, eid, timeout=10.0)
-    with contextlib.suppress(Exception):
-        wp = await _main_work_page(context)
-        await wp.bring_to_front()
-    return True
 
 
-async def _vpn_toggle_reconnect_flipkart(
-    context, profile_path=None, *,
-    exclude_countries: frozenset[str] = frozenset(),
-) -> tuple[bool, str]:
-    """Access Denied: выкл VPN → вкл снова → при неудаче смена страны."""
-    if not _vpn_extension_dir():
-        return False, ""
-    if await _vpn_toggle_same_country(context, profile_path):
-        eid = await _vpn_ext_id(context)
-        cc = ""
-        if eid:
-            with contextlib.suppress(Exception):
-                cc = await _veepn_connected_country_hint(context, eid) if _vpn_is_veepn() else ""
-        return True, cc or ""
-    return await _vpn_reconnect_for_flipkart(
-        context, profile_path, exclude_countries=exclude_countries,
-    )
 
 
-async def _vpn_reconnect_for_flipkart(
-    context, profile_path=None, *,
-    exclude_countries: frozenset[str] = frozenset(),
-) -> tuple[bool, str]:
-    """Сменить страну VPN для Flipkart. USA — приоритет (VeepN и VPNLY)."""
-    if _vpn_is_veepn():
-        return await _veepn_reconnect_for_flipkart(
-            context, profile_path, exclude_countries=exclude_countries,
-        )
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        return False, ""
-    print(f"  {Y}⚠ Flipkart Access Denied — переключаю VPN (USA приоритет)…{RST}")
-    await _vpn_disconnect(context)
-    await asyncio.sleep(1.2)
-    for server in _vpnly_servers_for_flipkart(exclude=exclude_countries):
-        cc = _vpnly_country_code(server)
-        city = (server.get("city") or {}).get("name") or cc.upper()
-        if await _vpnly_enable_server(context, eid, server):
-            if await _wait_vpn_proxy_ready(context, eid, timeout=14.0):
-                print(f"  {G}✔ VPN: {city} ({cc.upper()}){RST}")
-                return True, cc
-    return False, ""
 
 
 async def _flipkart_reload_and_check(page, *, label: str = "") -> tuple[bool, object]:
@@ -3318,627 +2530,42 @@ async def _navigate_flipkart_resilient(
     return False, page, last_err or diag.get("hint") or "Flipkart не открылся"
 
 
-async def _vpn_ext_id(context) -> str | None:
-    """ID реально загруженного VPN-расширения в этом браузере (не только из manifest.key)."""
-
-    def _scan() -> str | None:
-        try:
-            for sw in list(getattr(context, "service_workers", []) or []):
-                u = sw.url or ""
-                if u.startswith("chrome-extension://"):
-                    return u.split("/")[2]
-        except Exception:
-            pass
-        try:
-            for bp in getattr(context, "background_pages", []) or []:
-                u = bp.url or ""
-                if u.startswith("chrome-extension://"):
-                    return u.split("/")[2]
-        except Exception:
-            pass
-        try:
-            for p in context.pages:
-                u = p.url or ""
-                if u.startswith("chrome-extension://"):
-                    return u.split("/")[2]
-        except Exception:
-            pass
-        return None
-
-    found = _scan()
-    if found:
-        return found
-    try:
-        sw = await context.wait_for_event("serviceworker", timeout=8_000)
-        return (sw.url or "").split("/")[2]
-    except Exception:
-        pass
-    if _vpn_is_veepn():
-        return _vpn_ext_id_from_path()
-    return _vpn_ext_id_from_key()
 
 
-def _veepn_prep_storage_js() -> str:
-    """JS: отключить onboarding, включить auto-connect в storage VeepN."""
-    return """async () => {
-        const now = Date.now();
-        const all = await chrome.storage.local.get([
-            'app', 'global-state', 'connection', 'intro-offer',
-        ]);
-        const app = (all.app && typeof all.app === 'object') ? all.app : {};
-        const gs = (all['global-state'] && typeof all['global-state'] === 'object')
-            ? all['global-state'] : {};
-        const conn = (all.connection && typeof all.connection === 'object')
-            ? all.connection : {};
-        const intro = (all['intro-offer'] && typeof all['intro-offer'] === 'object')
-            ? all['intro-offer'] : {};
-        await chrome.storage.local.set({
-            app: { ...app, showOnboarding: false },
-            'global-state': { ...gs, installedAt: gs.installedAt || now },
-            connection: { ...conn, useAutoConnect: true },
-            'intro-offer': { ...intro, hasVisitedIntroOffer: true },
-        });
-        const msg = async (type, data = {}) => {
-            try { return await chrome.runtime.sendMessage({ type, data }); }
-            catch (e) { return null; }
-        };
-        await msg('close-onboarding', {});
-        await msg('set-auto-connect-setting', { status: true });
-        return true;
-    }"""
 
 
-def _veepn_clear_autoconnect_js() -> str:
-    """JS: отключить auto-connect VeepN (VPN не поднимается сам после disconnect)."""
-    return """async () => {
-        const all = await chrome.storage.local.get(['connection']);
-        const conn = (all.connection && typeof all.connection === 'object')
-            ? all.connection : {};
-        await chrome.storage.local.set({
-            connection: { ...conn, useAutoConnect: false },
-        });
-        try {
-            await chrome.runtime.sendMessage({
-                type: 'set-auto-connect-setting',
-                data: { status: false },
-            });
-        } catch (e) {}
-        return true;
-    }"""
 
 
-async def _veepn_clear_autoconnect(context, eid: str) -> None:
-    _js = _veepn_clear_autoconnect_js()
-    sw = await _wait_vpn_service_worker(context, eid, timeout=6.0)
-    if sw:
-        with contextlib.suppress(Exception):
-            await sw.evaluate(_js)
-            return
-    page = None
-    try:
-        page = await context.new_page()
-        await page.goto(
-            f"chrome-extension://{eid}/src/popup/popup.html",
-            wait_until="domcontentloaded", timeout=12_000,
-        )
-        await page.evaluate(_js)
-    except Exception:
-        pass
-    finally:
-        if page:
-            with contextlib.suppress(Exception):
-                await page.close()
 
 
-async def _veepn_connection_label(page) -> str:
-    """'on' | 'off' | 'unknown'. Только явный статус — не рекламное «подключено»."""
-    try:
-        return str(await page.evaluate("""() => {
-            const body = (document.body?.innerText || '').replace(/\\s+/g, ' ');
-            const low = body.toLowerCase();
-            // ВЫКЛ проверяем раньше — иначе ложный on рвёт открытый UI
-            if (/соединение\\s*выкл/i.test(low) || /connection\\s*off/i.test(low)) return 'off';
-            // Успех: «Подключено 00:00:57» / «Соединение ВКЛ»
-            if (/подключено\\s*\\d{1,2}:\\d{2}/i.test(low) || /connected\\s*\\d{1,2}:\\d{2}/i.test(low)) return 'on';
-            if (/соединение\\s*вкл/i.test(low) || /connection\\s*on/i.test(low)) return 'on';
-            return 'unknown';
-        }"""))
-    except Exception:
-        return "unknown"
 
 
-async def _veepn_dismiss_rate_us(page) -> bool:
-    """Модалка «Нравится VeePN? Оцените нас.» → крестик справа вверху блока."""
-    try:
-        clicked = await page.evaluate("""() => {
-            const markers = [
-                'нравится veepn', 'оцените нас',
-                'like veepn', 'rate us', 'rate veepn',
-            ];
-            const body = (document.body?.innerText || '').toLowerCase();
-            if (!markers.some(m => body.includes(m))) return {ok: false};
-
-            const isCloseLooks = (el, t) => {
-                const al = ((el.getAttribute('aria-label') || '')
-                    + ' ' + (el.getAttribute('title') || '')).toLowerCase();
-                if (/close|закрыть|dismiss|скрыть/.test(al)) return true;
-                if (/^[×x✕✖✖️]$/i.test(t)) return true;
-                if (el.querySelector && el.querySelector('svg') && t.length <= 2) {
-                    const r = el.getBoundingClientRect();
-                    return r.width > 0 && r.width <= 48 && r.height <= 48;
-                }
-                return false;
-            };
-
-            let card = null;
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            while (walker.nextNode()) {
-                const raw = (walker.currentNode.textContent || '').replace(/\\s+/g, ' ').trim();
-                if (!raw) continue;
-                const low = raw.toLowerCase();
-                if (!markers.some(m => low.includes(m))) continue;
-                let el = walker.currentNode.parentElement;
-                for (let i = 0; i < 10 && el; i++) {
-                    const r = el.getBoundingClientRect();
-                    if (r.width >= 180 && r.height >= 80 && r.width < window.innerWidth * 0.98) {
-                        card = el; break;
-                    }
-                    el = el.parentElement;
-                }
-                if (card) break;
-            }
-            if (!card) return {ok: false};
-
-            const cr = card.getBoundingClientRect();
-            let best = null, bestScore = -1e9;
-            for (const el of card.querySelectorAll(
-                'button, a, [role="button"], span, div, i, svg'
-            )) {
-                const t = (el.innerText || el.textContent || '').replace(/\\s+/g, '').trim();
-                const r = el.getBoundingClientRect();
-                if (r.width < 8 || r.height < 8 || r.width > 56 || r.height > 56) continue;
-                const nearRight = r.left >= cr.right - 64;
-                const nearTop = r.top <= cr.top + 56;
-                if (!nearRight || !nearTop) continue;
-                if (!isCloseLooks(el, t) && t.length > 2) continue;
-                const score = (cr.right - r.right) * -2 - (r.top - cr.top)
-                    + (isCloseLooks(el, t) ? 50 : 0);
-                if (score > bestScore) { bestScore = score; best = el; }
-            }
-            if (best) {
-                const clickEl = best.closest('button, a, [role="button"]') || best;
-                clickEl.click();
-                return {ok: true, via: 'el'};
-            }
-            // Координаты крестика — правый верх белого блока (Playwright mouse fallback)
-            return {
-                ok: false,
-                x: Math.floor(cr.right - 18),
-                y: Math.floor(cr.top + 16),
-            };
-        }""")
-        if isinstance(clicked, dict) and clicked.get("ok"):
-            print(f"  {G}✔ VeepN: закрыл «Оцените нас» (крестик){RST}")
-            await page.wait_for_timeout(600)
-            return True
-        if isinstance(clicked, dict) and clicked.get("x") is not None:
-            await page.mouse.click(float(clicked["x"]), float(clicked["y"]))
-            print(f"  {G}✔ VeepN: закрыл «Оцените нас» (точка крестика){RST}")
-            await page.wait_for_timeout(600)
-            return True
-    except Exception:
-        pass
-    try:
-        rate = page.get_by_text(
-            re.compile(r"Оцените\s*нас|Rate\s*us|Нравится\s*VeePN", re.I)
-        ).first
-        if await rate.count() > 0 and await rate.is_visible():
-            # aria/close рядом с модалкой
-            for sel in (
-                '[aria-label*="close" i]',
-                '[aria-label*="закрыть" i]',
-                'button:has-text("×")',
-                'button:has-text("✕")',
-            ):
-                with contextlib.suppress(Exception):
-                    loc = page.locator(sel).first
-                    if await loc.count() > 0 and await loc.is_visible():
-                        await loc.click(timeout=2000)
-                        print(f"  {G}✔ VeepN: закрыл «Оцените нас» (aria){RST}")
-                        await page.wait_for_timeout(600)
-                        return True
-    except Exception:
-        pass
-    return False
 
 
-async def _veepn_dismiss_limited_upsell(page) -> bool:
-    """После ВКЛ: экран «устройство под угрозой» → «Нет, спасибо, я рискну…»."""
-    await _veepn_dismiss_rate_us(page)
-    try:
-        clicked = await page.evaluate("""() => {
-            const want = [
-                'нет, спасибо, я рискну с ограниченной защитой',
-                'нет, спасибо',
-                'no, thanks',
-                "i'll risk",
-                'risk it with limited',
-                'продолжить с ограниченной',
-            ];
-            const body = (document.body?.innerText || '').toLowerCase();
-            const isUpsell = body.includes('под угрозой') || body.includes('at risk')
-                || body.includes('защитить устройство') || body.includes('protect your device')
-                || body.includes('только свой браузер');
-            if (!isUpsell && !want.some(w => body.includes(w))) return false;
-            for (const el of document.querySelectorAll('a, button, [role="button"], span, div, p')) {
-                const t = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                if (!t) continue;
-                if (!want.some(w => t.includes(w) || t === w)) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width < 20 || r.height < 8) continue;
-                el.click();
-                return true;
-            }
-            return false;
-        }""")
-        if clicked:
-            print(f"  {G}✔ VeepN: нажал «Нет, спасибо…»{RST}")
-            await page.wait_for_timeout(1200)
-            return True
-    except Exception:
-        pass
-    # Playwright text locator fallback
-    for pat in (
-        r"Нет,\s*спасибо,\s*я\s*рискну",
-        r"Нет,\s*спасибо",
-        r"risk.*limited",
-    ):
-        try:
-            loc = page.get_by_text(re.compile(pat, re.I)).first
-            if await loc.count() > 0 and await loc.is_visible():
-                await loc.click(timeout=3000)
-                print(f"  {G}✔ VeepN: нажал «Нет, спасибо…» (locator){RST}")
-                await page.wait_for_timeout(1200)
-                return True
-        except Exception:
-            pass
-    return False
 
 
-async def _veepn_popup_shows_connected(page) -> bool:
-    return (await _veepn_connection_label(page)) == "on"
 
 
-async def _veepn_ui_click_power(page, context=None) -> dict:
-    """Клик по круглой кнопке питания: DOM + mouse; fallback — Win32 по экрану."""
-    await _veepn_dismiss_rate_us(page)
-    label = await _veepn_connection_label(page)
-
-    # 1) Явный круг над текстом статуса — click() в DOM (надёжнее mouse на popup)
-    try:
-        info = await page.evaluate("""() => {
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            let statusEl = null;
-            while (walker.nextNode()) {
-                const t = (walker.currentNode.textContent || '').replace(/\\s+/g, ' ').trim();
-                if (/подключено\\s*\\d|соединение\\s*выкл|соединение\\s*вкл|connection\\s*off|connection\\s*on|connected\\s*\\d/i.test(t)) {
-                    statusEl = walker.currentNode.parentElement;
-                    break;
-                }
-            }
-            const sy = statusEl ? statusEl.getBoundingClientRect().top : window.innerHeight * 0.42;
-            const cx = window.innerWidth / 2;
-            let bestEl = null, best = null, bestScore = -1e9;
-            for (const el of document.querySelectorAll('button, [role="button"], div, span, a')) {
-                const r = el.getBoundingClientRect();
-                if (r.width < 56 || r.height < 56) continue;
-                if (Math.abs(r.width - r.height) > 32) continue;
-                if (r.bottom > sy - 2) continue;
-                if (r.top < 8) continue;
-                const mid = Math.abs((r.left + r.width / 2) - cx);
-                const score = r.width * r.height - mid * 30 - Math.abs(sy - r.bottom) * 2;
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestEl = el;
-                    best = {x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width};
-                }
-            }
-            if (bestEl) {
-                try { bestEl.click(); } catch (e) {}
-                try {
-                    bestEl.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
-                } catch (e) {}
-            }
-            return best;
-        }""")
-        if info and info.get("x"):
-            with contextlib.suppress(Exception):
-                await page.mouse.click(float(info["x"]), float(info["y"]))
-            print(f"  {DIM}VeepN UI: круг питания @ {int(info['x'])},{int(info['y'])}{RST}")
-            # Win32 добить — реальный action-popup часто не принимает Playwright mouse
-            hwnd = await asyncio.to_thread(_win_chrome_main_hwnd)
-            if hwnd:
-                await asyncio.sleep(0.25)
-                clicked_win = await asyncio.to_thread(_win_click_veepn_power, hwnd)
-                if clicked_win:
-                    return {
-                        "clicked": True, "already": False, "was": label,
-                        "via": "circle-dom+win32", "x": int(info["x"]), "y": int(info["y"]),
-                    }
-            return {
-                "clicked": True, "already": False, "was": label,
-                "via": "circle-dom+mouse", "x": int(info["x"]), "y": int(info["y"]),
-            }
-    except Exception as e:
-        err = str(e)[:80]
-    else:
-        err = ""
-
-    # 2) Только Win32
-    hwnd = await asyncio.to_thread(_win_chrome_main_hwnd)
-    if hwnd and await asyncio.to_thread(_win_click_veepn_power, hwnd):
-        return {"clicked": True, "already": False, "was": label, "via": "win32-only"}
-
-    # 3) Fallback: клик выше статуса
-    for pat in (
-        r"Подключено\s*\d|Соединение\s*ВКЛ|Connected\s*\d",
-        r"Соединение\s*ВЫКЛ|Connection\s*OFF",
-    ):
-        try:
-            loc = page.get_by_text(re.compile(pat, re.I)).first
-            if await loc.count() > 0:
-                box = await loc.bounding_box()
-                if box:
-                    x = box["x"] + box["width"] / 2
-                    y = max(40.0, box["y"] - 90.0)
-                    await page.mouse.click(x, y)
-                    print(f"  {DIM}VeepN UI: круг над статусом @ {int(x)},{int(y)}{RST}")
-                    return {
-                        "clicked": True, "already": False, "was": label,
-                        "via": "above-status", "x": int(x), "y": int(y),
-                    }
-        except Exception:
-            pass
-    return {"clicked": False, "already": False, "was": label, "error": err or "no-circle"}
 
 
-async def _veepn_wait_until_off(page, *, seconds: float = 25.0) -> bool:
-    """После отключения ждём «Соединение ВЫКЛ»."""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if (await _veepn_connection_label(page)) == "off":
-            print(f"  {G}✔ VeepN: Соединение ВЫКЛ{RST}")
-            return True
-        await page.wait_for_timeout(400)
-    st = await _veepn_connection_label(page)
-    print(f"  {DIM}VeepN: статус ещё не ВЫКЛ ({st}) — продолжаем{RST}")
-    return st == "off"
 
 
-async def _veepn_wait_until_on(page, *, seconds: float = 45.0) -> bool:
-    """После клика: upsell «Нет, спасибо…» → ждём «Подключено» / ВКЛ."""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        await _veepn_dismiss_limited_upsell(page)
-        st = await _veepn_connection_label(page)
-        if st == "on":
-            print(f"  {G}✔ VeepN: Подключено (ВКЛ){RST}")
-            return True
-        await page.wait_for_timeout(500)
-    st = await _veepn_connection_label(page)
-    print(f"  {DIM}VeepN: ещё не Подключено ({st}){RST}")
-    return False
 
 
-async def _veepn_finalize_connected(context, eid: str, *, via: str = "popup") -> None:
-    """VPN включён — закрыть popup/расширение и оставить рабочую вкладку для Flipkart."""
-    await _veepn_set_autoconnect(context, eid)
-    await _dismiss_all_veepn_welcome(context)
-    await _close_vpn_extension_tabs(context, eid)
-    with contextlib.suppress(Exception):
-        wp = await _main_work_page(context)
-        await _close_extra_blank_tabs(context, keep=wp)
-        await wp.bring_to_front()
-    print(f"  {G}✔ VeepN подключён ({via}){RST}")
 
 
-async def _veepn_dismiss_onboarding(page) -> None:
-    """Закрыть welcome/onboarding/pricing VeepN («Продолжить», план подписки)."""
-    await _veepn_dismiss_rate_us(page)
-    _js = """async () => {
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
-        const msg = async (type, data = {}) => {
-            try { return await chrome.runtime.sendMessage({ type, data }); }
-            catch (e) { return null; }
-        };
-        await msg('close-onboarding', {});
-        const want = ['продолжить', 'continue', 'continue limited', 'continue without',
-                      'продолжить →', 'продолжение ограничено', 'weiter', 'continuer',
-                      'start free', 'use free', 'бесплатн'];
-        const isWelcome = () => {
-            const b = (document.body?.innerText || '').toLowerCase();
-            const t = (document.title || '').toLowerCase();
-            const u = (location.href || '').toLowerCase();
-            return b.includes('thank you for installing') || t.includes('thank you for installing')
-                || b.includes('добро пожаловать') || b.includes('welcome to')
-                || b.includes('welcome to veepn') || b.includes('что вы получите')
-                || b.includes('выберите план') || b.includes('choose a subscription')
-                || b.includes('subscription plan') || u.includes('/welcome')
-                || u.includes('onboarding');
-        };
-        for (let round = 0; round < 6; round++) {
-            if (!isWelcome()) break;
-            for (const el of document.querySelectorAll(
-                'button, a, .base-button, [role="button"]')) {
-                const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                if (!want.some(w => t === w || t.includes(w) || t.startsWith(w))) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width < 30 || el.offsetParent === null) continue;
-                el.click();
-                await sleep(700);
-            }
-            await msg('close-onboarding', {});
-            await sleep(500);
-        }
-        return !isWelcome();
-    }"""
-    try:
-        await page.evaluate(_js)
-    except Exception:
-        pass
-    for _label in (
-        "Продолжить", "Continue", "Continue limited", "Continue without a plan",
-        "Продолжение ограничено", "Get started", "Get Started", "Start", "OK", "Got it",
-        "Start Free", "Use Free",
-    ):
-        try:
-            _loc = page.get_by_role("button", name=_label).first
-            if await _loc.count() > 0 and await _loc.is_visible():
-                await _loc.click(timeout=2_000)
-                await page.wait_for_timeout(600)
-        except Exception:
-            pass
 
 
-async def _veepn_set_autoconnect(context, eid: str) -> None:
-    """Включает Auto-Connect в VeepN (при старте браузера подключится сам)."""
-    _js = _veepn_prep_storage_js()
-    sw = await _wait_vpn_service_worker(context, eid, timeout=10.0)
-    if sw:
-        try:
-            await sw.evaluate(_js)
-            return
-        except Exception:
-            pass
-    page = None
-    try:
-        page = await context.new_page()
-        await page.goto(
-            f"chrome-extension://{eid}/src/popup/popup.html",
-            wait_until="domcontentloaded", timeout=15_000,
-        )
-        await page.evaluate(_js)
-    except Exception:
-        pass
-    finally:
-        if page:
-            with contextlib.suppress(Exception):
-                await page.close()
 
 
-def _veepn_location_pick_js(country_code: str = "us") -> str:
-    """JS-фрагмент: выбрать сервер VeepN по коду страны (us/fr/de/nl)."""
-    cc = country_code.lower()
-    iso, name_pat = _VEEPN_CC_PATTERNS.get(cc, (cc.upper(), cc))
-    iso_js = json.dumps(iso)
-    return f"""
-        const wantIso = {iso_js};
-        const nameRe = /{name_pat}/i;
-        const pickCountryId = (node, depth = 0) => {{
-            if (!node || depth > 14) return null;
-            if (typeof node === 'string') {{
-                const s = node.toLowerCase();
-                if (s === wantIso.toLowerCase() || nameRe.test(s)) return node;
-                return null;
-            }}
-            if (Array.isArray(node)) {{
-                for (const x of node) {{
-                    const r = pickCountryId(x, depth + 1);
-                    if (r) return r;
-                }}
-                return null;
-            }}
-            if (typeof node === 'object') {{
-                const name = String(
-                    node.name || node.city || node.title || node.label || ''
-                ).toLowerCase();
-                const code = String(
-                    node.code || node.countryCode || node.country || ''
-                ).toUpperCase();
-                if (code === wantIso || nameRe.test(name)) {{
-                    return node.id || node.uuid || node.locationId || null;
-                }}
-                for (const v of Object.values(node)) {{
-                    const r = pickCountryId(v, depth + 1);
-                    if (r) return r;
-                }}
-            }}
-            return null;
-        }};
-        let locId = null;
-        try {{
-            const stored = await chrome.storage.local.get(null);
-            locId = pickCountryId(stored);
-        }} catch (e) {{}}
-        if (!locId) {{
-            try {{
-                const gl = await msg('get-locations', {{}});
-                locId = pickCountryId(gl?.data ?? gl);
-            }} catch (e) {{}}
-        }}
-        await msg('set-active-location', locId || 'optimal');
-    """
 
 
-def _veepn_india_pick_js() -> str:
-    """Совместимость: USA вместо India (в VeepN нет IN)."""
-    return _veepn_location_pick_js("us")
 
 
-def _veepn_connect_js(*, loops: int = 14, sleep_ms: int = 2500, force: bool = False) -> str:
-    location_pick = _veepn_location_pick_js("us")
-    early = "false" if force else "true"
-    return f"""async () => {{
-        const sleep = ms => new Promise(r => setTimeout(r, ms));
-        const msg = async (type, data = {{}}) => {{
-            try {{ return await chrome.runtime.sendMessage({{ type, data }}); }}
-            catch (e) {{ return {{ success: false, error: String(e) }}; }}
-        }};
-        const proxyOk = async () => {{
-            const mode = await chrome.proxy.settings.get({{}});
-            const m = (mode?.value?.mode) || 'direct';
-            return m && m !== 'direct' && m !== 'system' && m !== 'auto_detect';
-        }};
-        await msg('close-onboarding', {{}});
-        let st = await msg('get-connection-state', {{}});
-        // force=true: не считаем «уже connected» успехом — нужен свежий connect (новый таймер)
-        if ({early} && (st?.data?.status === 'connected' || await proxyOk())) return {{ ok: true }};
-        if (!{early}) {{
-            await msg('disconnect', {{}});
-            await sleep(900);
-            try {{
-                const all = await chrome.storage.local.get(['connection']);
-                const conn = (all.connection && typeof all.connection === 'object') ? all.connection : {{}};
-                await chrome.storage.local.set({{ connection: {{ ...conn, connectedAt: 0 }} }});
-            }} catch (e) {{}}
-        }}
-        await msg('update-locations-data', {{}});
-        await sleep({min(sleep_ms, 2500)});
-        {location_pick}
-        await sleep(800);
-        for (let i = 0; i < {loops}; i++) {{
-            st = await msg('get-connection-state', {{}});
-            if (st?.data?.status === 'connected' || await proxyOk()) return {{ ok: true }};
-            await msg('connect', {{}});
-            await sleep({sleep_ms});
-            if (await proxyOk()) return {{ ok: true }};
-            st = await msg('get-connection-state', {{}});
-            if (st?.data?.status === 'connected') return {{ ok: true }};
-        }}
-        return {{ ok: false }};
-    }}"""
 
 
-def _veepn_popup_rel_paths() -> list[str]:
-    """Реальные пути popup VeepN (корневого popup.html НЕТ → ERR_BLOCKED_BY_CLIENT)."""
-    return ["src/popup/popup.html"]
 
 
-def _vpn_popup_rel_paths() -> list[str]:
-    """Пути popup для текущего VPN-провайдера."""
-    if _vpn_is_veepn():
-        return _veepn_popup_rel_paths()
-    return ["popup.html", "src/popup/popup.html", "index.html"]
 
 
 def _page_shows_client_block(url: str = "", title: str = "", body: str = "") -> bool:
@@ -3973,35 +2600,8 @@ def _is_extension_popup_url(url: str, eid: str) -> bool:
     )
 
 
-async def _veepn_popup_ui_ready(page) -> bool:
-    """На экране есть управление VPN («Соединение…» / локация), не пустой синий фон."""
-    try:
-        return bool(await page.evaluate("""() => {
-            const b = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
-            if (b.length < 12) return false;
-            const low = b.toLowerCase();
-            return /соединение|подключено|connection|connected|netherlands|united states|amsterdam|oregon|france|germany|локации|locations|adblock|список обхода|premium/i.test(low);
-        }"""))
-    except Exception:
-        return False
 
 
-async def _veepn_popup_is_blank(page) -> bool:
-    """Пустой синий popup.html — VPN уже ВКЛ; нужен выкл → открыть снова."""
-    if not page:
-        return True
-    with contextlib.suppress(Exception):
-        if await _veepn_popup_ui_ready(page):
-            return False
-    with contextlib.suppress(Exception):
-        info = await page.evaluate("""() => {
-            const b = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
-            const btns = document.querySelectorAll('button, [role="button"]').length;
-            return { len: b.length, btns };
-        }""")
-        if isinstance(info, dict) and int(info.get("len") or 0) < 20 and int(info.get("btns") or 0) < 2:
-            return True
-    return not await _veepn_popup_ui_ready(page)
 
 
 _AUTOMATION_CHROME_HWND = 0  # HWND текущего Playwright Chrome (не «любое» окно)
@@ -4238,120 +2838,8 @@ def _win_find_chrome_puzzle_icon(hwnd: int) -> tuple[int, int] | None:
     return int(cx), int(cy)
 
 
-def _win_find_veepn_toolbar_icon(
-    hwnd: int, puzzle_x: int | None = None, puzzle_y: int | None = None,
-) -> tuple[int, int] | None:
-    """Зелёный щит VeepN, закреплённый в toolbar (слева от пазла) — клик открывает popup."""
-    if os.name != "nt" or not hwnd:
-        return None
-    hay, (ox, oy) = _win_grab_chrome_image(hwnd)
-    if hay is None:
-        return None
-    w, h = hay.size
-    if puzzle_x is None or puzzle_y is None:
-        found = _win_find_chrome_puzzle_icon(hwnd)
-        if found:
-            puzzle_x, puzzle_y = found
-        else:
-            puzzle_x, puzzle_y = ox + w - 80, oy + 50
-
-    # Полоска toolbar: слева от пазла
-    ix = max(0, min(w - 1, puzzle_x - ox))
-    iy = max(0, min(h - 1, puzzle_y - oy))
-    left = max(0, ix - 160)
-    right = max(left + 20, ix - 8)
-    top = max(0, iy - 28)
-    bottom = min(h, iy + 28)
-    if right - left < 16 or bottom - top < 16:
-        return None
-    region = hay.crop((left, top, right, bottom)).convert("RGB")
-    rw, rh = region.size
-    px = region.load()
-    hits: list[tuple[int, int]] = []
-    for y in range(0, rh, 1):
-        for x in range(0, rw, 1):
-            r, g, b = px[x, y]
-            # Зелёный щит (активный VPN) или темно-зелёный
-            if g < 90:
-                continue
-            if g <= r + 12:
-                continue
-            if r > 160 and b > 160:
-                continue
-            if g > r + 20 and g > b - 10:
-                hits.append((x, y))
-    if len(hits) < 12:
-        return None
-    xs = sorted(p[0] for p in hits)
-    ys = sorted(p[1] for p in hits)
-    sx = xs[len(xs) // 2]
-    sy = ys[len(ys) // 2]
-    cx = ox + left + sx
-    cy = oy + top + sy
-    print(f"  {G}✔ VeepN: щит в toolbar @ {cx},{cy}{RST}")
-    return int(cx), int(cy)
 
 
-def _win_find_veepn_extension_row(
-    hwnd: int, puzzle_x: int, puzzle_y: int,
-) -> tuple[int, int] | None:
-    """После открытого меню пазла — найти строку VeePN по зелёному щиту и клик по имени.
-
-    Клик по тексту «Бесплатный VPN…» (справа от щита), не по pin и не по «Управление».
-    """
-    if os.name != "nt" or not hwnd:
-        return None
-    hay, (ox, oy) = _win_grab_chrome_image(hwnd)
-    if hay is None:
-        return None
-    w, h = hay.size
-    # Меню висит под пазлом, влево от него (скрин)
-    ix = max(0, min(w - 1, puzzle_x - ox))
-    iy = max(0, min(h - 1, puzzle_y - oy))
-    left = max(0, ix - 400)
-    top = max(0, iy + 10)
-    right = min(w, ix + 40)
-    bottom = min(h, iy + 340)
-    if right - left < 80 or bottom - top < 60:
-        return None
-    region = hay.crop((left, top, right, bottom)).convert("RGB")
-    rw, rh = region.size
-    px = region.load()
-
-    # Зелёный/бирюзовый щит VeePN
-    hits: list[tuple[int, int]] = []
-    for y in range(0, rh, 2):
-        for x in range(0, rw, 2):
-            r, g, b = px[x, y]
-            if g < 95:
-                continue
-            if g <= r + 18:
-                continue
-            if g < b - 25:
-                continue
-            if r > 170 or b > 200:
-                continue
-            # Тёмный фон меню не зелёный
-            if r + g + b < 120 and g < 110:
-                continue
-            hits.append((x, y))
-
-    if len(hits) < 5:
-        print(f"  {DIM}VeepN: зелёный щит в меню не найден (hits={len(hits)}){RST}")
-        return None
-
-    # Медиана кластера = центр щита
-    xs = sorted(p[0] for p in hits)
-    ys = sorted(p[1] for p in hits)
-    sx = xs[len(xs) // 2]
-    sy = ys[len(ys) // 2]
-
-    # Имя расширения правее щита; чуть ниже (~0.5 см ≈ 20px @96dpi) — попасть в текст строки
-    s = _win_chrome_dpi_scale(hwnd)
-    click_x = ox + left + sx + 75
-    click_y = oy + top + sy + int(20 * s)
-    print(f"  {G}✔ VeepN: строка расширения найдена @ {click_x},{click_y} (щит→имя, +0.5см вниз){RST}")
-    return int(click_x), int(click_y)
 
 
 def _win_chrome_puzzle_menu_coords(hwnd: int) -> dict | None:
@@ -4405,137 +2893,10 @@ def _win_chrome_puzzle_menu_coords(hwnd: int) -> dict | None:
     }
 
 
-def _veepn_power_on_icon_path() -> Path:
-    return _HERE / "assets" / "veepn_power_on.png"
 
 
-def _win_find_veepn_power_circle(hwnd: int) -> tuple[int, int] | None:
-    """Крупный круг питания VeepN на экране (зелёный ВКЛ / серый ВЫКЛ)."""
-    if os.name != "nt" or not hwnd:
-        return None
-    from PIL import Image
-
-    hay, (ox, oy) = _win_grab_chrome_image(hwnd)
-    if hay is None:
-        return None
-    w, h = hay.size
-    # Popup справа под toolbar — ищем только верхнюю правую зону
-    left = max(0, w - 560)
-    right = min(w, w - 8)
-    top = max(0, 55)
-    bottom = min(h, 380)
-    if right - left < 120 or bottom - top < 120:
-        return None
-    region = hay.crop((left, top, right, bottom)).convert("RGB")
-    rw, rh = region.size
-
-    # 1) Шаблон зелёного круга (со скрина пользователя)
-    tmpl_path = _veepn_power_on_icon_path()
-    if tmpl_path.is_file():
-        tmpl0 = Image.open(tmpl_path).convert("RGB")
-        best = {"score": 1e18, "x": 0, "y": 0, "tw": 0, "th": 0}
-        for scale in (0.55, 0.7, 0.85, 1.0, 1.15, 1.3):
-            tw = max(40, int(tmpl0.width * scale))
-            th = max(40, int(tmpl0.height * scale))
-            if tw >= rw or th >= rh:
-                continue
-            tip = tmpl0.resize((tw, th), Image.Resampling.LANCZOS)
-            tip_px = tip.load()
-            # маска: только «зелёные» пиксели шаблона
-            mask = []
-            for yy in range(0, th, 2):
-                for xx in range(0, tw, 2):
-                    r, g, b = tip_px[xx, yy]
-                    if r < 90 and g > 160 and (g - r) > 80:
-                        mask.append((xx, yy, r, g, b))
-            if len(mask) < 30:
-                continue
-            reg_px = region.load()
-            step = max(3, tw // 18)
-            for y0 in range(0, rh - th, step):
-                for x0 in range(0, rw - tw, step):
-                    err = 0
-                    n = 0
-                    for xx, yy, tr, tg, tb in mask:
-                        r, g, b = reg_px[x0 + xx, y0 + yy]
-                        err += abs(r - tr) + abs(g - tg) + abs(b - tb)
-                        n += 1
-                        if err > best["score"] * 1.2 and n > 20:
-                            break
-                    if n < 20:
-                        continue
-                    score = err / n
-                    if score < best["score"]:
-                        best = {"score": score, "x": x0, "y": y0, "tw": tw, "th": th}
-        if best["tw"] > 0 and best["score"] < 55:
-            cx = ox + left + best["x"] + best["tw"] // 2
-            cy = oy + top + best["y"] + best["th"] // 2
-            print(
-                f"  {G}✔ VeepN: круг на экране @ {cx},{cy} "
-                f"(tmpl score={best['score']:.1f}, {best['tw']}x{best['th']}){RST}"
-            )
-            return int(cx), int(cy)
-
-    # 2) Fallback: залитый бирюзовый диск (ВКЛ) или светло-серый (ВЫКЛ)
-    px = region.load()
-    best = {"score": 0, "cx": 0, "cy": 0, "kind": ""}
-    for cy in range(50, min(rh - 50, 260), 3):
-        for cx in range(50, rw - 50, 3):
-            green = gray = 0
-            samples = 0
-            # залитый диск R≈35–55 (не кольцо!)
-            for dy in range(-48, 49, 3):
-                for dx in range(-48, 49, 3):
-                    if dx * dx + dy * dy > 48 * 48:
-                        continue
-                    x, y = cx + dx, cy + dy
-                    if x < 0 or y < 0 or x >= rw or y >= rh:
-                        continue
-                    r, g, b = px[x, y]
-                    samples += 1
-                    # бирюзовый ВКЛ: ~#20DE9E
-                    if r < 90 and g > 150 and (g - r) > 70:
-                        green += 1
-                    # серый ВЫКЛ-диск на тёмном фоне
-                    elif 150 <= r <= 235 and 150 <= g <= 235 and 150 <= b <= 235:
-                        if abs(r - g) < 28 and abs(g - b) < 28:
-                            gray += 1
-            if samples < 40:
-                continue
-            if green >= 35:
-                score = green
-                kind = "on"
-            elif gray >= 45 and green < 12:
-                # серый круг питания; центр ближе к середине popup
-                score = gray // 2
-                kind = "off"
-            else:
-                continue
-            # центр popup по X
-            score = int(score - abs(cx - rw * 0.52) * 0.08)
-            if score > best["score"]:
-                best = {"score": score, "cx": cx, "cy": cy, "kind": kind}
-
-    if best["score"] < 28:
-        print(f"  {DIM}VeepN: круг на экране не найден{RST}")
-        return None
-    cx = ox + left + best["cx"]
-    cy = oy + top + best["cy"]
-    print(
-        f"  {G}✔ VeepN: круг на экране @ {cx},{cy} "
-        f"({best['kind']}, score={best['score']}){RST}"
-    )
-    return int(cx), int(cy)
 
 
-def _win_click_veepn_power(hwnd: int) -> bool:
-    """Клик по кругу питания Win32 (когда Playwright mouse не включает VPN)."""
-    pt = _win_find_veepn_power_circle(hwnd)
-    if not pt:
-        print(f"  {DIM}VeepN: круг на экране не найден{RST}")
-        return False
-    _win_click_screen(pt[0], pt[1])
-    return True
 
 
 def _win_press_escape() -> None:
@@ -4605,23 +2966,6 @@ def _win_click_screen(x: int, y: int) -> None:
     user32.mouse_event(0x0004, 0, 0, 0, 0)
 
 
-def _win_click_veepn_row_near_puzzle(
-    puzzle_x: int, puzzle_y: int, offsets: list, hwnd: int = 0,
-) -> None:
-    """Клик по имени «Бесплатный VPN…»: сначала поиск зелёного щита в меню."""
-    if hwnd:
-        found = _win_find_veepn_extension_row(hwnd, puzzle_x, puzzle_y)
-        if found:
-            print(f"  {DIM}VeepN: 2) клик «Бесплатный VPN…» @ {found[0]},{found[1]}…{RST}")
-            _win_click_screen(found[0], found[1])
-            return
-    if not offsets:
-        offsets = [(-140, 155)]
-    dx, dy = offsets[0]
-    x = puzzle_x + dx
-    y = puzzle_y + dy
-    print(f"  {DIM}VeepN: 2) клик «Бесплатный VPN…» (fallback) @ {x},{y}…{RST}")
-    _win_click_screen(x, y)
 
 
 def _win_click_chrome_extensions_then_vpn() -> bool:
@@ -4642,474 +2986,24 @@ def _win_click_chrome_extensions_then_vpn() -> bool:
     return True
 
 
-async def _veepn_find_ready_popup(context, eid: str, *, before_ids: set | None = None):
-    """Живой UI VeepN (кнопка + страна), не синий пустой."""
-    for p in list(context.pages):
-        with contextlib.suppress(Exception):
-            if not _is_extension_popup_url(p.url or "", eid):
-                continue
-            if await _veepn_popup_ui_ready(p):
-                return p
-    return None
 
 
-async def _veepn_find_any_popup(context, eid: str):
-    """Любой popup VeepN, в т.ч. синий пустой (VPN уже ВКЛ)."""
-    for p in list(context.pages):
-        with contextlib.suppress(Exception):
-            if _is_extension_popup_url(p.url or "", eid):
-                return p
-    return None
 
 
-async def _veepn_wait_popup_after_ext_click(
-    context, eid: str, before_ids: set | None = None, *, seconds: float = 7.0,
-):
-    """После клика по расширению — только ждём UI, без новых кликов мышью."""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        for p in list(context.pages):
-            with contextlib.suppress(Exception):
-                if not _is_extension_popup_url(p.url or "", eid):
-                    continue
-                if await _veepn_popup_ui_ready(p):
-                    return p, False
-                if await _veepn_popup_is_blank(p):
-                    await asyncio.sleep(0.7)
-                    if await _veepn_popup_ui_ready(p):
-                        return p, False
-                    if await _veepn_popup_is_blank(p):
-                        return p, True
-        await asyncio.sleep(0.2)
-    return None, False
 
 
-async def _veepn_open_popup_via_puzzle_menu(context, eid: str) -> object | None:
-    """Открыть UI VeepN: 1) щит в toolbar 2) иначе пазл→строка. Один клик → ждать UI → СТОП."""
-    with contextlib.suppress(Exception):
-        await _close_vpn_extension_tabs(context, eid)
-    with contextlib.suppress(Exception):
-        page_m = await _main_work_page(context)
-        if page_m:
-            await _maximize_window(context, page_m)
-            with contextlib.suppress(Exception):
-                await page_m.bring_to_front()
-            await asyncio.sleep(0.35)
-            await asyncio.to_thread(_win_bind_automation_hwnd)
-
-    hwnd = await asyncio.to_thread(_win_ensure_chrome_maximized)
-    if not hwnd:
-        return None
-
-    before = {id(p) for p in context.pages}
-
-    # 0) Закреплённый зелёный щит слева от пазла (как на скрине)
-    shield = await asyncio.to_thread(_win_find_veepn_toolbar_icon, hwnd)
-    if shield:
-        sx, sy = shield
-        print(f"  {DIM}VeepN: 0) клик щит toolbar @ {sx},{sy} — жду UI…{RST}")
-        await asyncio.to_thread(_win_click_screen, sx, sy)
-        got, is_blank = await _veepn_wait_popup_after_ext_click(
-            context, eid, before, seconds=6.0,
-        )
-        if got and not is_blank:
-            print(f"  {G}✔ VeepN: UI открыт со щита — дальше только круг/страна{RST}")
-            return got
-        if got and is_blank:
-            with contextlib.suppress(Exception):
-                await _veepn_soft_api_disconnect(context, eid)
-            await asyncio.sleep(0.8)
-            with contextlib.suppress(Exception):
-                if not got.is_closed():
-                    await got.close()
-            await asyncio.to_thread(_win_click_screen, sx, sy)
-            got2, blank2 = await _veepn_wait_popup_after_ext_click(
-                context, eid, before, seconds=6.0,
-            )
-            if got2 and not blank2:
-                return got2
-        # щит не дал playwright page — всё равно мог открыть visual popup; openPopup
-        pop = await _veepn_try_action_open_popup(context, eid)
-        if pop and await _veepn_popup_ui_ready(pop):
-            return pop
-
-    print(f"  {DIM}VeepN: ищу иконку пазла на экране…{RST}")
-    coords = await asyncio.to_thread(_win_chrome_puzzle_menu_coords, hwnd)
-    if not coords:
-        return await _veepn_try_action_open_popup(context, eid) or (
-            await _veepn_find_ready_popup(context, eid)
-        )
-
-    before = {id(p) for p in context.pages}
-    px, py = coords["puzzle_x"], coords["puzzle_y"]
-    offsets = coords.get("veepn_offsets") or [(-140, 175)]
-
-    print(f"  {DIM}VeepN: 1) клик пазл «Расширения» @ {px},{py}…{RST}")
-    await asyncio.to_thread(_win_click_screen, px, py)
-    await asyncio.sleep(1.0)
-
-    print(f"  {DIM}VeepN: ищу строку «Бесплатный VPN…» в меню…{RST}")
-    row = await asyncio.to_thread(_win_find_veepn_extension_row, hwnd, px, py)
-    if row:
-        vx, vy = row
-        label = "щит→имя"
-    else:
-        vx, vy = px + offsets[0][0], py + offsets[0][1]
-        label = "fallback"
-
-    print(
-        f"  {DIM}VeepN: 2) клик расширение ({label}) @ {vx},{vy} "
-        f"— дальше только жду UI…{RST}"
-    )
-    await asyncio.to_thread(_win_click_screen, vx, vy)
-
-    got, is_blank = await _veepn_wait_popup_after_ext_click(
-        context, eid, before, seconds=7.0,
-    )
-    if got and not is_blank:
-        print(f"  {G}✔ VeepN: UI открыт — дальше круг/страна (без лишних кликов){RST}")
-        return got
-
-    if got and is_blank:
-        print(
-            f"  {Y}VeepN: синий popup (VPN ВКЛ) — soft выкл и "
-            f"ОДИН повтор пазл→расширение…{RST}"
-        )
-        with contextlib.suppress(Exception):
-            await _veepn_soft_api_disconnect(context, eid)
-        await asyncio.sleep(1.0)
-        with contextlib.suppress(Exception):
-            if not got.is_closed():
-                await got.close()
-        coords2 = await asyncio.to_thread(_win_chrome_puzzle_menu_coords, hwnd)
-        if coords2:
-            px, py = coords2["puzzle_x"], coords2["puzzle_y"]
-        await asyncio.to_thread(_win_click_screen, px, py)
-        await asyncio.sleep(1.0)
-        row2 = await asyncio.to_thread(_win_find_veepn_extension_row, hwnd, px, py)
-        if row2:
-            vx, vy = row2
-        else:
-            vx, vy = px + offsets[0][0], py + offsets[0][1]
-        print(f"  {DIM}VeepN: 2b) клик расширение @ {vx},{vy} — жду UI…{RST}")
-        await asyncio.to_thread(_win_click_screen, vx, vy)
-        got2, blank2 = await _veepn_wait_popup_after_ext_click(
-            context, eid, before, seconds=7.0,
-        )
-        if got2 and not blank2:
-            print(f"  {G}✔ VeepN: UI открыт — дальше круг/страна{RST}")
-            return got2
-
-    print(f"  {DIM}VeepN: page не поймал — openPopup/CDP без лишних кликов мышью…{RST}")
-    pop = await _veepn_try_action_open_popup(context, eid)
-    if pop and await _veepn_popup_ui_ready(pop):
-        return pop
-    return await _veepn_find_ready_popup(context, eid)
 
 
-async def _veepn_soft_api_disconnect(context, eid: str | None = None) -> bool:
-    """API-выкл VeepN БЕЗ закрытия popup/вкладок (чтобы не срывать открытый UI)."""
-    if context is None:
-        return False
-    if not eid:
-        eid = await _vpn_ext_id(context)
-    if not eid:
-        return False
-    raw = await _veepn_eval_js(context, eid, _veepn_reset_session_js())
-    with contextlib.suppress(Exception):
-        await _veepn_clear_autoconnect(context, eid)
-    await asyncio.sleep(0.6)
-    return bool(raw)
 
 
-async def _veepn_ui_force_disconnect_circle(page, context=None) -> bool:
-    """Если «Подключено» — круг выкл в том же UI. Не вызывать _vpn_disconnect (закрывает page)."""
-    await _veepn_dismiss_onboarding(page)
-    await _veepn_dismiss_rate_us(page)
-    st = await _veepn_connection_label(page)
-    if st != "on":
-        return True
-    print(f"  {DIM}VeepN UI: уже Подключено → сразу круг (отключить)…{RST}")
-    await _veepn_ui_click_power(page)
-    await page.wait_for_timeout(500)
-    await _veepn_dismiss_limited_upsell(page)
-    if await _veepn_wait_until_off(page, seconds=14.0):
-        return True
-    print(f"  {DIM}VeepN UI: ещё ВКЛ — повторный круг…{RST}")
-    await _veepn_ui_click_power(page)
-    await page.wait_for_timeout(500)
-    if await _veepn_wait_until_off(page, seconds=10.0):
-        return True
-    # Soft API — без _close_vpn_extension_tabs
-    if context is not None:
-        print(f"  {DIM}VeepN: soft API выкл (popup оставляем открытым)…{RST}")
-        with contextlib.suppress(Exception):
-            await _veepn_soft_api_disconnect(context)
-        await asyncio.sleep(0.8)
-        with contextlib.suppress(Exception):
-            if not page.is_closed():
-                await page.reload(wait_until="domcontentloaded", timeout=8000)
-                await page.wait_for_timeout(500)
-    if page.is_closed():
-        return True
-    st2 = await _veepn_connection_label(page)
-    return st2 != "on"
 
 
-async def _veepn_ui_select_country_and_connect(
-    context, page, eid: str, country_code: str = "us",
-) -> bool:
-    """Открытый UI VeepN → страна → круг. Без повторных кликов по пазлу/меню."""
-    cc = _vpn_normalize_cc(country_code) or "us"
-    names = list(_VEEPN_UI_COUNTRY_NAMES.get(cc, [cc.upper()]))
-    try:
-        with contextlib.suppress(Exception):
-            await page.bring_to_front()
-        await page.wait_for_timeout(300)
-        await _veepn_dismiss_onboarding(page)
-        await _veepn_dismiss_rate_us(page)
-
-        st0 = await _veepn_connection_label(page)
-        # Уже Подключено на нужной стране (скрин: United States / Oregon) → готово
-        if st0 == "on":
-            blob = ""
-            with contextlib.suppress(Exception):
-                blob = str(await page.evaluate(
-                    "() => (document.body?.innerText || '').slice(0, 900)"
-                )).lower()
-            want = [n.lower() for n in names]
-            if cc == "us":
-                want += ["oregon", "united states", "сша"]
-            if any(w in blob for w in want if w):
-                proxy_ok = await _vpn_is_proxy_active(context, eid)
-                if not proxy_ok:
-                    for _ in range(20):
-                        await asyncio.sleep(0.4)
-                        if await _vpn_is_proxy_active(context, eid):
-                            proxy_ok = True
-                            break
-                if proxy_ok:
-                    await _veepn_finalize_connected(context, eid, via=f"UI:{cc.upper()}")
-                    print(f"  {G}✔ VeepN: уже Подключено {cc.upper()} (+proxy) — Flipkart{RST}")
-                    return True
-                print(f"  {DIM}VeepN: UI={cc.upper()} on, proxy нет — круг Win32…{RST}")
-                hwnd = await asyncio.to_thread(_win_chrome_main_hwnd)
-                if hwnd:
-                    await asyncio.to_thread(_win_click_veepn_power, hwnd)
-                    await page.wait_for_timeout(800)
-                    await _veepn_dismiss_limited_upsell(page)
-                    for _ in range(18):
-                        await asyncio.sleep(0.4)
-                        if await _vpn_is_proxy_active(context, eid):
-                            await _veepn_finalize_connected(
-                                context, eid, via=f"UI:{cc.upper()}",
-                            )
-                            print(f"  {G}✔ VeepN: proxy после круга ({cc.upper()}){RST}")
-                            return True
-                # иначе переподключение через выкл→вкл ниже
-            # Другая страна или нет proxy — круг выкл → выбор → вкл
-            if not await _veepn_ui_force_disconnect_circle(page, context):
-                print(f"  {Y}⚠ VeepN UI: не удалось отключить перед сменой страны{RST}")
-                return False
-            if page.is_closed():
-                page = await _veepn_try_action_open_popup(context, eid) or (
-                    await _veepn_find_ready_popup(context, eid)
-                )
-                if not page:
-                    print(f"  {Y}⚠ VeepN UI: popup закрылся после выкл{RST}")
-                    return False
-            print(f"  {G}✔ VeepN: ВЫКЛ — страна → круг в том же UI{RST}")
-            await page.wait_for_timeout(400)
-
-        # Шаг 1–2: страна в списке
-        print(f"  {DIM}VeepN UI: 3) клик карточки страны…{RST}")
-        if not await _veepn_ui_on_locations_list(page):
-            if not await _veepn_ui_click_location_card(page):
-                await page.wait_for_timeout(400)
-                if not await _veepn_ui_click_location_card(page):
-                    print(f"  {Y}⚠ VeepN UI: не открыл список стран{RST}")
-                    return False
-        await page.wait_for_timeout(450)
-        for _ in range(12):
-            if await _veepn_ui_on_locations_list(page):
-                break
-            await page.wait_for_timeout(250)
-
-        print(f"  {DIM}VeepN UI: 4) выбор «{names[0]}» в списке/поиске…{RST}")
-        if not await _veepn_ui_scroll_find_and_click(page, names):
-            print(f"  {Y}⚠ VeepN UI: «{names[0]}» не найден{RST}")
-            return False
-        if cc == "us":
-            await _veepn_ui_pick_us_state_if_needed(page)
-
-        await _veepn_ui_wait_main_with_country(
-            page, names + list(_VEEPN_UI_US_STATES), seconds=10.0,
-        )
-
-        # Шаг 3: круг — подключить (повтор если upsell/лагает)
-        print(f"  {DIM}VeepN UI: 5) круглая кнопка — подключить…{RST}")
-        await _veepn_dismiss_rate_us(page)
-        st_now = await _veepn_connection_label(page)
-        if st_now == "on":
-            print(f"  {DIM}VeepN UI: уже Подключено после выбора страны{RST}")
-        else:
-            for _pwr in range(3):
-                await _veepn_ui_click_power(page, context)
-                await page.wait_for_timeout(700)
-                await _veepn_dismiss_limited_upsell(page)
-                await _veepn_dismiss_rate_us(page)
-                if await _vpn_is_proxy_active(context, eid):
-                    print(f"  {G}✔ VeepN: proxy после круга{RST}")
-                    break
-                if await _veepn_wait_until_on(page, seconds=12.0 if _pwr else 16.0):
-                    break
-            else:
-                if (await _veepn_connection_label(page)) != "on" and not (
-                    await _vpn_is_proxy_active(context, eid)
-                ):
-                    print(f"  {Y}⚠ VeepN UI: не дождался «Подключено»{RST}")
-                    return False
-
-        # Шаг 4: proxy
-        print(f"  {DIM}VeepN UI: 6) проверяю Подключено + proxy…{RST}")
-        for _ in range(20):
-            proxy_ok = await _vpn_is_proxy_active(context, eid)
-            st = await _veepn_connection_label(page)
-            if st == "on" and proxy_ok:
-                await _veepn_finalize_connected(context, eid, via=f"UI:{cc.upper()}")
-                print(f"  {G}✔ VeepN: Подключено и proxy жив ({cc.upper()}){RST}")
-                return True
-            if st == "on" and not proxy_ok:
-                await asyncio.sleep(0.4)
-                continue
-            await asyncio.sleep(0.35)
-        if (await _veepn_connection_label(page)) == "on":
-            await _veepn_finalize_connected(context, eid, via=f"UI:{cc.upper()}")
-            print(f"  {G}✔ VeepN: Подключено ({cc.upper()}){RST}")
-            return True
-        print(f"  {Y}⚠ VeepN UI: статус не «Подключено» после сценария{RST}")
-        return False
-    except Exception as e:
-        print(f"  {DIM}VeepN UI connect: {str(e)[:100]}{RST}")
-        return False
 
 
-async def _veepn_try_action_open_popup(context, eid: str) -> object | None:
-    """chrome.action.openPopup() из service worker — настоящий popup как по клику."""
-    await _wake_vpn_extension(context, eid)
-    sw = await _wait_vpn_service_worker(context, eid, timeout=8.0)
-    if not sw:
-        return None
-    with contextlib.suppress(Exception):
-        await sw.evaluate("""async () => {
-            try {
-                if (chrome?.action?.openPopup) {
-                    await chrome.action.openPopup();
-                    return 'ok';
-                }
-            } catch (e) { return String(e); }
-            return 'no';
-        }""")
-    await asyncio.sleep(0.8)
-    for p in list(context.pages):
-        with contextlib.suppress(Exception):
-            if _is_extension_popup_url(p.url or "", eid) and await _veepn_popup_ui_ready(p):
-                return p
-    return None
 
 
-async def _veepn_reopen_popup_tab(context, eid: str) -> object | None:
-    """Закрыть старые popup-вкладки и открыть popup.html заново."""
-    await _close_vpn_extension_tabs(context, eid)
-    await asyncio.sleep(0.35)
-    prefix = f"chrome-extension://{eid}"
-    url = f"{prefix}/src/popup/popup.html"
-    page = None
-    with contextlib.suppress(Exception):
-        anchor = context.pages[0] if context.pages else await context.new_page()
-        cdp = await context.new_cdp_session(anchor)
-        try:
-            await cdp.send("Target.createTarget", {"url": url})
-        finally:
-            with contextlib.suppress(Exception):
-                await cdp.detach()
-        for _ in range(24):
-            await asyncio.sleep(0.2)
-            for p in list(context.pages):
-                if _is_extension_popup_url(p.url or "", eid):
-                    page = p
-                    break
-            if page:
-                break
-    if not page:
-        with contextlib.suppress(Exception):
-            page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
-    if page:
-        with contextlib.suppress(Exception):
-            await page.wait_for_load_state("domcontentloaded", timeout=10_000)
-        for _ in range(10):
-            if await _veepn_popup_ui_ready(page):
-                return page
-            await asyncio.sleep(0.3)
-    return page if page and await _veepn_popup_ui_ready(page) else page
 
 
-async def _veepn_recover_blank_popup(context, eid: str, blank_page=None) -> object | None:
-    """Пустой синий popup.html = VPN в этом Chrome уже ВКЛ.
-
-    Правило пользователя: отключить VPN → снова открыть popup → UI появится.
-    Если всё ещё пусто — пазл → «Бесплатный VPN…».
-    """
-    print(
-        f"  {Y}VeepN: popup пустой (синий) — VPN уже включён → "
-        f"отключаю и открываю снова…{RST}"
-    )
-
-    # 1) Снять VPN (API) — иначе SPA на popup.html часто не рисуется
-    with contextlib.suppress(Exception):
-        await _vpn_disconnect(context)
-    await asyncio.sleep(0.8)
-
-    if blank_page is not None:
-        with contextlib.suppress(Exception):
-            await blank_page.close()
-
-    # 2) Снова открыть popup — после выкл UI должен появиться
-    pop = await _veepn_reopen_popup_tab(context, eid)
-    if pop and await _veepn_popup_ui_ready(pop):
-        print(f"  {G}✔ VeepN: UI появился после отключения + повторного открытия{RST}")
-        return pop
-
-    # 3) openPopup из service worker
-    pop2 = await _veepn_try_action_open_popup(context, eid)
-    if pop2:
-        print(f"  {G}✔ VeepN: popup через action.openPopup{RST}")
-        return pop2
-
-    # 4) Пазл → VeePN (точные клики) → живой UI
-    with contextlib.suppress(Exception):
-        page_m = await _main_work_page(context)
-        if page_m:
-            await _maximize_window(context, page_m)
-            await asyncio.sleep(0.35)
-    pop4 = await _veepn_open_popup_via_puzzle_menu(context, eid)
-    if pop4 and await _veepn_popup_ui_ready(pop4):
-        print(f"  {G}✔ VeepN: popup через меню расширений{RST}")
-        return pop4
-
-    # 5) Ещё раз: disconnect + reopen (на случай гонки)
-    with contextlib.suppress(Exception):
-        await _vpn_disconnect(context)
-    await asyncio.sleep(0.6)
-    pop3 = await _veepn_reopen_popup_tab(context, eid)
-    if pop3 and await _veepn_popup_ui_ready(pop3):
-        print(f"  {G}✔ VeepN: UI после повторного выкл/открытия{RST}")
-        return pop3
-
-    return pop3 if pop3 and await _veepn_popup_ui_ready(pop3) else (
-        pop if pop and await _veepn_popup_ui_ready(pop) else None
-    )
 
 
 async def _open_extension_popup_page(context, eid: str, popup_paths: list[str] | None = None):
@@ -5233,485 +3127,32 @@ async def _open_extension_popup_page(context, eid: str, popup_paths: list[str] |
     return pop
 
 
-async def _veepn_ui_click_location_card(page) -> bool:
-    """На главном экране: клик по строке страны («Netherlands Amsterdam >»). Mouse, не зависающий el.click()."""
-    await _veepn_dismiss_rate_us(page)
-    with contextlib.suppress(Exception):
-        box = await page.evaluate("""() => {
-            const re = /netherlands|amsterdam|united states|united kingdom|canada|france|germany|singapore|russia|oregon|virginia|paris|london|optimal location|ip:\\s*\\d/i;
-            let best = null, bestScore = -1e9;
-            for (const el of document.querySelectorAll('button, [role="button"], div, a')) {
-                const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-                if (!t || t.length > 100 || !re.test(t)) continue;
-                if (/premium|получите|скачать|обход|adblock|попробовать/i.test(t)) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width < 120 || r.height < 28 || r.height > 140) continue;
-                if (r.top < 60 || r.top > window.innerHeight * 0.9) continue;
-                const hasChevron = />|›/.test(t) || !!el.querySelector('svg');
-                const score = r.width * r.height + (hasChevron ? 8000 : 0)
-                    - Math.abs(r.top - window.innerHeight * 0.48) * 2;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = {x: r.x + r.width / 2, y: r.y + r.height / 2, t: t.slice(0, 40)};
-                }
-            }
-            return best;
-        }""")
-        if box and box.get("x"):
-            print(f"  {DIM}VeepN UI: клик карточки «{box.get('t', '?')}»…{RST}")
-            await page.mouse.click(float(box["x"]), float(box["y"]))
-            await page.wait_for_timeout(900)
-            return True
-    for pat in (
-        r"Netherlands", r"Amsterdam", r"United States", r"United Kingdom",
-        r"Canada", r"France", r"Germany", r"Singapore", r"Russia", r"Oregon",
-    ):
-        with contextlib.suppress(Exception):
-            loc = page.get_by_text(re.compile(pat, re.I)).first
-            if await loc.count() > 0 and await loc.is_visible():
-                b = await loc.bounding_box()
-                if b:
-                    await page.mouse.click(b["x"] + b["width"] / 2, b["y"] + b["height"] / 2)
-                else:
-                    await loc.click(timeout=2500, force=True)
-                await page.wait_for_timeout(700)
-                return True
-    return False
 
 
-async def _veepn_ui_on_locations_list(page) -> bool:
-    """Экран «Локации» со списком / поиском."""
-    with contextlib.suppress(Exception):
-        return bool(await page.evaluate("""() => {
-            const b = (document.body?.innerText || '').toLowerCase();
-            const u = (location.href || '').toLowerCase();
-            return b.includes('бесплатные локации') || b.includes('free locations')
-                || b.includes('премиальные локации') || b.includes('premium locations')
-                || b.includes('одиночные результаты') || b.includes('single results')
-                || (b.includes('локации') && (b.includes('поиск') || b.includes('search')))
-                || u.includes('/locations') || u.includes('#/locations');
-        }"""))
-    return False
 
 
-async def _veepn_ui_locations_search_box(page):
-    """Поле поиска на экране «Локации» (placeholder «Поиск…» или любой text/search input)."""
-    candidates = [
-        page.get_by_placeholder(re.compile(r"Поиск|Search", re.I)).first,
-        page.locator('input[type="search"]').first,
-        page.locator('input[type="text"]').first,
-        page.locator("input:not([type='hidden']):not([type='checkbox'])").first,
-    ]
-    for loc in candidates:
-        with contextlib.suppress(Exception):
-            if await loc.count() > 0 and await loc.is_visible():
-                return loc
-    return None
 
 
-async def _veepn_ui_search_and_click(page, names: list[str]) -> bool:
-    """Искать страну в поле поиска («United States» → Одиночные результаты) и кликнуть."""
-    search = await _veepn_ui_locations_search_box(page)
-    if not search:
-        return False
-    for name in names:
-        with contextlib.suppress(Exception):
-            await search.click(timeout=2000)
-            await search.fill("")
-            await search.type(name, delay=35)
-            await page.wait_for_timeout(600)
-            print(f"  {DIM}VeepN UI: поиск «{name}»…{RST}")
-            # Клик по строке результата (не по шеврону штатов отдельно — сама строка)
-            box = await page.evaluate(
-                """(want) => {
-                    const w = (want || '').toLowerCase();
-                    if (!w) return null;
-                    let best = null, bestScore = -1e9;
-                    for (const el of document.querySelectorAll(
-                            'button, [role="button"], li, a, div, span')) {
-                        const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-                        if (!t || t.length > 80) continue;
-                        const tl = t.toLowerCase();
-                        if (!tl.includes(w)) continue;
-                        if (/премиальн|premium|получить|скачать/i.test(t)) continue;
-                        if (/одиночные|single result|результаты/i.test(t)
-                                && tl.split('\\n')[0].indexOf(w) < 0) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 80 || r.height < 22 || r.height > 100) continue;
-                        if (r.top < 80 || r.top > window.innerHeight * 0.92) continue;
-                        const score = r.width * Math.min(r.height, 56)
-                            - Math.abs(r.top - 180) * 3;
-                        if (score > bestScore) {
-                            bestScore = score;
-                            best = {x: r.x + Math.min(r.width, 220) / 2,
-                                    y: r.y + r.height / 2, t: t.slice(0, 50)};
-                        }
-                    }
-                    return best;
-                }""",
-                name,
-            )
-            if box and box.get("x"):
-                await page.mouse.click(float(box["x"]), float(box["y"]))
-                print(f"  {DIM}VeepN UI: клик по поиску «{box.get('t', name)}»{RST}")
-                await page.wait_for_timeout(700)
-                return True
-            loc = page.get_by_text(re.compile(rf"^{re.escape(name)}$", re.I)).first
-            if await loc.count() == 0:
-                loc = page.get_by_text(re.compile(re.escape(name), re.I)).first
-            if await loc.count() > 0 and await loc.is_visible():
-                await loc.click(timeout=2500)
-                print(f"  {DIM}VeepN UI: клик «{name}» (поиск){RST}")
-                await page.wait_for_timeout(600)
-                return True
-        with contextlib.suppress(Exception):
-            await search.fill("")
-            await page.wait_for_timeout(200)
-    return False
 
 
-async def _veepn_ui_scroll_find_and_click(page, names: list[str]) -> bool:
-    """Сначала поиск в поле «Поиск…», иначе скролл списка бесплатных локаций."""
-    if await _veepn_ui_search_and_click(page, names):
-        return True
-    for name in names:
-        for _scroll in range(14):
-            with contextlib.suppress(Exception):
-                loc = page.get_by_text(re.compile(rf"^{re.escape(name)}$", re.I)).first
-                if await loc.count() == 0:
-                    loc = page.get_by_text(re.compile(re.escape(name), re.I)).first
-                if await loc.count() > 0 and await loc.is_visible():
-                    await loc.scroll_into_view_if_needed(timeout=2000)
-                    await loc.click(timeout=2500)
-                    print(f"  {DIM}VeepN UI: клик «{name}» (скролл){RST}")
-                    await page.wait_for_timeout(600)
-                    return True
-            with contextlib.suppress(Exception):
-                await page.evaluate("""() => {
-                    const nodes = [...document.querySelectorAll('div, section, main, ul')];
-                    let box = null, best = 0;
-                    for (const el of nodes) {
-                        const s = getComputedStyle(el);
-                        const ok = /(auto|scroll)/.test(s.overflowY) || el.scrollHeight > el.clientHeight + 40;
-                        if (!ok) continue;
-                        const r = el.getBoundingClientRect();
-                        if (r.height < 120 || r.width < 120) continue;
-                        const area = r.width * r.height;
-                        if (area > best) { best = area; box = el; }
-                    }
-                    if (box) box.scrollBy(0, Math.max(160, box.clientHeight * 0.7));
-                    else window.scrollBy(0, 220);
-                }""")
-            await page.wait_for_timeout(280)
-        with contextlib.suppress(Exception):
-            search = await _veepn_ui_locations_search_box(page)
-            if search:
-                await search.fill("")
-                await page.wait_for_timeout(300)
-    return False
-
-async def _veepn_ui_pick_us_state_if_needed(page) -> bool:
-    """После клика United States: если развернулись штаты — выбрать любой (Oregon/Virginia…)."""
-    await page.wait_for_timeout(400)
-    # Уже на главном с Oregon — штат выбран
-    with contextlib.suppress(Exception):
-        body = (await page.evaluate("() => (document.body?.innerText || '').toLowerCase()")).lower()
-        if "соединение" in body or "connection" in body:
-            if any(s.lower() in body for s in _VEEPN_UI_US_STATES):
-                return True
-            if not await _veepn_ui_on_locations_list(page):
-                return True  # вернулись на главный без штатов в тексте — ок
-    for state in _VEEPN_UI_US_STATES:
-        with contextlib.suppress(Exception):
-            loc = page.get_by_text(re.compile(rf"^{re.escape(state)}$", re.I)).first
-            if await loc.count() == 0:
-                loc = page.get_by_text(re.compile(re.escape(state), re.I)).first
-            if await loc.count() > 0 and await loc.is_visible():
-                await loc.click(timeout=2500)
-                print(f"  {DIM}VeepN UI: штат {state}{RST}")
-                await page.wait_for_timeout(700)
-                return True
-    # Нет раскрытия штатов — клик по самой строке US мог уже выбрать дефолт
-    return True
 
 
-async def _veepn_ui_wait_main_with_country(page, names: list[str], *, seconds: float = 8.0) -> bool:
-    """Ждём главный экран (ВЫКЛ/Подключено) с выбранной страной на карточке."""
-    deadline = time.monotonic() + seconds
-    name_re = re.compile("|".join(re.escape(n) for n in names), re.I)
-    while time.monotonic() < deadline:
-        await _veepn_dismiss_rate_us(page)
-        st = await _veepn_connection_label(page)
-        if st in ("on", "off", "unknown"):
-            with contextlib.suppress(Exception):
-                blob = await page.evaluate("() => (document.body?.innerText || '').slice(0, 800)")
-                if name_re.search(blob or "") and not await _veepn_ui_on_locations_list(page):
-                    return True
-        # Назад из локаций, если застряли
-        if await _veepn_ui_on_locations_list(page):
-            with contextlib.suppress(Exception):
-                back = page.locator('button, [role="button"], a').filter(
-                    has_text=re.compile(r"^<$|^←$|назад|back", re.I)
-                ).first
-                if await back.count() > 0:
-                    await back.click(timeout=1500)
-                else:
-                    await page.keyboard.press("Escape")
-        await page.wait_for_timeout(400)
-    return False
 
 
-async def _veepn_ui_reconnect_country(context, country_code: str) -> bool:
-    """Смена страны через UI VeepN; экранные клики сериализованы между потоками."""
-    async with _veepn_screen_guard():
-        return await _veepn_ui_reconnect_country_impl(context, country_code)
 
 
-async def _veepn_ui_reconnect_country_impl(context, country_code: str) -> bool:
-    """Смена страны строго через UI VeepN (как в обучении):
-
-    1) Сначала пазл → VeePN (не открывать синий popup.html через CDP)
-    2) Если уже «Подключено» → круг выкл → ждать ВЫКЛ
-    3) Карточка страны → список/поиск → United States (+ штат)
-    4) Круглая кнопка вкл → проверка «Подключено»
-    """
-    if not _vpn_is_veepn():
-        return False
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        return False
-    cc = _vpn_normalize_cc(country_code)
-    print(f"  {DIM}VeepN UI: страна → {cc.upper()} (пазл→страна→питание)…{RST}")
-
-    # 1) Пазл первым — CDP popup.html часто синий пустой, и мышь ездит по вкладке
-    page = await _veepn_open_popup_via_puzzle_menu(context, eid)
-    if not page or not await _veepn_popup_ui_ready(page):
-        page = await _open_extension_popup_page(
-            context, eid, [
-                "src/popup/popup.html",
-            ],
-        )
-        if page and await _veepn_popup_is_blank(page):
-            # Синий = VPN вкл → выкл + снова пазл (не кликать по пустой странице)
-            recovered = await _veepn_recover_blank_popup(context, eid, blank_page=page)
-            page = recovered
-            if not page or not await _veepn_popup_ui_ready(page):
-                page = await _veepn_open_popup_via_puzzle_menu(context, eid)
-    if not page or await _veepn_popup_is_blank(page) or not await _veepn_popup_ui_ready(page):
-        return await _veepn_switch_country(context, eid, cc)
-
-    ok = await _veepn_ui_select_country_and_connect(context, page, eid, cc)
-    if ok:
-        return True
-    return await _veepn_switch_country(context, eid, cc)
 
 
-async def _ensure_veepn_connected(context, *, quick: bool = False, flipkart: bool = True) -> bool:
-    """UI-правила VeepN для Flipkart:
-    • Proxy уже жив → сразу Flipkart (не рвать)
-    • Уже «Подключено» + USA → не трогать
-    • ВЫКЛ / другая страна → UI щит/пазл → страна → круг
-    """
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        print(f"  {Y}⚠ VeepN: не найден ID расширения{RST}")
-        return False
-
-    await _wake_vpn_extension(context, eid)
-    await asyncio.sleep(0.5 if quick else 1.0)
-    await _dismiss_all_veepn_welcome(context)
-
-    # Самый надёжный короткий путь: proxy уже работает
-    if flipkart and await _vpn_is_proxy_active(context, eid):
-        cc_now = ""
-        with contextlib.suppress(Exception):
-            cc_now = await _veepn_connected_country_hint(context, eid)
-        print(
-            f"  {G}✔ VeepN: proxy уже активен "
-            f"({(cc_now or 'US?').upper()}) — Flipkart{RST}"
-        )
-        with contextlib.suppress(Exception):
-            await _veepn_finalize_connected(context, eid, via=(cc_now or "vpn").upper())
-        return True
-
-    # Proxy нет — но UI может уже быть Подключено (как на скрине без ожидания proxy)
-    # продолжаем через щит/пазл ниже
-
-    # Открываем настоящий UI через щит/пазл (не синий CDP вслепую)
-    page = await _veepn_open_popup_via_puzzle_menu(context, eid)
-    if not page or not await _veepn_popup_ui_ready(page):
-        page = await _open_extension_popup_page(
-            context, eid, ["src/popup/popup.html"],
-        )
-    if not page:
-        print(f"  {Y}⚠ VeepN: не открыл popup{RST}")
-        return False
-
-    try:
-        with contextlib.suppress(Exception):
-            await page.bring_to_front()
-        await page.wait_for_timeout(400)
-        await _veepn_dismiss_onboarding(page)
-        await _veepn_dismiss_rate_us(page)
-
-        st = await _veepn_connection_label(page)
-        print(f"  {DIM}VeepN статус: {st}{RST}")
-
-        if st == "on" and flipkart:
-            cc_now = await _veepn_connected_country_hint(context, eid)
-            proxy_ok = await _vpn_is_proxy_active(context, eid)
-            if not proxy_ok:
-                print(f"  {DIM}VeepN: Подключено — жду proxy…{RST}")
-                for _ in range(28):
-                    await asyncio.sleep(0.4)
-                    if await _vpn_is_proxy_active(context, eid):
-                        proxy_ok = True
-                        break
-            if not proxy_ok:
-                # UI сказал on, proxy мёртв — добить круг Win32 и ещё раз ждать
-                print(f"  {Y}VeepN: UI on, но proxy нет — клик круга на экране…{RST}")
-                hwnd = await asyncio.to_thread(_win_chrome_main_hwnd)
-                if hwnd:
-                    await asyncio.to_thread(_win_click_veepn_power, hwnd)
-                    await _veepn_dismiss_limited_upsell(page)
-                    for _ in range(20):
-                        await asyncio.sleep(0.4)
-                        if await _vpn_is_proxy_active(context, eid):
-                            proxy_ok = True
-                            break
-            if not proxy_ok:
-                print(f"  {Y}⚠ VeepN: Подключено в UI, но proxy не поднялся{RST}")
-                # не врать Flipkart — идём в сценарий включения
-            else:
-                print(
-                    f"  {G}✔ VeepN: уже Подключено "
-                    f"({(cc_now or '?').upper()}) — сразу Flipkart{RST}"
-                )
-                await _veepn_dismiss_limited_upsell(page)
-                await _veepn_finalize_connected(
-                    context, eid, via=(cc_now or "vpn").upper(),
-                )
-                return True
-        elif st == "on" and not flipkart:
-            print(f"  {DIM}VeepN: отключаю для смены сессии…{RST}")
-            click = await _veepn_ui_click_power(page)
-            if not click.get("clicked") and not click.get("already"):
-                print(f"  {DIM}клик отключения: {click}{RST}")
-            await page.wait_for_timeout(800)
-            if not await _veepn_wait_until_off(page, seconds=20.0):
-                await _veepn_soft_api_disconnect(context, eid)
-                await asyncio.sleep(1.0)
-
-        # С ВЫКЛ: карточка страны → USA → питание
-        print(f"  {DIM}VeepN: ВЫКЛ → USA (карточка → список → питание)…{RST}")
-        usa_ok = False
-        if flipkart:
-            with contextlib.suppress(Exception):
-                usa_ok = await _veepn_ui_select_country_and_connect(
-                    context, page, eid, _VPN_DEFAULT_COUNTRY,
-                )
-            if not usa_ok:
-                with contextlib.suppress(Exception):
-                    usa_ok = await _veepn_ui_reconnect_country(context, _VPN_DEFAULT_COUNTRY)
-        if not usa_ok:
-            with contextlib.suppress(Exception):
-                usa_ok = await _veepn_connect_country_prefer_api(
-                    context, eid, _VPN_DEFAULT_COUNTRY,
-                )
-        if not usa_ok:
-            for attempt in range(1, 3):
-                st = await _veepn_connection_label(page)
-                if st == "on":
-                    break
-                if page.is_closed():
-                    page = await _veepn_open_popup_via_puzzle_menu(context, eid) or page
-                print(f"  {DIM}VeepN: ВЫКЛ → питание ({attempt}/2)…{RST}")
-                click = await _veepn_ui_click_power(page)
-                if isinstance(click, dict) and not click.get("clicked"):
-                    print(f"  {DIM}клик: {click}{RST}")
-                await page.wait_for_timeout(800)
-                await _veepn_dismiss_limited_upsell(page)
-                if await _veepn_wait_until_on(page, seconds=20.0 if quick else 30.0):
-                    break
-            else:
-                if flipkart:
-                    with contextlib.suppress(Exception):
-                        usa_ok = await _veepn_ensure_usa_for_flipkart(context, eid)
-                if not usa_ok and (await _veepn_connection_label(page)) != "on":
-                    if not await _vpn_is_proxy_active(context, eid):
-                        return False
-
-        for _ in range(12):
-            if await _vpn_is_proxy_active(context, eid):
-                break
-            await asyncio.sleep(0.4)
-
-        if flipkart and not usa_ok:
-            await _veepn_ensure_usa_for_flipkart(context, eid)
-
-        cc = await _veepn_connected_country_hint(context, eid) or (
-            _VPN_DEFAULT_COUNTRY if flipkart else ""
-        )
-        await _veepn_finalize_connected(context, eid, via=(cc or "vpn").upper())
-        return bool(await _vpn_is_proxy_active(context, eid) or (
-            await _veepn_connection_label(page) == "on"
-        ))
-    except Exception as e:
-        print(f"  {DIM}VeepN connect: {str(e)[:120]}{RST}")
-        return await _vpn_is_proxy_active(context, eid)
 
 
-async def _vpn_popup_go_main(pop, eid: str) -> bool:
-    """Вернуться на главный экран Connect (не Exceptions/Settings)."""
-    main_url = f"chrome-extension://{eid}/src/popup/popup.html"
-    for _ in range(8):
-        try:
-            on_main = await pop.evaluate("""() => !!document.querySelector('.main-connect-button')""")
-            if on_main:
-                return True
-            body = (await pop.evaluate("() => document.body ? document.body.innerText : ''")).lower()
-            if (
-                "enter website address" in body
-                or "add exceptions to the vpn" in body
-                or body.strip() == "exceptions"
-                or ("exceptions" in body and "add website" in body)
-            ):
-                clicked = await pop.evaluate("""() => {
-                    const bar = document.querySelector('.top-bar');
-                    if (bar) { bar.click(); return true; }
-                    return false;
-                }""")
-                if clicked:
-                    await pop.wait_for_timeout(900)
-                    continue
-            try:
-                await pop.goto(main_url, wait_until="domcontentloaded", timeout=12_000)
-                await pop.wait_for_timeout(1_500)
-            except Exception:
-                pass
-            if await pop.evaluate("() => !!document.querySelector('.main-connect-button')"):
-                return True
-        except Exception:
-            pass
-        await pop.wait_for_timeout(500)
-    return False
+
 
 
 _LAST_CHROMIUM_CLOSED_AT: float = 0.0
-_VPN_CHROME_COOLDOWN_SEC = 6.0
-_vpn_bg_status: dict = {"state": "idle", "message": ""}
-_vpn_bg_lock = threading.Lock()
 
 
-def get_vpn_bg_status() -> dict:
-    with _vpn_bg_lock:
-        return dict(_vpn_bg_status)
 
 
-def _set_vpn_bg_status(state: str, message: str = "") -> None:
-    global _vpn_bg_status
-    with _vpn_bg_lock:
-        _vpn_bg_status = {"state": state, "message": message}
 
 
 def scan_profiles_extension_status() -> dict:
@@ -5727,48 +3168,6 @@ def scan_profiles_extension_status() -> dict:
     }
 
 
-def sync_vpn_extension_status() -> dict:
-    """Синхронизирует vpn_bg_status с фактическим состоянием расширений."""
-    cur = get_vpn_bg_status()
-    msg = str(cur.get("message") or "")
-    state = cur.get("state", "idle")
-    if state == "warming" and any(
-        x in msg for x in ("Проверка VPN", "Flipkart", "VPN фон", "VPN OK")
-    ):
-        return cur
-    if state not in ("installing", "warming", "idle"):
-        return cur
-
-    if not _vpn_extension_dir():
-        _set_vpn_bg_status("disabled", "Сеть: прокси / личный VPN на ПК")
-        return get_vpn_bg_status()
-
-    scan = scan_profiles_extension_status()
-    total = int(scan.get("total") or 0)
-    with_ext = int(scan.get("with_ext") or 0)
-    missing = int(scan.get("missing") or 0)
-
-    if total == 0:
-        _set_vpn_bg_status("idle", "Профили не найдены")
-    elif missing == 0:
-        _set_vpn_bg_status(
-            "ready",
-            f"Расширение {with_ext}/{total} · VPN при сценарии",
-        )
-    elif with_ext > 0:
-        names = ", ".join(scan["missing_names"][:2])
-        if missing > 2:
-            names += "…"
-        _set_vpn_bg_status(
-            "ready",
-            f"Расширение {with_ext}/{total} · без: {names}",
-        )
-    else:
-        _set_vpn_bg_status(
-            "error",
-            f"Расширение не установлено ни в один из {total} профилей",
-        )
-    return get_vpn_bg_status()
 
 
 def _offscreen_chrome_args(args: list[str]) -> list[str]:
@@ -5794,17 +3193,6 @@ def _hidden_chrome_args(args: list[str]) -> list[str]:
     return out
 
 
-def _vpn_browser_launch_kw(profile_path: Path | str | None = None) -> dict:
-    """kwargs для фонового VPN: headed Chrome, окно вне экрана."""
-    kw = _browser_launch_kw(
-        headless=False, profile_path=profile_path, background_install=True,
-    )
-    kw["headless"] = False
-    kw["args"] = _offscreen_chrome_args(kw.get("args", []))
-    chrome = _find_chrome()
-    if chrome and profile_path is not None and not _needs_load_extension(profile_path):
-        kw["executable_path"] = chrome
-    return kw
 
 
 @contextlib.contextmanager
@@ -5843,45 +3231,6 @@ def _chrome_window_hider():
         t.join(timeout=2.0)
 
 
-def _register_vpn_extension_prefs(
-    profile_path: Path, eid: str, version: str, manifest: dict,
-) -> None:
-    """Регистрирует расширение в Preferences профиля Chrome."""
-    prefs_path = profile_path / "Default" / "Preferences"
-    prefs_path.parent.mkdir(parents=True, exist_ok=True)
-    prefs: dict = {}
-    if prefs_path.exists():
-        try:
-            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-        except Exception:
-            prefs = {}
-    perms = manifest.get("permissions", [])
-    hosts = manifest.get("host_permissions", [])
-    perm_block = {
-        "api": perms,
-        "explicit_host": hosts,
-        "manifest_permissions": perms,
-    }
-    now = str(int(time.time() * 1_000_000))
-    prefs.setdefault("extensions", {}).setdefault("settings", {})[eid] = {
-        "account_extension_type": 0,
-        "active_permissions": perm_block,
-        "creation_flags": 38,
-        "first_install_time": now,
-        "from_webstore": False,
-        "granted_permissions": perm_block,
-        "last_update_time": now,
-        "location": 4,
-        "manifest": manifest,
-        "path": f"{eid}/{version}",
-        "state": 1,
-        "was_installed_by_default": False,
-        "was_installed_by_oem": False,
-    }
-    # Не восстанавливать вкладки (vpnlyprotect.ru и т.п.) при следующем запуске Chrome
-    prefs.setdefault("session", {})["restore_on_startup"] = 5
-    prefs["session"]["startup_urls"] = []
-    prefs_path.write_text(json.dumps(prefs, ensure_ascii=False), encoding="utf-8")
 
 
 def _install_extension_filesystem(profile_path: Path, *, force: bool = False) -> bool:
@@ -5971,111 +3320,8 @@ async def _ensure_extension_in_profile(profile_path: Path) -> bool:
                 pass
 
 
-def _vpn_extension_ui_names() -> list[str]:
-    """Имена VPN-расширения для поиска на chrome://extensions/."""
-    names = [
-        "VPNLY", "VeePN", "VeepN", "Бесплатный VPN", "Free VPN",
-        "Free VPN & Proxy", "VPN и прокси",
-    ]
-    ext = _vpn_extension_dir()
-    if not ext:
-        return names
-    for loc in ("ru", "en"):
-        msg = Path(ext) / "_locales" / loc / "messages.json"
-        if not msg.is_file():
-            continue
-        with contextlib.suppress(Exception):
-            data = json.loads(msg.read_text(encoding="utf-8"))
-            n = str((data.get("app_name") or {}).get("message") or "").strip()
-            if n and n not in names:
-                names.insert(0, n)
-    return names
 
 
-async def _activate_vpn_extension_via_chrome_page(context) -> bool:
-    """chrome://extensions/ → найти VPN в списке → включить → клик по карточке.
-
-    Установка файлами уже сделана; здесь только UI выбора/включения.
-    """
-    if getattr(context, "_subhub_via_proxy", False) or not _vpn_extension_dir():
-        return False
-    eid = (await _vpn_ext_id(context)) or _vpn_ext_id_for_install() or ""
-    names = _vpn_extension_ui_names()
-    page = None
-    try:
-        print(f"  {DIM}chrome://extensions/ → выбираю VPN в списке…{RST}")
-        page = await context.new_page()
-        await page.goto("chrome://extensions/", wait_until="domcontentloaded", timeout=20_000)
-        await page.wait_for_timeout(700)
-        result = await page.evaluate(
-            """async ({eid, names}) => {
-              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-              const mgr = document.querySelector('extensions-manager');
-              if (!mgr || !mgr.shadowRoot) return {ok: false, err: 'no-manager'};
-              const toolbar = mgr.shadowRoot.querySelector('extensions-toolbar');
-              const dev = toolbar && toolbar.shadowRoot
-                && toolbar.shadowRoot.querySelector('#devMode');
-              if (dev && !dev.checked) {
-                dev.click();
-                await sleep(350);
-              }
-              const list = mgr.shadowRoot.querySelector('extensions-item-list');
-              const root = (list && list.shadowRoot) ? list.shadowRoot : mgr.shadowRoot;
-              const items = root.querySelectorAll('extensions-item');
-              const lowNames = names.map((n) => String(n).toLowerCase());
-              for (const item of items) {
-                const id = item.id || item.getAttribute('id') || '';
-                const sr = item.shadowRoot;
-                if (!sr) continue;
-                const nameEl = sr.querySelector('#name, .name, #name-and-version #name');
-                const name = ((nameEl && nameEl.textContent) || '').trim();
-                const hit = (eid && id === eid) || lowNames.some(
-                  (n) => n && name.toLowerCase().includes(n)
-                );
-                if (!hit) continue;
-                const toggle = sr.querySelector(
-                  '#enableToggle, cr-toggle#enableToggle, #enable-toggle, cr-toggle'
-                );
-                let enabled = true;
-                if (toggle) {
-                  enabled = !!(toggle.checked || toggle.hasAttribute('checked'));
-                  if (!enabled) {
-                    toggle.click();
-                    await sleep(450);
-                    enabled = !!(toggle.checked || toggle.hasAttribute('checked'));
-                  }
-                }
-                // Клик по имени / карточке — «зайти» в расширение
-                const clickTarget = nameEl || sr.querySelector('#card, .card, a#detailsButton');
-                if (clickTarget) {
-                  clickTarget.click();
-                  await sleep(500);
-                }
-                return {ok: true, id, name, enabled};
-              }
-              return {ok: false, err: 'not-found', count: items.length};
-            }""",
-            {"eid": eid, "names": names},
-        )
-        if not isinstance(result, dict) or not result.get("ok"):
-            err = (result or {}).get("err", "?") if isinstance(result, dict) else "?"
-            cnt = (result or {}).get("count", "?") if isinstance(result, dict) else "?"
-            print(f"  {Y}⚠ chrome://extensions/: VPN не найден ({err}, items={cnt}){RST}")
-            return False
-        print(
-            f"  {G}✔ chrome://extensions/: «{result.get('name') or result.get('id')}»"
-            f" · вкл={result.get('enabled')}{RST}"
-        )
-        # details URL иногда chrome://extensions/?id=...
-        await page.wait_for_timeout(400)
-        return True
-    except Exception as exc:
-        print(f"  {Y}⚠ chrome://extensions/: {exc}{RST}")
-        return False
-    finally:
-        if page is not None:
-            with contextlib.suppress(Exception):
-                await page.close()
 
 
 async def _prepare_profile_vpn(profile_path: Path | str, *, label: str = "") -> tuple[bool, str]:
@@ -6123,24 +3369,8 @@ async def _prepare_profile_vpn(profile_path: Path | str, *, label: str = "") -> 
         await _vpn_chrome_cooldown(extra=2.0)
 
 
-def prepare_profile_vpn_sync(profile_path: Path | str, *, label: str = "") -> tuple[bool, str]:
-    try:
-        return asyncio.run(_prepare_profile_vpn(profile_path, label=label))
-    except RuntimeError:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(
-                lambda: asyncio.run(_prepare_profile_vpn(profile_path, label=label)),
-            ).result()
-    except Exception as exc:
-        return False, str(exc)[:120]
 
 
-async def _warmup_vpn_extension() -> bool:
-    """Устаревшее имя — только установка расширений в профили без VPN."""
-    n = await _bg_install_extensions_on_profiles()
-    _set_vpn_bg_status("ready", f"Расширения установлены ({n} проф.)" if n else "Расширения на месте")
-    return True
 
 
 def _note_chromium_closed() -> None:
@@ -6149,15 +3379,6 @@ def _note_chromium_closed() -> None:
     _LAST_CHROMIUM_CLOSED_AT = time.monotonic()
 
 
-def _is_vpn_junk_url(url: str) -> bool:
-    u = (url or "").lower()
-    if _vpn_is_veepn():
-        return "chromewebdata" in u
-    return (
-        "vpnlyprotect.ru" in u
-        or "errors.edgesuite.net" in u
-        or "chromewebdata" in u
-    )
 
 
 def _is_junk_url(url: str) -> bool:
@@ -6165,27 +3386,6 @@ def _is_junk_url(url: str) -> bool:
     return _is_vpn_junk_url(u) or u in ("about:blank", "chrome://newtab/")
 
 
-async def _block_vpn_junk_routes(context) -> None:
-    """Не открывать vpnlyprotect.ru (403) — только для VPNLY."""
-    if _vpn_is_veepn():
-        return
-
-    async def _handler(route) -> None:
-        try:
-            if "vpnlyprotect.ru" in (route.request.url or "").lower():
-                await route.abort()
-            else:
-                await route.continue_()
-        except Exception:
-            try:
-                await route.continue_()
-            except Exception:
-                pass
-
-    try:
-        await context.route("**/*vpnlyprotect.ru/**", _handler)
-    except Exception:
-        pass
 
 
 async def _close_junk_tabs(context) -> None:
@@ -6246,25 +3446,6 @@ def _is_extension_tab_url(url: str) -> bool:
     return u.startswith("chrome-extension://") or _is_vpn_junk_url(u)
 
 
-async def _dismiss_all_veepn_welcome(context) -> None:
-    """Закрывает onboarding VeepN («Thank you for installing» и welcome)."""
-    for p in list(context.pages):
-        try:
-            u = (p.url or "").lower()
-            title = ""
-            try:
-                title = (await p.title() or "").lower()
-            except Exception:
-                pass
-            if (
-                u.startswith("chrome-extension://")
-                or "veepn" in title
-                or "installing" in title
-                or "thank you" in title
-            ):
-                await _veepn_dismiss_onboarding(p)
-        except Exception:
-            pass
 
 
 async def _ensure_single_work_page(context):
@@ -6309,25 +3490,8 @@ async def _main_work_page(context):
     return await _ensure_single_work_page(context)
 
 
-async def _vpn_chrome_cooldown(extra: float = 0.0) -> None:
-    """Пауза после закрытия предыдущего Chromium, чтобы VPNLY успел в новом окне."""
-    elapsed = time.monotonic() - _LAST_CHROMIUM_CLOSED_AT
-    wait = max(0.0, _VPN_CHROME_COOLDOWN_SEC + extra - elapsed)
-    if wait > 0:
-        print(f"  {DIM}Пауза {wait:.0f}s — ждём готовности VPN в новом браузере...{RST}")
-        await asyncio.sleep(wait)
 
 
-async def _require_vpn_connected(context) -> bool:
-    """Подключает VPN; при наличии расширения без VPN — False (2 попытки)."""
-    if not _vpn_extension_dir():
-        return True
-    await _close_junk_tabs(context)
-    if await _ensure_vpn_connected(context):
-        return True
-    print(f"  {Y}Повторная попытка подключить VPN...{RST}")
-    await _vpn_chrome_cooldown(extra=3.0)
-    return await _ensure_vpn_connected(context)
 
 
 async def _verify_flipkart_reachable(page, url: str = "https://www.flipkart.com/account/login?ret=/") -> bool:
@@ -6511,419 +3675,24 @@ async def _open_flipkart_page(
     return ok, page
 
 
-async def _wait_vpn_service_worker(context, eid: str, timeout: float = 18.0):
-    """Ждёт service worker VPN-расширения (MV3 — ленивый старт)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for sw in list(getattr(context, "service_workers", []) or []):
-            try:
-                if eid in (sw.url or ""):
-                    return sw
-            except Exception:
-                pass
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            sw = await asyncio.wait_for(
-                context.wait_for_event("serviceworker"),
-                timeout=min(2.0, remaining),
-            )
-            if eid in (sw.url or ""):
-                return sw
-        except Exception:
-            pass
-        await asyncio.sleep(0.35)
-    return None
 
 
-async def _wait_vpn_proxy_ready(
-    context, eid: str | None = None, *, timeout: float = 30.0,
-) -> bool:
-    """Ждёт, пока VeepN/VPNLY реально включит proxy (не только UI «connected»)."""
-    if not _vpn_extension_dir():
-        return True
-    if not eid:
-        eid = await _vpn_ext_id(context)
-    if not eid:
-        return False
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if await _vpn_is_proxy_active(context, eid):
-            await asyncio.sleep(0.55)  # короткая стабилизация proxy
-            return True
-        await asyncio.sleep(0.35)
-    return False
 
 
-async def _wake_vpn_extension(context, eid: str) -> None:
-    """Будит MV3 service worker расширения (временная вкладка, не рабочая)."""
-    page = None
-    owned = False
-    try:
-        for p in context.pages:
-            if _is_extension_tab_url(p.url or ""):
-                page = p
-                break
-        if not page:
-            page = await context.new_page()
-            owned = True
-        if not (page.url or "").startswith("http"):
-            with contextlib.suppress(Exception):
-                await page.goto("about:blank", wait_until="domcontentloaded", timeout=8_000)
-        await _wait_vpn_service_worker(context, eid, timeout=6.0)
-        await asyncio.sleep(0.8)
-    finally:
-        if owned and page:
-            with contextlib.suppress(Exception):
-                await page.close()
 
 
-async def _vpn_proxy_mode(context, eid: str) -> str | None:
-    """Режим chrome.proxy: direct/system = VPN выкл."""
-    sw = await _wait_vpn_service_worker(context, eid, timeout=4.0)
-    if not sw:
-        return None
-    try:
-        mode = await sw.evaluate("""async () => {
-            const s = await chrome.proxy.settings.get({});
-            return (s && s.value && s.value.mode) ? s.value.mode : 'direct';
-        }""")
-        return str(mode or "direct").lower()
-    except Exception:
-        return None
 
 
-async def _vpn_is_proxy_active(context, eid: str) -> bool:
-    mode = await _vpn_proxy_mode(context, eid)
-    return bool(mode and mode not in ("direct", "system", "auto_detect"))
 
 
-async def _vpnly_enable_server(context, eid: str, server: dict) -> bool:
-    """Включает VPNLY на одном сервере через enableProxy API."""
-    import json as _json
-
-    await _wake_vpn_extension(context, eid)
-    sw = await _wait_vpn_service_worker(context, eid, timeout=12.0)
-    pick_json = _json.dumps(server)
-    meta_json = _json.dumps([{"uuid": server["uuid"], "city": server["city"]}])
-    _js = f"""async () => {{
-        const pick = {pick_json};
-        const meta = {meta_json};
-        await chrome.storage.local.set({{
-            configsFree: meta,
-            consent: true,
-            agreementAccepted: true,
-            'proxy-vpn.currentServer': pick,
-            currentServer: pick,
-        }});
-        try {{
-            if (chrome.offscreen) {{
-                const clients = await self.clients.matchAll();
-                const hasOff = clients.some(c => (c.url || '').includes('offscreen.html'));
-                if (!hasOff) {{
-                    await chrome.offscreen.createDocument({{
-                        url: 'offscreen.html',
-                        reasons: [chrome.offscreen.Reason.WORKERS],
-                        justification: 'VPN authentication',
-                    }});
-                    await new Promise(r => setTimeout(r, 1200));
-                }}
-            }}
-        }} catch (e) {{}}
-        try {{
-            await chrome.runtime.sendMessage({{
-                type: 'enableProxy',
-                payload: pick,
-            }});
-            for (let i = 0; i < 24; i++) {{
-                await new Promise(r => setTimeout(r, 500));
-                const mode = await chrome.proxy.settings.get({{}});
-                const m = (mode && mode.value && mode.value.mode) || 'direct';
-                if (m && m !== 'direct' && m !== 'system' && m !== 'auto_detect') {{
-                    return {{ ok: true }};
-                }}
-            }}
-        }} catch (e) {{}}
-        return {{ ok: false }};
-    }}"""
-
-    if sw:
-        try:
-            result = await sw.evaluate(_js)
-            if result and result.get("ok"):
-                return True
-        except Exception:
-            pass
-
-    page = None
-    try:
-        page = await context.new_page()
-        await page.goto(
-            f"chrome-extension://{eid}/offscreen.html",
-            wait_until="domcontentloaded", timeout=15_000,
-        )
-        await page.wait_for_timeout(2_000)
-        result = await page.evaluate(_js)
-        return bool(result and result.get("ok"))
-    except Exception:
-        return False
-    finally:
-        if page:
-            with contextlib.suppress(Exception):
-                await page.close()
 
 
-async def _vpn_send_enable_proxy(context, eid: str) -> bool:
-    """Включает VPN: бесплатные серверы VPNLY (USA первым для Flipkart)."""
-    servers = _vpnly_servers_for_flipkart()
-    for pick in servers:
-        if await _vpnly_enable_server(context, eid, pick):
-            cc = _vpnly_country_code(pick)
-            print(f"  {G}✔ VPN: бесплатный сервер ({cc.upper()}){RST}")
-            return True
-    return False
 
 
-async def _open_vpn_popup_page(context, eid: str):
-    """Открывает popup VPN-расширения на главном экране Connect."""
-    popup_url = f"chrome-extension://{eid}/src/popup/popup.html"
-    pop = None
-    for p in list(context.pages):
-        try:
-            if (p.url or "").startswith(f"chrome-extension://{eid}"):
-                pop = p
-                break
-        except Exception:
-            pass
-
-    async def _open_via_cdp() -> "object | None":
-        anchor = context.pages[0] if context.pages else await context.new_page()
-        cdp = await context.new_cdp_session(anchor)
-        created = await cdp.send("Target.createTarget", {"url": popup_url})
-        target_id = created.get("targetId")
-        if not target_id:
-            return None
-        for _ in range(50):
-            for p in list(context.pages):
-                try:
-                    u = p.url or ""
-                    if u.startswith(f"chrome-extension://{eid}") and "chromewebdata" not in u:
-                        return p
-                except Exception:
-                    pass
-            await asyncio.sleep(0.25)
-        return None
-
-    if not pop:
-        pop = await _open_via_cdp()
-        if not pop:
-            pop = await context.new_page()
-            try:
-                await pop.goto(popup_url, wait_until="load", timeout=20_000)
-            except Exception as first_err:
-                try:
-                    await pop.close()
-                except Exception:
-                    pass
-                pop2 = await _open_via_cdp()
-                if pop2:
-                    pop = pop2
-                else:
-                    raise first_err
-
-    try:
-        await pop.wait_for_load_state("domcontentloaded", timeout=15_000)
-    except Exception:
-        pass
-    await _vpn_popup_go_main(pop, eid)
-    return pop
 
 
-async def _ensure_vpn_connected(context, *, quick: bool = False, flipkart: bool = True) -> bool:
-    """Подключение VPN: VeepN (по умолчанию) или VPNLY. По умолчанию страна = USA."""
-    if not _vpn_extension_dir():
-        return False
-    if _vpn_is_veepn():
-        return await _ensure_veepn_connected(context, quick=quick, flipkart=flipkart)
-    return await _ensure_vpnly_connected(context, flipkart=flipkart)
 
 
-async def _ensure_vpnly_connected(context, *, flipkart: bool = True) -> bool:
-    """VPNLY: enableProxy через service worker, затем popup UI как fallback.
-    Ждёт активный proxy и/или статус «Защищено». По умолчанию USA."""
-    if not _vpn_extension_dir():
-        return False
-    eid = await _vpn_ext_id(context)
-    if not eid:
-        print(f"  {Y}⚠ VPN: не удалось определить ID расширения — пропускаю{RST}")
-        return False
-
-    async def _connected(pop) -> bool:
-        """True, если статус «Защищено»/Protected (исключая «Не защищено»)."""
-        try:
-            b = (await pop.evaluate("() => document.body ? document.body.innerText : ''")).lower()
-        except Exception:
-            return False
-        if "не защищено" in b or "not protected" in b or "не подключено" in b:
-            return False
-        return ("защищено" in b or "protected" in b or "отключить" in b
-                or "disconnect" in b)
-
-    async def _accept_consent(pop) -> None:
-        for _sel in ("button.modal-consent__btn",):
-            try:
-                _loc = pop.locator(_sel).first
-                if await _loc.count() > 0 and await _loc.is_visible():
-                    await _loc.click(timeout=2_000)
-                    await pop.wait_for_timeout(1_200)
-                    return
-            except Exception:
-                pass
-        for _t in ("Согласиться и продолжить", "Accept and continue", "Agree and continue"):
-            try:
-                _loc = pop.get_by_text(_t, exact=True).first
-                if await _loc.count() > 0 and await _loc.is_visible():
-                    await _loc.click(timeout=2_000)
-                    await pop.wait_for_timeout(1_200)
-                    return
-            except Exception:
-                pass
-
-    async def _click_connect(pop) -> bool:
-        try:
-            await pop.wait_for_selector(
-                ".main-connect-button, button.v-button, .main-action__btn",
-                state="visible", timeout=15_000,
-            )
-        except Exception:
-            pass
-        for _sel in (".main-connect-button", ".main-action__btn", "button.v-button"):
-            try:
-                _loc = pop.locator(_sel).first
-                if await _loc.count() > 0 and await _loc.is_visible():
-                    await _loc.click(timeout=3_000)
-                    return True
-            except Exception:
-                pass
-        for _t in ("Подключить", "Connect", "Подключиться", "Turn on"):
-            try:
-                _loc = pop.get_by_role("button", name=_t, exact=True).first
-                if await _loc.count() > 0 and await _loc.is_visible():
-                    await _loc.click(timeout=3_000)
-                    return True
-            except Exception:
-                pass
-        try:
-            clicked = await pop.evaluate(r"""() => {
-                const want = ['подключить','connect','подключиться','turn on'];
-                const nodes = [
-                    ...document.querySelectorAll('.main-connect-button, button'),
-                ];
-                for (const el of nodes) {
-                    const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-                    if (!want.some(w => t === w || t.includes(w))) continue;
-                    const r = el.getBoundingClientRect();
-                    if (r.width < 40 || el.offsetParent === null) continue;
-                    el.click();
-                    return true;
-                }
-                return false;
-            }""")
-            if clicked:
-                return True
-        except Exception:
-            pass
-        return False
-
-    async def _wait_vpn_active(pop=None, *, seconds: int = 30) -> bool:
-        for _ in range(seconds):
-            if await _vpn_is_proxy_active(context, eid):
-                return True
-            if pop and await _connected(pop):
-                return True
-            await asyncio.sleep(1.0)
-        return False
-
-    pop = None
-    try:
-        await _vpn_chrome_cooldown()
-        await _close_junk_tabs(context)
-        await asyncio.sleep(2.0)
-
-        if await _vpn_is_proxy_active(context, eid) and not flipkart:
-            print(f"  {G}✔ VPN уже подключён{RST}")
-            return True
-
-        # Flipkart / default: всегда включаем через USA-first список серверов
-        if flipkart and await _vpn_is_proxy_active(context, eid):
-            print(f"  {Y}⚠ VPNLY: был подключён — переподключаю на USA…{RST}")
-            await _vpn_disconnect(context)
-            await asyncio.sleep(1.2)
-
-        # 1) Прямое включение через background API (без открытия popup).
-        for _api_try in range(3):
-            if await _vpn_send_enable_proxy(context, eid):
-                if await _wait_vpn_active(seconds=22):
-                    await _close_vpn_extension_tabs(context, eid)
-                    print(f"  {G}✔ VPN подключён (USA){RST}")
-                    return True
-            if _api_try < 2:
-                await asyncio.sleep(2.0)
-
-        # 2) Fallback: popup UI — только если API не сработал; сразу на главный экран.
-        try:
-            pop = await _open_vpn_popup_page(context, eid)
-        except Exception as _pop_err:
-            print(f"  {DIM}VPN popup недоступен ({str(_pop_err)[:60]}) — жду proxy…{RST}")
-            if await _wait_vpn_active(seconds=15):
-                print(f"  {G}✔ VPN подключён{RST}")
-                return True
-            pop = None
-        if pop:
-            await _vpn_popup_go_main(pop, eid)
-            await pop.wait_for_timeout(2_000)
-
-            if await _connected(pop) or await _vpn_is_proxy_active(context, eid):
-                await _close_vpn_extension_tabs(context, eid)
-                print(f"  {G}✔ VPN уже подключён{RST}")
-                return True
-
-            for _try in range(5):
-                if _try > 0:
-                    await _vpn_popup_go_main(pop, eid)
-                    try:
-                        await pop.reload(wait_until="domcontentloaded", timeout=15_000)
-                        await pop.wait_for_timeout(2_000)
-                        await _vpn_popup_go_main(pop, eid)
-                    except Exception:
-                        pass
-                await _accept_consent(pop)
-                await _vpn_popup_go_main(pop, eid)
-                if await _click_connect(pop):
-                    print(f"  {DIM}VPN: автоклик Connect…{RST}")
-                if await _wait_vpn_active(pop, seconds=30):
-                    await _close_vpn_extension_tabs(context, eid)
-                    print(f"  {G}✔ VPN подключён{RST}")
-                    return True
-                if await _vpn_send_enable_proxy(context, eid):
-                    if await _wait_vpn_active(pop, seconds=20):
-                        await _close_vpn_extension_tabs(context, eid)
-                        print(f"  {G}✔ VPN подключён{RST}")
-                        return True
-                print(f"  {Y}VPN ещё не подключился — повтор ({_try + 1}/5)…{RST}")
-
-        print(f"  {Y}⚠ VPN: не удалось подключиться автоматически{RST}")
-        return False
-    except Exception as _ve:
-        print(f"  {Y}⚠ VPN: ошибка подключения: {_ve}{RST}")
-        return False
-    finally:
-        try:
-            if pop:
-                await pop.close()
-        except Exception:
-            pass
 
 
 def _browser_launch_kw(headless: bool = False, use_bundled_chromium: bool = False,
@@ -11117,16 +7886,6 @@ def _stop_active_purchases() -> int:
     return killed
 
 
-def disconnect_vpn_on_shutdown() -> int:
-    """Выход из приложения / конец сценария: остановить Flipkart-run и закрыть Chrome с VPN."""
-    killed = _stop_active_purchases()
-    with _app_lock:
-        _active_purchase_profiles.clear()
-    # Иначе флаг залипает после Run/Stop и Profiles «До оплаты»/«Купить» сразу CANCELLED
-    _purchase_cancel.clear()
-    if killed:
-        print(f"  {DIM}VPN: закрыто Chrome-сессий: {killed}{RST}")
-    return killed
 
 # Переключение карты во время ожидания 3DS OTP (TG-кнопка → бот устанавливает флаг)
 _switch_card_choice: list = [-1]  # [0] — позиция карты в _ordered_pay

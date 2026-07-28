@@ -23,9 +23,7 @@ REQUIRED = [
     "_vpn_fresh_connect_usa",
     "_vpn_connect_country",
     "_VPN_DEFAULT_COUNTRY",
-    "_vpn_toggle_same_country",
     "_flipkart_reload_and_check",
-    "_VPN_FLIPKART_COUNTRY_ORDER",
     "stop_at_payment",
     "errors.edgesuite.net",
 ]
@@ -37,17 +35,8 @@ def main() -> None:
     if missing:
         print("FAIL missing selectors/contracts:", ", ".join(missing))
         sys.exit(1)
-    if '_VPN_DEFAULT_COUNTRY = "us"' not in MENU and "_VPN_DEFAULT_COUNTRY = 'us'" not in MENU:
-        print("FAIL _VPN_DEFAULT_COUNTRY is not us")
-        sys.exit(1)
-    idx = MENU.find("_VPN_FLIPKART_COUNTRY_ORDER")
-    chunk = MENU[idx: idx + 200]
-    if '"ca"' not in chunk and "'ca'" not in chunk:
-        print("FAIL Canada missing from FLIPKART country order")
-        sys.exit(1)
-    if "_vpn_free_country_codes_static" not in MENU or "_flipkart_vpn_country_queue" not in MENU:
-        print("FAIL free-country queue helpers missing")
-        sys.exit(1)
+    # VPN-расширения удалены: страну держит личный VPN пользователя на ПК,
+    # проверять порядок стран и хелперы очереди больше нечего.
     print("PASS selector_health")
 
 

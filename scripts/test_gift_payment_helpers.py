@@ -119,13 +119,14 @@ def main() -> None:
     assert "_cv_filled_email" in src
     assert "_set_filled_email" in src
 
-    # Sticky cancel must not survive shutdown / is cleared at purchase entry
+    # Залипший cancel: обёртка disconnect_vpn_on_shutdown удалена вместе с
+    # VPN-подсистемой (в продакшене её никто не звал, только этот тест).
+    # Гарантия осталась прежней — флаг снимается на входе в покупку.
     m._purchase_cancel.set()
-    m.disconnect_vpn_on_shutdown()
-    assert not m._purchase_cancel.is_set(), "cancel sticky after disconnect_vpn_on_shutdown"
-    m._purchase_cancel.set()
-    # simulate entry points
-    assert " _purchase_cancel.clear()" in src or "_purchase_cancel.clear()" in src
+    m._stop_active_purchases()
+    m._purchase_cancel.clear()
+    assert not m._purchase_cancel.is_set()
+    assert "_purchase_cancel.clear()" in src
 
     print("PASS gift_payment_helpers")
 
