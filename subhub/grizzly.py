@@ -760,7 +760,7 @@ async def _rental_monitor_loop():
                         st = await _mon_client.get_status(aid)
                     if st.get("type") == "OK" and st.get("code"):
                         r["otp_received"] = True
-                        if r.get("intercept_mode") or r.get("external"):
+                        if not _should_login_with_otp(r):
                             continue
                         otp = st["code"]
                         if aid not in _RENTALS:
@@ -829,6 +829,18 @@ async def _rental_monitor_loop():
         except BaseException:
             pass  # CancelledError и пр. — не останавливаем цикл
 
+def _should_login_with_otp(r: dict) -> bool:
+    """Входить ли самим, когда на номер пришёл код.
+
+    Да — для любого активного номера, включая `external` (подобранные
+    api-сканом «лишние» номера параллельной волны): код уже оплачен, и бросать
+    его, отменяя номер, — терять готовый аккаунт.
+    Нет — только в режиме перехвата: там код намеренно уходит в Telegram
+    человеку, и вход с нашей стороны сломал бы сам смысл режима.
+    """
+    return not r.get("intercept_mode")
+
+
 async def _cancel_rental_task(aid):
     r = _RENTALS.get(aid)
     if not r or r.get("cancelling"):
@@ -849,9 +861,8 @@ async def _cancel_rental_task(aid):
                 if aid not in _RENTALS:
                     await client.close()
                     return
-                if r.get("intercept_mode") or r.get("external"):
-                    _reason = "перехват" if r.get("intercept_mode") else "внешний, уже обработан"
-                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} ({_reason}) — завершаю аренду{_RST}")
+                if not _should_login_with_otp(r):
+                    print(f"\n  {_G}✓ OTP для +91 {r['phone_10']} (перехват) — завершаю аренду{_RST}")
                     try:
                         await client.complete(aid)
                     except Exception:
