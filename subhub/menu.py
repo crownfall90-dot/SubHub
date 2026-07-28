@@ -2442,6 +2442,62 @@ async def _vpn_disconnect(context) -> bool:
     return disconnected
 
 
+# Кэши Chrome, которые можно удалять: браузер пересоздаёт их сам. Сессия живёт
+# в Default/Network/* (куки), Default/Preferences, Local State и
+# .profile_meta.json — их здесь нет и быть не должно. Только явные пути,
+# никаких glob'ов, чтобы нельзя было случайно снести сессию.
+_PROFILE_CACHE_DIRS = (
+    "BrowserMetrics", "GrShaderCache", "ShaderCache", "GraphiteDawnCache",
+    "Crashpad", "component_crx_cache", "extensions_crx_cache",
+    # Скачиваемые Chrome компоненты и ML-модели: в самом крупном профиле это
+    # 120 МБ из 282. Нужны для голоса/подсказок/фишинга — нашим сценариям нет.
+    "Safe Browsing", "optimization_guide_model_store", "WasmTtsEngine",
+    "OnDeviceHeadSuggestModel", "ActorSafetyLists", "SafetyTips",
+    "AutofillStates", "TrustTokenKeyCommitments", "MEIPreload",
+    "PrivacySandboxAttestationsPreloaded", "ClientSidePhishing",
+    "OriginTrials", "Subresource Filter", "FileTypePolicies",
+    "Default/Cache", "Default/Code Cache", "Default/GPUCache",
+    "Default/DawnCache", "Default/DawnGraphiteCache", "Default/DawnWebGPUCache",
+    "Default/Service Worker/CacheStorage", "Default/Service Worker/ScriptCache",
+)
+
+
+def _dir_size(path: Path) -> int:
+    """Суммарный размер каталога в байтах (0 — если нет или недоступен)."""
+    total = 0
+    with contextlib.suppress(OSError):
+        for p in path.rglob("*"):
+            with contextlib.suppress(OSError):
+                if p.is_file():
+                    total += p.stat().st_size
+    return total
+
+
+def _prune_profile_cache(profile_path, measure: bool = False) -> int:
+    """Удаляет кэши Chrome внутри профиля, не затрагивая сессию.
+
+    measure=True — посчитать освобождённое (медленно: обход файлов). На закрытии
+    браузера считать незачем, там важна скорость.
+    Возвращает освобождённые байты (0 при measure=False).
+    """
+    import shutil as _sh_pc
+    p = Path(profile_path)
+    # Страховка от чужого пути: без этих признаков это не профиль Chrome
+    if not (p / "Default").is_dir() and not (p / "Local State").exists():
+        return 0
+    freed = 0
+    for rel in _PROFILE_CACHE_DIRS:
+        d = p / rel
+        if not d.is_dir():
+            continue
+        before = _dir_size(d) if measure else 0
+        _sh_pc.rmtree(str(d), ignore_errors=True)
+        if measure:
+            # Chrome мог держать часть файлов — считаем только реально удалённое
+            freed += max(0, before - (_dir_size(d) if d.exists() else 0))
+    return freed
+
+
 async def _close_browser_session(
     ctx, pw=None, profile_path: Path | str | None = None, *,
     disconnect_vpn: bool = True,
@@ -2461,6 +2517,10 @@ async def _close_browser_session(
         with contextlib.suppress(Exception):
             await pw.stop()
     if profile_path is not None:
+        # Кэш вырастает до ~85 МБ на профиль за один прогон — чистим сразу после
+        # закрытия, пока папка свободна. Сессия и куки не затрагиваются.
+        with contextlib.suppress(Exception):
+            _prune_profile_cache(profile_path)
         _unregister_purchase_profile(profile_path)
 
 
@@ -20955,6 +21015,54 @@ def screen_stop_all() -> None:
             return
 
 
+def _all_profile_dirs() -> list:
+    """Все папки профилей во всех каталогах (done / новые / used / backup)."""
+    out = []
+    for _d in (DONE_PROFILES_DIR, PROFILES_DIR, USED_PROFILES_DIR, BACKUP_PROFILES_DIR):
+        if _d.exists():
+            out.extend(p for p in sorted(_d.glob("profile_*")) if p.is_dir())
+    return out
+
+
+def screen_prune_caches():
+    """Освободить место: удалить кэши Chrome во всех профилях.
+
+    Куки, сессия и мета-файлы не затрагиваются — удаляется только то, что
+    Chrome пересоздаёт сам (Cache, Code Cache, BrowserMetrics, шейдеры).
+    """
+    cls()
+    header("ОЧИСТКА КЭША ПРОФИЛЕЙ", C)
+    profs = _all_profile_dirs()
+    if not profs:
+        print(f"  {DIM}Профилей не найдено.{RST}")
+        pause()
+        return
+    print(f"  {DIM}Считаю занятое место по {len(profs)} профилям…{RST}")
+    before = sum(_dir_size(p) for p in profs)
+    _mb = lambda b: f"{b / 1024 / 1024:.0f} МБ"        # noqa: E731
+    print(f"  Сейчас занято : {W}{BLD}{_mb(before)}{RST}")
+    print(f"  {DIM}Удаляются только кэши (Cache, Code Cache, BrowserMetrics,{RST}")
+    print(f"  {DIM}шейдеры). Куки, сессия и .profile_meta.json остаются.{RST}")
+    print()
+    if input(f"  {BLD}Чистить? [Д/Н]: {RST}").strip().upper() not in ("Д", "ДА", "Y", "YES"):
+        print(f"  {G}Отменено.{RST}")
+        pause()
+        return
+    print()
+    freed = 0
+    for i, p in enumerate(profs, 1):
+        got = _prune_profile_cache(p, measure=True)
+        freed += got
+        print(f"  {DIM}[{i}/{len(profs)}]{RST} {p.name:<34} {G}−{_mb(got)}{RST}")
+    after = sum(_dir_size(p) for p in profs)
+    print()
+    print(f"  {G}{BLD}✅ Освобождено: {_mb(freed)}{RST}")
+    print(f"  Занято теперь : {W}{_mb(after)}{RST}  {DIM}(было {_mb(before)}){RST}")
+    print(f"  {DIM}Кэш вернётся при работе браузера, но чистится сам "
+          f"после каждого закрытия.{RST}")
+    pause()
+
+
 def _buy_candidates(profiles: list | None = None) -> tuple[list, list]:
     """Профили, годные для автопокупки: (с_данными, доступные).
     Пропускаются выданные, уже оплаченные и без мета-файла — те же признаки,
@@ -21087,6 +21195,7 @@ def screen_main():
         opt("П", "Проверить активацию всех выданных", G)
         opt("К", "Восстановить профиль из JSON куков (cookies_backup/)", C)
         opt("6", "🟡 Архив профилей", M)
+        opt("Ч", "🧹 Очистить кэш профилей  (освободить место на диске)", C)
 
         section("GGSELL", C)
         opt("7", "🛒 Панель продавца  (баланс · заказы · переписка)", C)
@@ -21152,6 +21261,8 @@ def screen_main():
                 screen_all_in_one()
             elif choice == "Б":   # латинскую B не берём — её путают с «В» (выход)
                 screen_auto_buy()
+            elif choice == "Ч":
+                screen_prune_caches()
             elif choice in ("П", "P"):
                 screen_check_all_activated()
             elif choice in ("К", "K"):
