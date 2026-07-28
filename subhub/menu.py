@@ -21577,6 +21577,44 @@ def _migrate_config() -> None:
         print(f"  {Y}[Предупреждение] Не удалось обновить config.yaml: {_e}{RST}")
 
 
+_DEBUG_KEEP_FILES = 50
+_DEBUG_KEEP_DAYS  = 7.0
+
+
+def _rotate_debug_dir(keep: int = _DEBUG_KEEP_FILES,
+                      max_age_days: float = _DEBUG_KEEP_DAYS) -> int:
+    """Оставляет в debug/ только свежую диагностику: не старше max_age_days и
+    не больше keep файлов (самые новые). Возвращает освобождённые байты.
+
+    Скриншоты пишут больше десятка мест по всему коду; ротация одна на старте —
+    дешевле, чем ограничение в каждом месте записи. Старый скриншот не нужен:
+    разбираем всегда последний прогон.
+    """
+    dbg = _HERE / "debug"
+    if not dbg.is_dir():
+        return 0
+    files = []
+    for f in dbg.rglob("*"):
+        with contextlib.suppress(OSError):
+            if f.is_file():
+                st = f.stat()
+                files.append((st.st_mtime, st.st_size, f))
+    if not files:
+        return 0
+    files.sort(reverse=True)                      # новые первыми
+    cutoff = time.time() - max_age_days * 86400
+    freed = 0
+    for i, (mtime, size, f) in enumerate(files):
+        if i < keep and mtime >= cutoff:
+            continue
+        try:
+            f.unlink()
+            freed += size
+        except OSError:
+            pass
+    return freed
+
+
 def _startup_cleanup() -> None:
     """При каждом запуске: удаляем старые логи, использованные профили, убиваем Chrome."""
     import grizzly as _gz, threading as _thr
@@ -21596,6 +21634,10 @@ def _startup_cleanup() -> None:
 
     if deleted_logs:
         print(f"  {DIM}[Очистка] удалено логов: {deleted_logs}{RST}")
+
+    freed = _rotate_debug_dir()
+    if freed:
+        print(f"  {DIM}[Очистка] debug/: освобождено {freed / 1048576:.0f} МБ{RST}")
 
 
 # ── Точка входа ───────────────────────────────────────────────────────────────
