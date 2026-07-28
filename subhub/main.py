@@ -2616,8 +2616,9 @@ class LoginAutomation:
         else:
             # Ждём смены URL (Flipkart редиректит на главную после успешного входа)
             try:
+                _login_url = self.config.site_url
                 await page.wait_for_url(
-                    lambda url: url != login_url and "login" not in url,
+                    lambda url: url != _login_url and "login" not in url,
                     timeout=self.config.timeout,
                 )
                 return True

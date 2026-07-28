@@ -33,9 +33,22 @@ def _load_gift_cards() -> list:
     return []
 
 
+def _touch(event: str) -> None:
+    """Отметка в runtime_state (её читают консоль и Telegram).
+
+    Живёт в menu.py, поэтому импорт ленивый — модуль не должен тянуть menu.py
+    на уровне файла, иначе получится цикл.
+    """
+    try:
+        from menu import runtime_touch
+    except Exception:
+        return
+    runtime_touch(event)
+
+
 def _save_gift_cards(cards: list) -> None:
     atomic_write_text(GIFT_CARDS_FILE, json.dumps(cards, ensure_ascii=False, indent=2))
-    runtime_touch("gift_cards")
+    _touch("gift_cards")
 
 
 def _parse_gift_cards(text: str, default_denom: int | None = None) -> tuple[list, list]:

@@ -3021,24 +3021,7 @@ def _browser_launch_kw(headless: bool = False, use_bundled_chromium: bool = Fals
         use_vpn = False
     use_bundled_chromium = False
     try:
-        if False:
-            kw["ignore_default_args"] = ["--disable-extensions", "--enable-automation"]
-            use_bundled_chromium = True
-            if background_install or _needs_load_extension(profile_path):
-                headless = False
-            # Путь с пробелами (…master 3\…) — в одном argv; на Win предпочитаем short path
-            ext_arg = str(Path(_ext_dir).resolve())
-            if os.name == "nt" and " " in ext_arg:
-                with contextlib.suppress(Exception):
-                    import ctypes
-                    buf = ctypes.create_unicode_buffer(512)
-                    if ctypes.windll.kernel32.GetShortPathNameW(ext_arg, buf, 512):
-                        short = buf.value
-                        if short and " " not in short:
-                            ext_arg = short
-            args.append("--disable-features=DisableLoadExtensionCommandLineSwitch")
-            args.append(f"--disable-extensions-except={ext_arg}")
-            args.append(f"--load-extension={ext_arg}")
+        pass
     except Exception:
         pass
 
