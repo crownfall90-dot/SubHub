@@ -69,8 +69,12 @@ def main() -> None:
     pm = m._load_pay_method()
     assert pm in ("card", "gift"), pm
 
-    # Source contracts: gift path must honor pay_method in fill + buy
+    # Source contracts: gift path must honor pay_method in fill + buy.
+    # Браузерная часть оплаты осталась в menu.py, слой данных живёт в
+    # gift_cards.py — проверки по тексту смотрят на оба файла.
     src = (ROOT / "subhub" / "menu.py").read_text(encoding="utf-8", errors="replace")
+    src += "\n" + (ROOT / "subhub" / "gift_cards.py").read_text(
+        encoding="utf-8", errors="replace")
     assert "gift=(_pm == \"gift\")" in src or 'gift=(_pm == "gift")' in src
     assert "_do_gift_card_payment" in src
     assert "_select_gift_cards_pay_method" in src
