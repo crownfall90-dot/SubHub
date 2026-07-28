@@ -2211,36 +2211,13 @@ async def _diagnose_flipkart_state(context, page) -> dict:
 async def _navigate_flipkart_resilient(
     context, page, url: str, *, label: str = "", profile_path=None,
 ) -> tuple[bool, object, str]:
-    """Автономный заход на Flipkart: сам диагностирует и выбирает следующий шаг.
+    """Заход на Flipkart с повторами и самодиагностикой.
 
-    Логика (без ожидания подсказок пользователя):
-      • VPN мёртв → полный сброс + USA
-      • Access Denied / timeout при живом VPN → следующая free-страна
-      • chrome-error / blank → новая вкладка + жёсткий goto
-      • F5 только один раз на одну и ту же страну
-      • крутить очередь стран, пока сайт реально не откроется
+    VPN держит сам пользователь на ПК, поэтому перебирать страны и дёргать
+    расширение больше нечем: осталось то, что реально исполнялось в рабочем
+    (direct) режиме — до трёх заходов подряд с проверкой состояния страницы.
+    Контракт закреплён в scripts/test_flipkart_navigation.py.
     """
-    last_err = ""
-    exclude: set[str] = set()
-    f5_done_for: set[str] = set()
-    # Стартуем со статического списка (быстро); VeepN-discover — лениво при recover
-    try_order = _vpn_free_country_codes_static()
-    discovered = False
-    max_rounds = max(10, len(try_order) + 6)
-    country_i = 0
-    print(f"  {DIM}Flipkart auto-recover · queue: {', '.join(c.upper() for c in try_order)}{RST}")
-
-    async def _enrich_queue() -> None:
-        nonlocal try_order, discovered, max_rounds
-        if discovered or context is None:
-            return
-        discovered = True
-        extra = await _flipkart_vpn_country_queue(context)
-        for cc in extra:
-            if cc not in try_order:
-                try_order.append(cc)
-        max_rounds = max(max_rounds, len(try_order) + 4)
-
     async def _work_page():
         nonlocal page
         page = await _main_work_page(context)
@@ -2252,211 +2229,20 @@ async def _navigate_flipkart_resilient(
         await _work_page()
         return await _force_navigate_flipkart(page, url, label=label, fast=fast)
 
-    # Старт VPN: живой прокси → сразу Flipkart (не рвём сессию).
-    # HTTP-прокси Playwright / direct (skip_vpn) — только goto, VeepN не включаем
-    # даже если расширение уже лежит в done-профиле.
-    usa_denials = 0
-    if _context_skip_vpn(context):
-        with contextlib.suppress(Exception):
-            if await _vpn_ext_id(context):
-                await _vpn_disconnect(context)
-        ok_nav, err_nav = await _goto(fast=True)
-        diag = await _diagnose_flipkart_state(context, page)
-        if diag.get("ok"):
-            return True, page, ""
-        # ещё 2 попытки без смены страны VPN
-        for _ in range(2):
-            ok_nav, err_nav = await _goto(fast=False)
-            diag = await _diagnose_flipkart_state(context, page)
-            if diag.get("ok"):
-                return True, page, ""
-        return False, page, diag.get("hint") or err_nav or "Flipkart не открылся (прокси/direct)"
-
-    eid0 = await _vpn_ext_id(context) if _vpn_extension_dir() else None
-    if not eid0:
-        ok_nav, err_nav = await _goto(fast=True)
-        diag = await _diagnose_flipkart_state(context, page)
-        if diag.get("ok"):
-            return True, page, ""
-        return False, page, diag.get("hint") or err_nav or "Flipkart не открылся (без VPN)"
-
-    already = bool(await _vpn_is_proxy_active(context, eid0))
-    if already:
-        cc0 = ""
-        if _vpn_is_veepn():
-            with contextlib.suppress(Exception):
-                cc0 = await _veepn_connected_country_hint(context, eid0)
-        print(
-            f"  {G}✔ VPN жив ({(cc0 or '?').upper()}) — Flipkart{RST}"
-        )
-        await _dismiss_all_veepn_welcome(context)
-        await _close_vpn_extension_tabs(context, eid0)
-        await _work_page()
-    else:
-        print(f"  {DIM}VPN выкл — включаю…{RST}")
-        if not await _ensure_vpn_connected(context, quick=True, flipkart=True):
-            print(f"  {DIM}VPN ещё поднимается — авто-перебор на сайте{RST}")
-        await _dismiss_all_veepn_welcome(context)
-        await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
-        await _work_page()
-
-    for round_n in range(1, max_rounds + 1):
-        ok_nav, err_nav = await _goto(fast=(round_n == 1))
-        diag = await _diagnose_flipkart_state(context, page)
-        print(
-            f"  {DIM}🤖 [{round_n}/{max_rounds}] {diag['kind']}"
-            f" · proxy={diag['proxy']} · cc={(diag['country'] or '?').upper()}"
-            f" · {diag['hint']}{RST}"
-        )
-
-        if diag["ok"]:
-            print(
-                f"  {G}✔ Flipkart OK — VPN не трогаем, "
-                f"продолжаем сценарий (приложение / Telegram){RST}"
-            )
-            return True, page, ""
-
+    ok_nav, err_nav = await _goto(fast=True)
+    diag = await _diagnose_flipkart_state(context, page)
+    if diag.get("ok"):
+        return True, page, ""
+    # Ещё две попытки: страница могла не догрузиться или отдать разовый отказ
+    for _ in range(2):
         if ok_nav is False and err_nav and not _is_flipkart_nav_error(err_nav):
             return False, page, err_nav
+        ok_nav, err_nav = await _goto(fast=False)
+        diag = await _diagnose_flipkart_state(context, page)
+        if diag.get("ok"):
+            return True, page, ""
+    return False, page, diag.get("hint") or err_nav or "Flipkart не открылся"
 
-        last_err = diag["hint"] or err_nav or diag["kind"]
-        if not _vpn_extension_dir():
-            return False, page, last_err
-
-        cur_cc = _vpn_normalize_cc(diag.get("country") or "") or (
-            try_order[min(country_i, len(try_order) - 1)] if try_order else _VPN_DEFAULT_COUNTRY
-        )
-        kind = diag["kind"]
-
-        # ── Решение по диагнозу ────────────────────────────────────────────
-        if kind in ("blank", "chrome_error"):
-            print(f"  {DIM}пустая страница → новая вкладка{RST}")
-            page = await _flipkart_new_work_tab(context)
-            continue
-
-        if kind == "proxy_dead":
-            print(f"  {DIM}VPN нет → включаю…{RST}")
-            await _ensure_vpn_connected(context, quick=True, flipkart=True)
-            await _dismiss_all_veepn_welcome(context)
-            await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
-            continue
-
-        # Таймаут при живом VPN → F5 один раз, потом смена страны
-        if kind == "timeout_page" and diag.get("proxy") is not True:
-            print(f"  {DIM}таймаут без VPN → включаю…{RST}")
-            await _ensure_vpn_connected(context, quick=True, flipkart=True)
-            await _dismiss_all_veepn_welcome(context)
-            await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
-            continue
-
-        # Access Denied / ERR_TIMED_OUT при живом VPN → UI-смена страны
-        # (клик по названию → скролл → US+штат или другая free → питание).
-        if kind in ("access_denied", "proxy_alive_blocked", "timeout_page") and diag.get("proxy") is True:
-            if cur_cc and cur_cc != _VPN_DEFAULT_COUNTRY:
-                exclude.add(cur_cc)
-            next_cc = None
-            # USA: до 3 попыток (разные штаты), даже если только что был US
-            if usa_denials < 3:
-                next_cc = _VPN_DEFAULT_COUNTRY
-                usa_denials += 1
-                print(
-                    f"  {Y}🤖 {kind} → UI смена на USA "
-                    f"({usa_denials}/3, скролл + штат)…{RST}"
-                )
-            else:
-                if cur_cc == _VPN_DEFAULT_COUNTRY:
-                    exclude.add(cur_cc)
-                for cc in try_order:
-                    if cc not in exclude:
-                        next_cc = cc
-                        break
-                if next_cc is None:
-                    await _enrich_queue()
-                    for cc in try_order:
-                        if cc not in exclude:
-                            next_cc = cc
-                            break
-                if next_cc is None:
-                    print(f"  {Y}🤖 {kind} — страны закончились{RST}")
-                    break
-                print(
-                    f"  {Y}🤖 {kind} → UI смена "
-                    f"{(cur_cc or '?').upper()} → {next_cc.upper()}{RST}"
-                )
-            # Сначала API (USA), UI — если API не выбрал; для других стран то же
-            ok_sw = False
-            if _vpn_is_veepn():
-                eid_sw = await _vpn_ext_id(context)
-                if eid_sw:
-                    ok_sw = await _veepn_connect_country_prefer_api(context, eid_sw, next_cc)
-            if not ok_sw:
-                ok_sw = await _vpn_connect_country(context, next_cc, profile_path)
-            if not ok_sw:
-                ok_sw = await _veepn_ui_reconnect_country(context, next_cc)
-            if next_cc != _VPN_DEFAULT_COUNTRY:
-                exclude.add(next_cc)
-            if next_cc in try_order:
-                country_i = try_order.index(next_cc) + 1
-            await _dismiss_all_veepn_welcome(context)
-            await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
-            page = await _flipkart_new_work_tab(context)
-            continue
-
-        # Один F5 на текущую страну (только unknown без живого timeout выше)
-        if cur_cc not in f5_done_for and kind in ("unknown",):
-            f5_done_for.add(cur_cc)
-            print(f"  {Y}🤖 Решение: F5 (ещё не пробовали на {cur_cc.upper()}){RST}")
-            cleared, page = await _flipkart_reload_and_check(page, label=cur_cc.upper())
-            if cleared:
-                return True, page, ""
-
-        # После F5 / прочего — сменить страну через UI
-        if cur_cc:
-            exclude.add(cur_cc)
-
-        next_cc = None
-        for cc in try_order:
-            if cc not in exclude:
-                next_cc = cc
-                break
-        if next_cc is None:
-            await _enrich_queue()
-            for cc in try_order:
-                if cc not in exclude:
-                    next_cc = cc
-                    break
-        if next_cc is None:
-            if round_n < max_rounds // 2:
-                print(f"  {Y}🤖 Очередь стран исчерпана — второй круг с USA{RST}")
-                exclude.clear()
-                f5_done_for.clear()
-                next_cc = _VPN_DEFAULT_COUNTRY
-            else:
-                break
-
-        print(f"  {DIM}смена VPN → {next_cc.upper()}…{RST}")
-        ok_sw = False
-        if _vpn_is_veepn():
-            eid_sw = await _vpn_ext_id(context)
-            if eid_sw:
-                ok_sw = await _veepn_connect_country_prefer_api(context, eid_sw, next_cc)
-        if not ok_sw:
-            ok_sw = await _vpn_connect_country(context, next_cc, profile_path)
-        if not ok_sw:
-            ok_sw = await _veepn_ui_reconnect_country(context, next_cc)
-        exclude.add(next_cc)
-        if next_cc in try_order:
-            country_i = try_order.index(next_cc) + 1 if next_cc in try_order else country_i + 1
-        if not ok_sw and diag.get("proxy") is False:
-            await _vpn_fresh_connect_usa(context, profile_path, quick=True)
-        await _dismiss_all_veepn_welcome(context)
-        await _close_vpn_extension_tabs(context, await _vpn_ext_id(context))
-        page = await _flipkart_new_work_tab(context)
-
-    diag = await _diagnose_flipkart_state(context, page)
-    if diag["ok"]:
-        return True, page, ""
-    return False, page, last_err or diag.get("hint") or "Flipkart не открылся"
 
 
 
