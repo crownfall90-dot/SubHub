@@ -96,20 +96,12 @@ def _vpn_ext_id_for_install() -> None:
     return None
 
 
-def _vpn_free_country_codes_static() -> list:
-    return []
 
 
-def _vpn_normalize_cc(cc: str) -> str:
-    return str(cc or "").lower()
 
 
-def _vpn_popup_rel_paths() -> list:
-    return []
 
 
-def _veepn_popup_rel_paths() -> list:
-    return []
 
 
 def _profile_has_vpn_extension(*_a, **_k) -> bool:
@@ -120,21 +112,14 @@ def _register_vpn_extension_prefs(*_a, **_k) -> None:
     return None
 
 
-def _set_vpn_bg_status(*_a, **_k) -> None:
-    return None
 
 
 def _is_vpn_junk_url(_url: str) -> bool:
     return False
 
 
-def _win_click_veepn_row_near_puzzle(*_a, **_k) -> bool:
-    return False
 
 
-def _vpn_browser_launch_kw(profile_path=None) -> dict:
-    return _browser_launch_kw(headless=False, profile_path=profile_path,
-                              background_install=True, use_vpn=False)
 
 
 async def _vpn_ext_id(*_a, **_k) -> None:
@@ -185,32 +170,20 @@ async def _vpn_fresh_connect_usa(*_a, **_k) -> bool:
     return False
 
 
-async def _flipkart_vpn_country_queue(*_a, **_k) -> list:
-    return []
 
 
 async def _veepn_connected_country_hint(*_a, **_k) -> str:
     return ""
 
 
-async def _veepn_connect_country_prefer_api(*_a, **_k) -> bool:
-    return False
 
 
-async def _veepn_ui_reconnect_country(*_a, **_k) -> bool:
-    return False
 
 
-async def _veepn_popup_ui_ready(*_a, **_k) -> bool:
-    return False
 
 
-async def _veepn_popup_is_blank(*_a, **_k) -> bool:
-    return False
 
 
-async def _veepn_recover_blank_popup(*_a, **_k):
-    return None
 
 _OPEN_CHROME_LOCK = threading.Lock()
 _OPEN_CHROME_SESSIONS: dict[str, threading.Thread] = {}
@@ -2296,23 +2269,6 @@ def _page_shows_client_block(url: str = "", title: str = "", body: str = "") -> 
     )
 
 
-def _is_extension_popup_url(url: str, eid: str) -> bool:
-    u = (url or "").lower()
-    eid_l = (eid or "").lower()
-    if not eid_l or f"chrome-extension://{eid_l}" not in u:
-        return False
-    if "chromewebdata" in u or "chrome-error" in u:
-        return False
-    if any(x in u for x in ("/welcome", "welcome/", "onboarding", "/install", "options.html", "background")):
-        return False
-    # Только реальный UI popup (не несуществующий /popup.html у VeepN)
-    if _vpn_is_veepn():
-        return "/src/popup/" in u or u.rstrip("/").endswith("/src/popup/popup.html")
-    return (
-        "popup" in u
-        or u.rstrip("/").endswith("/index.html")
-        or "/src/popup" in u
-    )
 
 
 
@@ -2788,20 +2744,6 @@ def _install_extension_filesystem(profile_path: Path, *, force: bool = False) ->
         return False
 
 
-def install_extensions_filesystem_all() -> int:
-    """Устанавливает расширение только в успешные done-профили (без браузера)."""
-    if not _vpn_extension_dir():
-        return 0
-    installed = 0
-    for meta in _load_done_profiles(force=True):
-        p = Path(meta.get("path") or "")
-        if not p.is_dir() or _profile_has_vpn_extension(p):
-            continue
-        _set_vpn_bg_status("warming", f"Расширение → {p.name} (файлы)…")
-        if _install_extension_filesystem(p):
-            installed += 1
-            print(f"  {G}✔ {p.name} (успешный профиль){RST}")
-    return installed
 
 
 async def _ensure_extension_in_profile(profile_path: Path) -> bool:
@@ -3124,37 +3066,12 @@ async def _force_navigate_flipkart(
 async def _open_flipkart_page(
     ctx, url: str, *, label: str = "", work_page=None,
 ) -> tuple[bool, object]:
-    """Открывает Flipkart на рабочей вкладке.
-
-    VeepN-путь — только если расширение реально загружено в контексте.
-    Иначе (прокси Playwright / direct) — сразу goto, без ожидания VPN UI
-    (иначе зависание на about:blank).
-    """
+    """Открывает Flipkart на рабочей вкладке (прокси Playwright или direct)."""
     page = work_page or await _ensure_single_work_page(ctx)
     with contextlib.suppress(Exception):
         await _maximize_window(ctx, page)
         await page.bring_to_front()
-    # HTTP-прокси / direct: не включаем VeepN, даже если он уже в профиле
-    if _context_skip_vpn(ctx):
-        with contextlib.suppress(Exception):
-            if await _vpn_ext_id(ctx):
-                await _vpn_disconnect(ctx)
-        ok, _ = await _force_navigate_flipkart(
-            page, url, label=label, fast=True,
-        )
-    else:
-        eid = await _vpn_ext_id(ctx)
-        if eid and _vpn_extension_dir():
-            await _dismiss_all_veepn_welcome(ctx)
-            await _close_vpn_extension_tabs(ctx, eid)
-            ok, page, _ = await _navigate_flipkart_resilient(
-                ctx, page, url, label=label,
-            )
-        else:
-            # HTTP-прокси / PC VPN — без VeepN
-            ok, _ = await _force_navigate_flipkart(
-                page, url, label=label, fast=True,
-            )
+    ok, _ = await _force_navigate_flipkart(page, url, label=label, fast=True)
     if ok:
         page = await _keep_only_flipkart_tabs(ctx, prefer_page=page)
     return ok, page
@@ -12401,46 +12318,21 @@ async def _select_proxy_for_launch_async() -> dict | None:
 
 
 async def _check_flipkart_accessible() -> bool:
-    """Проверка VPN + Flipkart на отдельном ping-профиле (не трогает рабочие профили)."""
-    if not _vpn_extension_dir():
-        try:
-            _rd, _wr = await asyncio.wait_for(
-                asyncio.open_connection("www.flipkart.com", 443),
-                timeout=10.0,
-            )
-            _wr.close()
-            try:
-                await _wr.wait_closed()
-            except Exception:
-                pass
-            return True
-        except Exception:
-            return False
+    """Доступен ли Flipkart: TCP-проба без запуска браузера.
 
-    profile = _VPN_PING_PROFILE_DIR
-    profile.mkdir(parents=True, exist_ok=True)
-    if not _profile_has_vpn_extension(profile):
-        _install_extension_filesystem(profile, force=True)  # только ping-профиль
-
-    from playwright.async_api import async_playwright
-    pw = None
-    ctx = None
+    Раньше здесь поднимался отдельный ping-профиль с VPN-расширением; теперь
+    VPN держит сам пользователь на ПК, и проверять достаточно соединение.
+    """
     try:
-        await _vpn_chrome_cooldown(extra=0.5)
-        pw = await async_playwright().start()
-        _pre_inject_chrome_prefs(profile)
-        kw = _vpn_browser_launch_kw(profile)
-        with _chrome_window_hider():
-            ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
-        await _close_extension_startup_tabs(ctx)
-        if not await _vpn_connect_on_use(ctx, profile, ping_check=True):
-            return False
-        page = await _main_work_page(ctx)
-        return await _verify_flipkart_reachable(page)
+        _rd, _wr = await asyncio.wait_for(
+            asyncio.open_connection("www.flipkart.com", 443), timeout=10.0,
+        )
+        _wr.close()
+        with contextlib.suppress(Exception):
+            await _wr.wait_closed()
+        return True
     except Exception:
         return False
-    finally:
-        await _close_browser_session(ctx, pw, disconnect_vpn=True)
 
 
 def _is_flipkart_accessible_sync() -> bool:
