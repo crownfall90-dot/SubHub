@@ -753,6 +753,12 @@ _UPDATE_FILES = [
     "subhub/__init__.py",
     "subhub/__main__.py",
     "subhub/paths.py",
+    # Модули, вынесенные из menu.py: без них обновлённый menu.py не импортируется
+    "subhub/console_ui.py",
+    "subhub/common.py",
+    "subhub/gift_cards.py",
+    "subhub/housekeeping.py",
+    "subhub/cookie_restore.py",
     "subhub/menu.py",
     "subhub/bot.py",
     "subhub/main.py",
