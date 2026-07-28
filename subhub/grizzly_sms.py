@@ -12,6 +12,11 @@ import httpx
 from loguru import logger
 
 
+# Сколько ждать слот с запросом getNumberV2 «в полёте» перед жёсткой отменой.
+# Номер уже мог быть куплен и списан — бросать его нельзя, надо узнать id и сдать.
+_INFLIGHT_DRAIN = 8.0
+
+
 class GrizzlySMSError(Exception):
     pass
 
@@ -53,7 +58,25 @@ class GrizzlySMSClient:
             ),
         )
 
+        # Ссылки на фоновые отмены — без них задачу может собрать GC
+        # («Task was destroyed but it is pending») и номер останется висеть.
+        self._bg_tasks: set = set()
+
+    def _fire_cancel(self, activation_id: str) -> None:
+        """Отменить номер в фоне, не блокируя поиск (со ссылкой на задачу)."""
+        try:
+            t = asyncio.create_task(self.cancel(activation_id))
+        except RuntimeError:
+            return
+        self._bg_tasks.add(t)
+        t.add_done_callback(self._bg_tasks.discard)
+
     async def close(self) -> None:
+        # Даём фоновым отменам уйти на сервер — иначе закрытый клиент их убьёт
+        # и номер останется висеть со списанными деньгами.
+        if self._bg_tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.wait(set(self._bg_tasks), timeout=_INFLIGHT_DRAIN)
         if not self._client.is_closed:
             await self._client.aclose()
 
@@ -195,7 +218,10 @@ class GrizzlySMSClient:
 
         _no_count  = [0]   # суммарно NO_NUMBERS по всем слотам
         _t_start   = _time.monotonic()
-        _found_evt = asyncio.Event()
+        # «Хватит искать» — тир истёк или слот уже выиграл. Слот проверяет флаг
+        # МЕЖДУ запросами: жёсткий task.cancel() во время getNumberV2 терял уже
+        # купленный (и списанный) номер — id не узнать, вернуть нельзя.
+        _stop_evt  = asyncio.Event()
 
         def _print_status(extra: str = "") -> None:
             elapsed = _time.monotonic() - _t_start
@@ -204,11 +230,13 @@ class GrizzlySMSClient:
             _sys.stdout.write("\r" + line + "   ")
             _sys.stdout.flush()
 
-        async def _slot(slot_idx: int) -> Tuple[str, str, float]:
+        async def _slot(slot_idx: int) -> Optional[Tuple[str, str, float]]:
             # Равномерный сдвиг старта чтобы запросы не шли все одновременно
             if slot_idx > 0:
                 await asyncio.sleep(slot_idx * (poll_delay / max(parallel_slots, 1)))
             while True:
+                if _stop_evt.is_set():
+                    return None
                 params: dict = {
                     "action": "getNumberV2",
                     "service": str(service),
@@ -238,10 +266,16 @@ class GrizzlySMSClient:
                             f"\r  ║ Grizzly ${cost:.4f} > max ${float(max_price):.2f} "
                             f"— отмена {act_id}, ищем дальше"
                         )
-                        asyncio.create_task(self.cancel(act_id))
+                        self._fire_cancel(act_id)
                         await asyncio.sleep(poll_delay)
                         continue
-                    _found_evt.set()
+                    # Номер пришёл, когда поиск уже остановлен (тир истёк / выиграл
+                    # другой слот) — не бросаем его, а сдаём обратно.
+                    if _stop_evt.is_set():
+                        logger.info(f"\r  ║ Номер {act_id} опоздал — возвращаю провайдеру")
+                        self._fire_cancel(act_id)
+                        return None
+                    _stop_evt.set()
                     return act_id, phone, cost
                 except (_json.JSONDecodeError, KeyError):
                     pass
@@ -275,8 +309,17 @@ class GrizzlySMSClient:
                 timeout=wait_timeout,
             )
 
-            for t in pending:
-                t.cancel()
+            # Останавливаем слоты флагом и ДОЖИДАЕМСЯ тех, у кого запрос в полёте:
+            # иначе уже купленный номер потеряется вместе со списанными деньгами.
+            _stop_evt.set()
+            if pending:
+                drained, still = await asyncio.wait(pending, timeout=_INFLIGHT_DRAIN)
+                done = set(done) | drained
+                # ponytail: жёсткий cancel только для слотов, не уложившихся в
+                # _INFLIGHT_DRAIN (read-timeout до 30s). Их номер, если он был
+                # куплен, подберёт api-скан монитора в grizzly.py.
+                for t in still:
+                    t.cancel()
 
             if not done:
                 # Таймаут уровня — очищаем строку и переходим к следующей цене
@@ -286,7 +329,10 @@ class GrizzlySMSClient:
 
             for t in done:
                 try:
-                    act_id, phone, cost = t.result()
+                    _res = t.result()
+                    if _res is None:      # слот остановился / номер уже сдан обратно
+                        continue
+                    act_id, phone, cost = _res
                     if winner_id is None:
                         winner_id, winner_phone, winner_cost = act_id, phone, cost
                     else:
@@ -308,6 +354,8 @@ class GrizzlySMSClient:
                     pass
 
             if winner_id is None:
+                _sys.stdout.write("\r" + " " * 70 + "\r")
+                _sys.stdout.flush()
                 if last_fatal:
                     raise last_fatal
                 return None
