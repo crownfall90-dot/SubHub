@@ -293,8 +293,7 @@ def kill_all_bot_chrome() -> int:
     """Убивает ВСЕ Chrome-процессы запущенные этим ботом (chrome_profiles*)."""
     import subprocess
     markers = ["chrome_profiles", "chrome_profiles_done",
-               "chrome_profiles_backup", "chrome_profiles_used",
-               "_vpn_ping_profile"]
+               "chrome_profiles_backup", "chrome_profiles_used"]
     killed = 0
     try:
         import psutil

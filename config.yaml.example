@@ -69,5 +69,3 @@ otp:
   wait_timeout: 15000
 captcha:
   mode: manual
-vpn:
-  provider: veepn

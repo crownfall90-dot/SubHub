@@ -22,7 +22,6 @@ REQUIRED = [
     "_diagnose_flipkart_state",
     "_vpn_fresh_connect_usa",
     "_vpn_connect_country",
-    "_VPN_DEFAULT_COUNTRY",
     "_flipkart_reload_and_check",
     "stop_at_payment",
     "errors.edgesuite.net",

@@ -2826,13 +2826,7 @@ class ResultTracker:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _check_flipkart_accessible() -> bool:
-    """Проверка Flipkart: с VPN-расширением — через menu (браузер+VPN), иначе TCP."""
-    try:
-        import menu as _menu
-        if _menu._vpn_extension_dir():
-            return await _menu._check_flipkart_accessible()
-    except Exception:
-        pass
+    """Проверка Flipkart: TCP-проба (VPN держит пользователь на ПК)."""
     try:
         _rd, _wr = await asyncio.wait_for(
             asyncio.open_connection("www.flipkart.com", 443),
