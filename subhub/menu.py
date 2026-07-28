@@ -6215,6 +6215,19 @@ async def _page_logged_out(page) -> bool:
 _NOT_LOGGED_IN_MSG = "Профиль не залогинен — в аккаунт нет входа (Buy Now недоступен)"
 
 # Если Buy Now / Continue не дали payments — F5 + повтор без закрытия браузера
+def _balance_delta_line(delta: float) -> tuple[str, float, str]:
+    """Как показать изменение баланса за прогон: (подпись, модуль, цвет).
+
+    delta = баланс_до − баланс_после. Двумя снимками «потрачено» не измерить:
+    возвраты за отменённые номера приходят асинхронно и во время прогона, и
+    уже после него, поэтому delta бывает отрицательной. Показываем то, что
+    цифра означает на самом деле, вместо «Потрачено: -$2».
+    """
+    if delta < 0:
+        return "💰  Возвраты превысили траты", abs(delta), G
+    return "💸  Потрачено         ", delta, R
+
+
 _BUY_NOW_TO_CHECKOUT_ROUNDS = 5
 _PAYMENTS_REACH_ROUNDS = 4
 
@@ -17401,7 +17414,8 @@ if __name__ == "__main__":
                 if b_end is not None:
                     print(f"  💰  Баланс после       : ${b_end:.4f}")
                 if spent is not None:
-                    print(f"  💸  Потрачено          : {R}${spent:.4f}{RST}")
+                    _lbl, _val, _col = _balance_delta_line(spent)
+                    print(f"  {_lbl}: {_col}${_val:.4f}{RST}")
                 if _interrupted:
                     print(f"  {Y}⚠  Остановлено досрочно (Ctrl+C){RST}")
                 print(f"  {'─'*48}\n")
@@ -17429,7 +17443,8 @@ if __name__ == "__main__":
                         if b_start is not None and b_end is not None:
                             _tg_lines.append(f"💰 Баланс: <b>${b_start:.4f}</b> → <b>${b_end:.4f}</b>")
                         if spent is not None:
-                            _tg_lines.append(f"💸 Потрачено: <b>${spent:.4f}</b>")
+                            _l, _v, _ = _balance_delta_line(spent)
+                            _tg_lines.append(f"{_l.strip()}: <b>${_v:.4f}</b>")
                         # Баланс и успешность по каждому провайдеру отдельно —
                         # чтобы было видно, где деньги и что работает лучше.
                         _tg_lines.append("━━━━━━━━━━━━━━━━━━━")
