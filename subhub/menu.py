@@ -799,15 +799,65 @@ def _parse_git_remote() -> tuple[str, str, str]:
         _tok = ""
     return _GH_OWNER, _GH_REPO, _tok
 
-def _gh_get(url: str, token: str = "") -> bytes:
-    """GET-запрос к GitHub через urllib (без прокси)."""
+def _gh_get(url: str, token: str = "", *, attempts: int = 3) -> bytes:
+    """GET-запрос к GitHub через urllib (без прокси), с повторами.
+
+    Обновление тянет три десятка файлов подряд, и одиночный таймаут на любом
+    из них раньше валил всю операцию. Повторяем с нарастающей паузой —
+    сетевые сбои и троттлинг GitHub переживаются молча.
+    """
+    import time as _t_gh
     import urllib.request
     hdrs = {"User-Agent": "flipkart-updater", "Accept": "application/vnd.github.v3+json"}
     if token:
         hdrs["Authorization"] = f"token {token}"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(urllib.request.Request(url, headers=hdrs), timeout=15) as r:
-        return r.read()
+    last = None
+    for _try in range(max(1, attempts)):
+        if _try:
+            _t_gh.sleep(1.5 * _try)
+        try:
+            with opener.open(urllib.request.Request(url, headers=hdrs), timeout=30) as r:
+                return r.read()
+        except Exception as exc:
+            last = exc
+    raise last if last is not None else RuntimeError("нет ответа")
+
+def _gh_get_many(owner: str, repo: str, files: list, token: str = "") -> dict:
+    """Скачивает файлы обновления по ОДНОМУ соединению (keep-alive).
+
+    Причина сбоев была не в числе файлов, а в 31 отдельном TLS-хендшейке:
+    по медленному каналу часть из них отваливалась по таймауту, и обновление
+    срывалось. httpx держит соединение открытым — один хендшейк на всё.
+    Возвращает {путь: содержимое}; чего не смог — просто нет в словаре,
+    вызывающий добирает через _gh_get.
+    """
+    out: dict = {}
+    try:
+        import httpx as _hx_u
+    except Exception:
+        return out
+    hdrs = {"User-Agent": "flipkart-updater"}
+    if token:
+        hdrs["Authorization"] = f"token {token}"
+    base = f"https://raw.githubusercontent.com/{owner}/{repo}/master/"
+    try:
+        with _hx_u.Client(headers=hdrs, timeout=30.0, follow_redirects=True,
+                          limits=_hx_u.Limits(max_connections=4,
+                                              max_keepalive_connections=4)) as cli:
+            for name in files:
+                for _try in range(3):
+                    try:
+                        r = cli.get(base + name)
+                        if r.status_code == 200:
+                            out[name] = r.content
+                            break
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return out
+
 
 _OTA_CACHE_FILE = None  # инициализируется лениво в _http_check_updates (нужен _HERE)
 _OTA_CACHE_TTL  = 180.0  # сек — без токена лимит GitHub API 60 запросов/час на IP
@@ -890,23 +940,38 @@ def _http_do_update() -> tuple[bool, str]:
         _FILES = list(_UPDATE_FILES)
         updated = []
         failed = []
+        # Сначала скачиваем ВСЁ в память и только потом пишем на диск: раньше
+        # файлы заменялись по мере загрузки, и обрыв на середине оставлял
+        # установку полуобновлённой (новый menu.py со старыми модулями).
+        pending: list = []
+        # Быстрый путь: одно соединение на все файлы (keep-alive).
+        archive = _gh_get_many(owner, repo, _FILES, token)
+        if len(archive) < len(_FILES):
+            print(f"  {DIM}Догружаю оставшиеся "
+                  f"{len(_FILES) - len(archive)} файл(ов)…{RST}")
         for fname in _FILES:
             try:
-                url  = f"https://raw.githubusercontent.com/{owner}/{repo}/master/{fname}"
-                data = _gh_get(url, token)
-                tgt  = _here / fname
-                tgt.parent.mkdir(parents=True, exist_ok=True)
+                if fname in archive:
+                    data = archive[fname]
+                else:
+                    url  = f"https://raw.githubusercontent.com/{owner}/{repo}/master/{fname}"
+                    data = _gh_get(url, token)
                 # .bat требует CRLF на Windows — нормализуем при сохранении
                 save = (data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
                         if fname.endswith(".bat") else data)
-                if tgt.exists() and tgt.read_bytes() == save:
-                    continue
-                _atomic_write_bytes(tgt, save)
-                updated.append(fname)
+                pending.append((fname, save))
             except Exception as exc:
                 failed.append(f"{fname}: {exc}")
         if failed:
-            return False, "Не удалось обновить файлы:\n" + "\n".join(failed)
+            return False, ("Не удалось скачать файлы — ничего не менял:\n"
+                           + "\n".join(failed))
+        for fname, save in pending:
+            tgt = _here / fname
+            tgt.parent.mkdir(parents=True, exist_ok=True)
+            if tgt.exists() and tgt.read_bytes() == save:
+                continue
+            _atomic_write_bytes(tgt, save)
+            updated.append(fname)
         # Обновляем локальный SHA чтобы следующий check показал 0 коммитов
         try:
             ref  = _j.loads(_gh_get(
@@ -16697,7 +16762,6 @@ def screen_main():
         _gc_bal = _gift_balance()
         opt("Г", f"🎁 Подарочные карты  {DIM}(баланс ₹{_gc_bal}){RST}", C)
         opt("4", "Просмотреть логи (automation.log)", B)
-        opt("5", "Установить / обновить зависимости", M)
         _upd_lbl = (f"Обновить до последней версии  {Y}[{len(_upd_commits)} новых]{RST}"
                     if _upd_avail else "Проверить обновления")
         opt("У", _upd_lbl, Y if _upd_avail else DIM)
@@ -16734,8 +16798,6 @@ def screen_main():
                 screen_profiles()
             elif choice == "4":
                 screen_logs()
-            elif choice == "5":
-                screen_install()
             elif choice == "6":
                 screen_used()
             elif choice == "7":

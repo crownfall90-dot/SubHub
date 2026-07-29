@@ -334,10 +334,29 @@ def _menu_tg_bot_thread() -> None:
                 lbl = _mode_label(_mode[0])
                 st  = "⏸ Пауза" if _paused[0] else "🟢"
                 proc_line = f"\n\n{st} _{lbl}_"
+            # Те же цифры, что на главном экране консоли
+            try:
+                _pay_s = ("🎁 Гифт-карты · ₹%d" % _m("_gift_balance")()
+                          if _m("_load_pay_method")() == "gift"
+                          else "💳 Банковская карта")
+            except Exception:
+                _pay_s = "—"
+            try:
+                _sms_s = _m("_sms_provider_menu_label")()
+            except Exception:
+                _sms_s = "—"
+            try:
+                _wd, _pl = _m("_buy_candidates")()
+                _ready = len(_wd) + len(_pl)
+            except Exception:
+                _ready = 0
             return (
                 "🤖 *SubHub*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📁 Профилей: *{avail}* готово · *{archiv}* в архиве\n"
+                f"📁 Профили: *{avail}* готово · *{archiv}* в архиве\n"
+                f"💳 К покупке готовы: *{_ready}*\n"
+                f"💰 Оплата: {_pay_s}\n"
+                f"📶 SMS: {_sms_s}\n"
                 f"🔄 {upd_s}"
                 + proc_line
             )
@@ -354,6 +373,8 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🚀 Запуск",    "callback_data": "go:launch"},
                  {"text": "📁 Профили",   "callback_data": "go:profiles"},
                  {"text": "⚙️ Другое",    "callback_data": "go:other"}],
+                [{"text": "💳 Купить — подберу профиль",
+                  "callback_data": "buy:auto"}],
                 [{"text": "💰 GGSell",    "callback_data": "go:ggsell"}],
                 [{"text": "🔄 Перезапустить", "callback_data": "action:restart"}],
             ]
@@ -490,6 +511,7 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": f"🟡 Архив ({archiv})", "callback_data": "profiles:list:archive"},
                  {"text": "Проверить 🟢", "callback_data": "profiles:checkall"}],
                 [{"text": "🍪 Восстановить из куков", "callback_data": "profiles:cookies_info"}],
+                [{"text": "🧹 Очистить кэш профилей", "callback_data": "profiles:prune_cache"}],
                 [{"text": "◀️ Назад", "callback_data": "go:main"}],
             ]}
 
@@ -746,10 +768,15 @@ def _menu_tg_bot_thread() -> None:
                       if _update_available else "✅ Обновление")
             _pm_cur = _m("_load_pay_method")()
             _pm_lbl = "🎁 Оплата: гифт-карты" if _pm_cur == "gift" else "💳 Оплата: карта"
+            try:
+                _sms_lbl = _m("_sms_provider_menu_label")()
+            except Exception:
+                _sms_lbl = "—"
             return {"inline_keyboard": [
                 [{"text": "💳 Порядок карт", "callback_data": "show:cards"}],
                 [{"text": "🎁 Гифт-карты",  "callback_data": "gift:menu"},
                  {"text": _pm_lbl,          "callback_data": "gift:method_toggle"}],
+                [{"text": f"📶 SMS: {_sms_lbl}", "callback_data": "sms:cycle"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
                  {"text": "📊 Статистика",  "callback_data": "show:stats"}],
                 [{"text": "💰 Продажи",    "callback_data": "go:sales"}],
@@ -1966,6 +1993,67 @@ def _menu_tg_bot_thread() -> None:
             except Exception as e:
                 await _send(cid, f"❌ Ошибка куки <code>{phone}</code>: {escape_html(str(e))}", parse_mode="HTML")
 
+        async def _bg_buy_auto(cid, months):
+            """Купить, подобрав профиль самостоятельно — как пункт «Б» в консоли.
+            Приоритет у профилей «с данными», затем любые доступные."""
+            try:
+                with_data, plain = _m("_buy_candidates")()
+            except Exception as exc:
+                await _send(cid, f"⚠️ Не смог получить список профилей: {escape_html(exc)}",
+                            parse_mode="HTML")
+                return
+            cands = with_data + plain
+            if not cands:
+                await _send(
+                    cid,
+                    "❌ <b>Нет подходящих профилей</b>\n\n"
+                    "Все профили уже оплачены, выданы или без данных.\n"
+                    "Добавьте профили: <b>Запуск</b> → «Вход на ПК» или «Полный цикл».",
+                    parse_mode="HTML")
+                return
+            pick = cands[0]
+            phone = str(pick.get("username") or "")
+            kind = "с данными" if with_data else "доступный"
+            await _send(
+                cid,
+                f"🎯 <b>Выбран профиль</b>\n\n<code>{phone}</code> · {kind}\n"
+                f"Годных всего: {len(cands)}",
+                parse_mode="HTML")
+            await _bg_buy(cid, phone, months)
+
+        async def _bg_prune_cache(cid):
+            """Очистка кэша Chrome во всех профилях — как пункт «Ч» в консоли."""
+            import asyncio as _aio
+            try:
+                profs = _m("_all_profile_dirs")()
+                prune = _m("_prune_profile_cache")
+                dsize = _m("_dir_size")
+            except Exception as exc:
+                await _send(cid, f"⚠️ {escape_html(exc)}", parse_mode="HTML")
+                return
+            if not profs:
+                await _send(cid, "📁 Профилей не найдено.")
+                return
+            await _send(cid, f"🧹 Чищу кэш в <b>{len(profs)}</b> профилях…",
+                        parse_mode="HTML")
+
+            def _work():
+                before = sum(dsize(p) for p in profs)
+                freed = sum(prune(p, True) for p in profs)
+                after = sum(dsize(p) for p in profs)
+                return before, freed, after
+
+            before, freed, after = await _aio.get_running_loop().run_in_executor(None, _work)
+            mb = 1024 * 1024
+            await _send(
+                cid,
+                "✅ <b>Кэш очищен</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"Освобождено: <b>{freed / mb:.0f} МБ</b>\n"
+                f"Занято: {before / mb:.0f} МБ → <b>{after / mb:.0f} МБ</b>\n\n"
+                "<i>Куки и сессии не тронуты — только то, что Chrome создаёт заново.</i>",
+                parse_mode="HTML")
+
         async def _bg_buy(cid, phone, months):
             _bg_ops[phone] = "running"
             _have_lock = False
@@ -3109,6 +3197,50 @@ def _menu_tg_bot_thread() -> None:
                 await _edit(cid, mid, f"🗑 Запись архива <code>{rec_key}</code> удалена.",
                             {"inline_keyboard": [[{"text": "◀️ К архиву", "callback_data": "profiles:archive"}]]},
                             parse_mode="HTML")
+                return
+
+            if data == "buy:auto":
+                await _ack(qid, "🔎 Подбираю профиль…")
+                await _edit(cid, mid,
+                            "💳 <b>Покупка с автоподбором</b>\n\nВыберите тариф:",
+                            {"inline_keyboard": [
+                                [{"text": "🥈 3 месяца · ₹343",
+                                  "callback_data": "buy:auto:3"},
+                                 {"text": "🥇 12 месяцев · ₹1499",
+                                  "callback_data": "buy:auto:12"}],
+                                [{"text": "◀️ Назад", "callback_data": "go:main"}],
+                            ]}, parse_mode="HTML")
+                return
+
+            if data.startswith("buy:auto:"):
+                months = int(data.rsplit(":", 1)[1])
+                await _ack(qid, f"⏳ Покупаю {months} мес…")
+                asyncio.create_task(_bg_buy_auto(cid, months))
+                return
+
+            if data == "profiles:prune_cache":
+                await _ack(qid, "🧹 Чищу кэш…")
+                asyncio.create_task(_bg_prune_cache(cid))
+                return
+
+            if data == "sms:cycle":
+                try:
+                    nxt = _m("_cycle_sms_provider")()
+                    lbl = _m("_sms_provider_menu_label")()
+                    status = _m("_sms_providers_status_line")()
+                except Exception as exc:
+                    await _ack(qid, f"⚠️ {exc}", alert=True)
+                    return
+                await _ack(qid, f"📶 {lbl}")
+                await _edit(cid, mid,
+                            f"📶 <b>SMS-провайдер</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"Выбран: <b>{escape_html(lbl)}</b>\n\n"
+                            f"<code>{escape_html(status)}</code>",
+                            {"inline_keyboard": [
+                                [{"text": "🔁 Переключить", "callback_data": "sms:cycle"}],
+                                [{"text": "◀️ Назад", "callback_data": "go:other"}],
+                            ]}, parse_mode="HTML")
                 return
 
             if data.startswith("profile:buy:"):
