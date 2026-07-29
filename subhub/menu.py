@@ -779,6 +779,7 @@ _UPDATE_FILES = [
     "subhub/gift_cards.py",
     "subhub/housekeeping.py",
     "subhub/cookie_restore.py",
+    "subhub/bitrefill.py",
     "subhub/menu.py",
     "subhub/bot.py",
     "subhub/main.py",
@@ -15216,6 +15217,7 @@ def screen_gift_cards():
         print()
         _pm_sw = "на 💳 карту" if _pm_cur == "gift" else "на 🎁 гифт-карты"
         opt("С", f"Переключить способ оплаты {_pm_sw}", Y)
+        opt("Н", "🎁 Наличие на Bitrefill  (когда появятся — сообщу в Telegram)", C)
         opt("Д", "Удалить ВСЕ карты из хранилища", R)
         opt("0", "Назад", DIM)
         print()
@@ -15227,6 +15229,27 @@ def screen_gift_cards():
             return
         if ch in ("с", "c", "s"):
             _save_pay_method("card" if _pm_cur == "gift" else "gift")
+            continue
+        if ch in ("н", "n"):
+            print(f"\n  {DIM}Смотрю наличие на Bitrefill…{RST}")
+            try:
+                _st_br, _err_br = asyncio.run(_bitrefill_check_once(False))
+            except Exception as _e_br:
+                _st_br, _err_br = {}, str(_e_br)
+            if _err_br or not _st_br:
+                print(f"  {R}\u2718 {_err_br or 'нет ответа'}{RST}")
+            elif _st_br.get("in_stock"):
+                _parts = []
+                for _d in _st_br.get("denoms") or []:
+                    _line = f"{_d.get('value')} {_st_br.get('currency')}"
+                    if _d.get("usd") is not None:
+                        _line += f" (${_d['usd']:.2f})"
+                    _parts.append(_line)
+                print(f"  {G}\u2714 Есть в наличии: {', '.join(_parts) or '—'}{RST}")
+            else:
+                print(f"  {Y}\U0001F6AB Нет в наличии. "
+                      f"Сообщу в Telegram, как появятся.{RST}")
+            pause()
             continue
         if ch in ("д", "d"):
             try:
@@ -16839,6 +16862,79 @@ def _migrate_config() -> None:
         print(f"  {Y}[Предупреждение] Не удалось обновить config.yaml: {_e}{RST}")
 
 
+BITREFILL_STOCK_FILE = _DATA / "bitrefill_stock.json"
+# Как часто спрашивать сайт о наличии. Проверка поднимает headless-браузер,
+# поэтому редко: товар завозят партиями, минуты роли не играют.
+_BITREFILL_CHECK_EVERY = 20 * 60
+
+
+def _bitrefill_notify(text: str) -> None:
+    """Шлёт уведомление всем подписчикам Telegram (синхронно, best-effort)."""
+    if not _tg_notify_enabled():
+        return
+    import json as _j
+    import urllib.request as _ur
+    with contextlib.suppress(Exception):
+        token = _get_telegram_token()
+        subs = _DATA / "tg_subscribers.json"
+        if not token or not subs.exists():
+            return
+        for cid in [int(c) for c in _j.loads(subs.read_text(encoding="utf-8")).get("chats", [])]:
+            with contextlib.suppress(Exception):
+                _ur.urlopen(_ur.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=_j.dumps({"chat_id": cid, "text": text,
+                                   "parse_mode": "HTML",
+                                   "disable_web_page_preview": True}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}), timeout=8)
+
+
+def _bitrefill_stock_state() -> dict:
+    """Последнее известное состояние наличия (с диска)."""
+    with contextlib.suppress(Exception):
+        if BITREFILL_STOCK_FILE.exists():
+            v = json.loads(BITREFILL_STOCK_FILE.read_text(encoding="utf-8"))
+            if isinstance(v, dict):
+                return v
+    return {}
+
+
+async def _bitrefill_check_once(notify: bool = True) -> tuple[dict, str]:
+    """Одна проверка наличия. Уведомляет, только если состояние изменилось."""
+    import bitrefill as _br
+    state, err = await _br.check_stock()
+    if err or not state:
+        return state, err
+    prev = _bitrefill_stock_state()
+    prev_denoms = {int(d.get("value") or 0) for d in (prev.get("denoms") or [])}
+    now_denoms = {int(d.get("value") or 0) for d in (state.get("denoms") or [])}
+    appeared = state.get("in_stock") and not prev.get("in_stock")
+    new_denoms = state.get("in_stock") and (now_denoms - prev_denoms)
+    with contextlib.suppress(Exception):
+        _atomic_write_text(BITREFILL_STOCK_FILE,
+                           json.dumps({**state, "checked_ts": time.time()},
+                                      ensure_ascii=False, indent=2))
+    if notify and (appeared or new_denoms):
+        _bitrefill_notify(_br.stock_message(state))
+    return state, ""
+
+
+def _bitrefill_stock_watch() -> None:
+    """Фоновая нить: следит за появлением карт Flipkart на Bitrefill."""
+    import threading as _thr
+
+    def _loop():
+        while True:
+            with contextlib.suppress(Exception):
+                asyncio.run(_bitrefill_check_once())
+            time.sleep(_BITREFILL_CHECK_EVERY)
+
+    if not (_read_secrets().get("bitrefill") or {}).get("api_key") \
+            and not BITREFILL_STOCK_FILE.exists():
+        pass          # секция необязательна: наличие читается с сайта, не по ключу
+    _thr.Thread(target=_loop, daemon=True, name="bitrefill-stock").start()
+
+
 def _install_git_hooks_quiet() -> None:
     """Ставит git-хук, не дающий закоммитить секреты. Молча и идемпотентно.
 
@@ -17294,6 +17390,8 @@ if __name__ == "__main__":
                     args=("старт консоли",), daemon=True, name="rental-cleanup").start()
                 # Фоновый монитор GrizzlySMS — сканирует активные номера с первой секунды
                 _grizzly_module.start_global_monitor()
+                # Следим за появлением гифт-карт Flipkart на Bitrefill
+                _bitrefill_stock_watch()
                 # Фоновый монитор GGSell — следит за новыми заказами
                 try:
                     from ggsell.monitor import start_monitor as _ggsel_start

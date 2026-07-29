@@ -259,3 +259,105 @@ async def fetch_order_cards(url: str, *, default_denom: int | None = None,
         elif pw is not None:
             with contextlib.suppress(Exception):
                 await pw.stop()
+
+
+# ── Наличие товара ───────────────────────────────────────────────────────────
+
+PRODUCT_ID = "flipkart-india"
+_STOCK_API = "/api/product/"
+
+
+def stock_from_product(data: dict) -> dict:
+    """JSON карточки товара → {in_stock, denoms, currency}.
+
+    Поле `outOfStock` отвечает за наличие, `packages` — номиналы с ценой в USD.
+    """
+    packages = data.get("packages") or []
+    denoms = []
+    for p in packages:
+        if not isinstance(p, dict):
+            continue
+        val = p.get("amount") or p.get("value")
+        try:
+            val = int(float(str(val)))
+        except (TypeError, ValueError):
+            continue
+        usd = p.get("usdPrice")
+        try:
+            usd = round(float(usd), 2)
+        except (TypeError, ValueError):
+            usd = None
+        denoms.append({"value": val, "usd": usd})
+    denoms.sort(key=lambda d: d["value"])
+    return {
+        "in_stock": not bool(data.get("outOfStock", True)),
+        "denoms": denoms,
+        "currency": data.get("currency") or "INR",
+        "name": data.get("name") or PRODUCT_ID,
+    }
+
+
+def stock_message(state: dict) -> str:
+    """Текст уведомления в Telegram (HTML)."""
+    name = state.get("name") or "Flipkart India"
+    if not state.get("in_stock"):
+        return (f"🚫 <b>{name}</b> — нет в наличии\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"Сообщу, как появится.")
+    cur = state.get("currency") or "INR"
+    lines = [f"🎁 <b>{name} — В НАЛИЧИИ!</b>", "━━━━━━━━━━━━━━━━━━━", ""]
+    for d in state.get("denoms") or []:
+        price = f"  ·  ${d['usd']:.2f}" if d.get("usd") is not None else ""
+        lines.append(f"▸ <b>{d['value']} {cur}</b>{price}")
+    if not state.get("denoms"):
+        lines.append("<i>номиналы не распознаны</i>")
+    lines.append("")
+    lines.append("<i>Покупка — на сайте Bitrefill, потом импорт карт в SubHub.</i>")
+    return "\n".join(lines)
+
+
+async def check_stock(product_id: str = PRODUCT_ID) -> tuple[dict, str]:
+    """Смотрит наличие на сайте. Возвращает (состояние, ошибка).
+
+    Через headless-браузер: сайт под Cloudflare, обычный запрос получает 403.
+    С боевыми аргументами запуска проекта проверка проходит незаметно.
+    """
+    import contextlib
+    import json as _json
+    import tempfile
+
+    import menu as _menu
+    from playwright.async_api import async_playwright
+
+    prof = _menu._HERE / "data" / "bitrefill_stock_profile"
+    prof.mkdir(parents=True, exist_ok=True)
+    pw = ctx = None
+    try:
+        kw = _menu._browser_launch_kw(headless=True, profile_path=prof)
+        pw = await async_playwright().start()
+        ctx = await pw.chromium.launch_persistent_context(str(prof.resolve()), **kw)
+        with contextlib.suppress(Exception):
+            st = _menu._build_stealth_js_m()
+            if st:
+                await ctx.add_init_script(st)
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        await page.goto("https://www.bitrefill.com/", wait_until="domcontentloaded",
+                        timeout=60_000)
+        await page.wait_for_timeout(4000)
+        body = await page.evaluate(
+            """async (p) => {
+                const r = await fetch(p, {credentials: 'include'});
+                return r.status === 200 ? await r.text() : '';
+            }""", _STOCK_API + product_id)
+        if not body:
+            return {}, "Сайт не отдал карточку товара"
+        return stock_from_product(_json.loads(body)), ""
+    except Exception as exc:
+        return {}, f"Ошибка проверки: {exc}"
+    finally:
+        if ctx is not None:
+            with contextlib.suppress(Exception):
+                await _menu._close_browser_session(ctx, pw, prof)
+        elif pw is not None:
+            with contextlib.suppress(Exception):
+                await pw.stop()

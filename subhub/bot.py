@@ -777,6 +777,8 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🎁 Гифт-карты",  "callback_data": "gift:menu"},
                  {"text": _pm_lbl,          "callback_data": "gift:method_toggle"}],
                 [{"text": f"📶 SMS: {_sms_lbl}", "callback_data": "sms:cycle"}],
+                [{"text": "🎁 Наличие на Bitrefill",
+                  "callback_data": "bitrefill:stock"}],
                 [{"text": "🧪 Самопроверка", "callback_data": "run:selfcheck"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
                  {"text": "📊 Статистика",  "callback_data": "show:stats"}],
@@ -2022,6 +2024,22 @@ def _menu_tg_bot_thread() -> None:
                 parse_mode="HTML")
             await _bg_buy(cid, phone, months)
 
+        async def _bg_bitrefill_stock(cid):
+            """Проверить наличие карт Flipkart на Bitrefill прямо сейчас."""
+            import asyncio as _aio_bs
+            await _send(cid, "🔎 Смотрю наличие на Bitrefill…")
+            try:
+                state, err = await _m("_bitrefill_check_once")(False)
+            except Exception as exc:
+                await _send(cid, f"⚠️ {escape_html(exc)}", parse_mode="HTML")
+                return
+            if err or not state:
+                await _send(cid, f"⚠️ {escape_html(err or 'нет ответа')}",
+                            parse_mode="HTML")
+                return
+            import bitrefill as _br
+            await _send(cid, _br.stock_message(state), parse_mode="HTML")
+
         async def _bg_self_check(cid):
             """Прогон всех самопроверок проекта — то же, что пункт «Т» в консоли."""
             import asyncio as _aio_sc
@@ -3255,6 +3273,11 @@ def _menu_tg_bot_thread() -> None:
                 months = int(data.rsplit(":", 1)[1])
                 await _ack(qid, f"⏳ Покупаю {months} мес…")
                 asyncio.create_task(_bg_buy_auto(cid, months))
+                return
+
+            if data == "bitrefill:stock":
+                await _ack(qid, "🔎 Проверяю наличие…")
+                asyncio.create_task(_bg_bitrefill_stock(cid))
                 return
 
             if data == "run:selfcheck":
