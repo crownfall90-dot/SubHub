@@ -785,7 +785,8 @@ def _parse_git_remote() -> tuple[str, str, str]:
         for line in cfg.splitlines():
             m = re.search(r'url\s*=\s*https://(?:([^@\s]+)@)?github\.com/([^/\s]+)/([^/\s.]+)', line)
             if m:
-                return m.group(2), m.group(3).replace(".git", ""), m.group(1) or ""
+                return (m.group(2), m.group(3).replace(".git", ""),
+                        _clean_gh_token(m.group(1) or ""))
     except Exception:
         pass
     # Читаем токен из secrets.yaml (github.token) — для ZIP-установок
@@ -794,10 +795,33 @@ def _parse_git_remote() -> tuple[str, str, str]:
         _sec = _y.safe_load(
             (_HERE / "secrets.yaml").read_text(encoding="utf-8")
         ) or {}
-        _tok = (_sec.get("github") or {}).get("token", "")
+        _tok = _clean_gh_token((_sec.get("github") or {}).get("token", ""))
     except Exception:
         _tok = ""
     return _GH_OWNER, _GH_REPO, _tok
+
+def _clean_gh_token(raw: str) -> str:
+    """Отбрасывает незаполненный/непохожий на настоящий токен.
+
+    В secrets.yaml.example стоит заглушка `ВАШ_GITHUB_TOKEN`. Если её оставить
+    как есть, она уходила в заголовок Authorization, GitHub отвечал 401 и
+    обновления не работали — хотя без токена публичный репозиторий скачивается
+    прекрасно. Пустой результат означает «идём анонимно».
+    """
+    t = str(raw or "").strip()
+    if not t or " " in t:
+        return ""
+    up = t.upper()
+    if up.startswith(("ВАШ", "YOUR", "TOKEN", "XXX", "<")):
+        return ""
+    # Настоящие токены GitHub: ghp_/gho_/ghu_/ghs_/ghr_ или github_pat_
+    if t.startswith(("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")):
+        return t
+    # Классические 40-символьные hex-токены тоже принимаем
+    if len(t) == 40 and all(c in "0123456789abcdefABCDEF" for c in t):
+        return t
+    return ""
+
 
 def _gh_get(url: str, token: str = "", *, attempts: int = 3) -> bytes:
     """GET-запрос к GitHub через urllib (без прокси), с повторами.
@@ -821,6 +845,12 @@ def _gh_get(url: str, token: str = "", *, attempts: int = 3) -> bytes:
                 return r.read()
         except Exception as exc:
             last = exc
+            # Токен протух или без прав — репозиторий публичный, идём анонимно.
+            # Иначе просроченный токен ломал обновления совсем, хотя они и
+            # без авторизации работают.
+            if token and getattr(exc, "code", None) in (401, 403):
+                hdrs.pop("Authorization", None)
+                token = ""
     raise last if last is not None else RuntimeError("нет ответа")
 
 def _gh_get_many(owner: str, repo: str, files: list, token: str = "") -> dict:
@@ -852,6 +882,9 @@ def _gh_get_many(owner: str, repo: str, files: list, token: str = "") -> dict:
                         if r.status_code == 200:
                             out[name] = r.content
                             break
+                        if r.status_code in (401, 403) and "Authorization" in cli.headers:
+                            # Плохой токен — публичный репозиторий берём анонимно
+                            del cli.headers["Authorization"]
                     except Exception:
                         pass
     except Exception:
