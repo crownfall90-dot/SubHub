@@ -16259,6 +16259,50 @@ def screen_stop_all() -> None:
             return
 
 
+def screen_self_check():
+    """Прогон всех самопроверок проекта — кнопкой, без командной строки."""
+    cls()
+    header("САМОПРОВЕРКА", C)
+    tests = sorted((_HERE / "scripts").glob("test_*.py"))
+    if not tests:
+        print(f"  {DIM}Проверок не найдено.{RST}")
+        pause()
+        return
+    print(f"  {DIM}Гоняю {len(tests)} проверок — быстро, без сети и без денег…{RST}")
+    print()
+    ok = fail = 0
+    failed_names = []
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    for t in tests:
+        print(f"  {DIM}▶ {t.stem}…{RST}", end="", flush=True)
+        try:
+            r = subprocess.run([sys.executable, str(t)], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace",
+                               timeout=300, env=env)
+        except Exception as exc:
+            fail += 1
+            failed_names.append(t.stem)
+            print(f"\r  {R}✘ {t.stem}: {exc}{RST}")
+            continue
+        if r.returncode == 0:
+            ok += 1
+            print(f"\r  {G}✔{RST} {t.stem}" + " " * 24)
+        else:
+            fail += 1
+            failed_names.append(t.stem)
+            print(f"\r  {R}✘ {t.stem}{RST}" + " " * 24)
+            for line in (r.stdout + r.stderr).strip().splitlines()[-3:]:
+                print(f"      {DIM}{line[:100]}{RST}")
+    print()
+    print(f"  {'─' * 46}")
+    if fail:
+        print(f"  {R}{BLD}Провалено: {fail}{RST}   ·   {G}успешно: {ok}{RST}")
+        print(f"  {DIM}{', '.join(failed_names)}{RST}")
+    else:
+        print(f"  {G}{BLD}✅ Все {ok} проверок пройдены{RST}")
+    pause()
+
+
 def screen_prune_caches():
     """Освободить место: удалить кэши Chrome во всех профилях.
 
@@ -16431,6 +16475,7 @@ def screen_main():
         opt("К", "Восстановить профиль из JSON куков (cookies_backup/)", C)
         opt("6", "🟡 Архив профилей", M)
         opt("Ч", "🧹 Очистить кэш профилей  (освободить место на диске)", C)
+        opt("Т", "🧪 Самопроверка  (прогнать все проверки проекта)", B)
 
         section("GGSELL", C)
         opt("7", "🛒 Панель продавца  (баланс · заказы · переписка)", C)
@@ -16495,6 +16540,8 @@ def screen_main():
                 screen_auto_buy()
             elif choice == "Ч":
                 screen_prune_caches()
+            elif choice == "Т":
+                screen_self_check()
             elif choice in ("П", "P"):
                 screen_check_all_activated()
             elif choice in ("К", "K"):
@@ -16792,6 +16839,31 @@ def _migrate_config() -> None:
         print(f"  {Y}[Предупреждение] Не удалось обновить config.yaml: {_e}{RST}")
 
 
+def _install_git_hooks_quiet() -> None:
+    """Ставит git-хук, не дающий закоммитить секреты. Молча и идемпотентно.
+
+    Раньше это была ручная команда из README — теперь ставится сама при старте,
+    чтобы защита была у всех, а не только у тех, кто прочитал инструкцию.
+    """
+    import shutil as _sh_h
+    import stat as _st_h
+    src = _HERE / "scripts" / "git-hooks"
+    dst = _HERE / ".git" / "hooks"
+    if not src.is_dir() or not dst.parent.is_dir():
+        return          # ZIP-установка без .git — хукам негде жить
+    with contextlib.suppress(Exception):
+        dst.mkdir(parents=True, exist_ok=True)
+        for hook in src.iterdir():
+            if not hook.is_file():
+                continue
+            tgt = dst / hook.name
+            if tgt.exists() and tgt.read_bytes() == hook.read_bytes():
+                continue
+            _sh_h.copyfile(hook, tgt)
+            with contextlib.suppress(Exception):
+                tgt.chmod(tgt.stat().st_mode | _st_h.S_IXUSR | _st_h.S_IXGRP)
+
+
 def _startup_cleanup() -> None:
     """При каждом запуске: удаляем старые логи, использованные профили, убиваем Chrome."""
     import grizzly as _gz, threading as _thr
@@ -16811,6 +16883,8 @@ def _startup_cleanup() -> None:
 
     if deleted_logs:
         print(f"  {DIM}[Очистка] удалено логов: {deleted_logs}{RST}")
+
+    _install_git_hooks_quiet()
 
     freed = _rotate_debug_dir()
     if freed:

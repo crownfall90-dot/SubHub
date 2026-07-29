@@ -777,6 +777,7 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🎁 Гифт-карты",  "callback_data": "gift:menu"},
                  {"text": _pm_lbl,          "callback_data": "gift:method_toggle"}],
                 [{"text": f"📶 SMS: {_sms_lbl}", "callback_data": "sms:cycle"}],
+                [{"text": "🧪 Самопроверка", "callback_data": "run:selfcheck"}],
                 [{"text": "📋 Логи",        "callback_data": "show:logs"},
                  {"text": "📊 Статистика",  "callback_data": "show:stats"}],
                 [{"text": "💰 Продажи",    "callback_data": "go:sales"}],
@@ -2021,6 +2022,44 @@ def _menu_tg_bot_thread() -> None:
                 parse_mode="HTML")
             await _bg_buy(cid, phone, months)
 
+        async def _bg_self_check(cid):
+            """Прогон всех самопроверок проекта — то же, что пункт «Т» в консоли."""
+            import asyncio as _aio_sc
+            import os as _os_sc
+            import subprocess as _sp_sc
+            import sys as _sys_sc
+            root = _m("_HERE")
+            tests = sorted((root / "scripts").glob("test_*.py"))
+            if not tests:
+                await _send(cid, "🧪 Проверок не найдено.")
+                return
+            await _send(cid, f"🧪 Гоняю <b>{len(tests)}</b> проверок…", parse_mode="HTML")
+
+            def _work():
+                env = dict(_os_sc.environ, PYTHONIOENCODING="utf-8")
+                good, bad = [], []
+                for t in tests:
+                    try:
+                        r = _sp_sc.run([_sys_sc.executable, str(t)], capture_output=True,
+                                       text=True, encoding="utf-8", errors="replace",
+                                       timeout=300, env=env)
+                        (good if r.returncode == 0 else bad).append(t.stem)
+                    except Exception:
+                        bad.append(t.stem)
+                return good, bad
+
+            good, bad = await _aio_sc.get_running_loop().run_in_executor(None, _work)
+            if bad:
+                body = ("❌ <b>Проверки провалены</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Успешно: <b>{len(good)}</b>  ·  провалено: <b>{len(bad)}</b>\n\n"
+                        + "\n".join(f"• <code>{escape_html(n)}</code>" for n in bad))
+            else:
+                body = ("✅ <b>Все проверки пройдены</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Успешно: <b>{len(good)}</b> из {len(good)}")
+            await _send(cid, body, parse_mode="HTML")
+
         async def _bg_prune_cache(cid):
             """Очистка кэша Chrome во всех профилях — как пункт «Ч» в консоли."""
             import asyncio as _aio
@@ -3216,6 +3255,11 @@ def _menu_tg_bot_thread() -> None:
                 months = int(data.rsplit(":", 1)[1])
                 await _ack(qid, f"⏳ Покупаю {months} мес…")
                 asyncio.create_task(_bg_buy_auto(cid, months))
+                return
+
+            if data == "run:selfcheck":
+                await _ack(qid, "🧪 Запускаю проверки…")
+                asyncio.create_task(_bg_self_check(cid))
                 return
 
             if data == "profiles:prune_cache":
