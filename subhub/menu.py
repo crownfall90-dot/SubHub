@@ -15159,17 +15159,15 @@ def _save_card_order(order: list) -> None:
         pass
 
 
-def _import_gift_cards_from_link(url: str, default_denom: int | None = None) -> str:
-    """Тянет карты из заказа Bitrefill по ссылке и кладёт в хранилище.
+def _import_gift_cards_from_bitrefill(default_denom: int | None = None) -> str:
+    """Забирает ВСЕ карты из аккаунта Bitrefill и кладёт новые в хранилище.
 
+    Ничего вводить не нужно: идём в «Мои продукты» и берём всё, чего ещё нет.
     Возвращает текст отчёта — одинаковый для консоли и Telegram.
     """
     import bitrefill as _br
-    inv, _tok = _br.parse_order_url(url)
-    if not inv:
-        return "Это не похоже на ссылку заказа Bitrefill"
     try:
-        cards, msg = asyncio.run(_br.fetch_order_cards(url, default_denom=default_denom))
+        cards, msg = asyncio.run(_br.import_all_cards(default_denom=default_denom))
     except Exception as exc:
         return f"Ошибка: {exc}"
     if not cards:
@@ -15186,7 +15184,7 @@ def _import_gift_cards_from_link(url: str, default_denom: int | None = None) -> 
     for c in fresh:
         by_denom[c["denom"]] = by_denom.get(c["denom"], 0) + 1
     parts = "  ·  ".join(f"₹{d}×{n}" for d, n in sorted(by_denom.items(), reverse=True))
-    return (f"Найдено в заказе: {len(cards)}\n"
+    return (f"Найдено в аккаунте: {len(cards)}\n"
             f"Добавлено: {len(fresh)}" + (f"  ({parts})" if parts else "") + "\n"
             f"Уже были: {dup}\n"
             f"Баланс хранилища: ₹{_gift_balance()}")
@@ -15251,6 +15249,7 @@ def screen_gift_cards():
         _pm_sw = "на 💳 карту" if _pm_cur == "gift" else "на 🎁 гифт-карты"
         opt("С", f"Переключить способ оплаты {_pm_sw}", Y)
         opt("Б", "🔗 Забрать карты из заказа Bitrefill  (по ссылке)", G)
+        opt("И", "⬇️ Импортировать карты с Bitrefill  (все новые — в хранилище)", G)
         opt("Н", "🎁 Наличие на Bitrefill  (когда появятся — сообщу в Telegram)", C)
         opt("Д", "Удалить ВСЕ карты из хранилища", R)
         opt("0", "Назад", DIM)
@@ -15264,19 +15263,12 @@ def screen_gift_cards():
         if ch in ("с", "c", "s"):
             _save_pay_method("card" if _pm_cur == "gift" else "gift")
             continue
-        if ch in ("б", "b"):
-            print(f"\n  {DIM}Вставьте ссылку на заказ Bitrefill "
-                  f"(пустая строка — отмена):{RST}")
-            try:
-                _url = input("  ").strip()
-            except (KeyboardInterrupt, EOFError):
-                _url = ""
-            if _url:
-                print(f"  {DIM}Открываю заказ… в первый раз понадобится вход "
-                      f"в аккаунт Bitrefill в открывшемся окне.{RST}")
-                for _ln in _import_gift_cards_from_link(_url).splitlines():
-                    print(f"  {_ln}")
-                pause()
+        if ch in ("и", "i"):
+            print(f"\n  {DIM}Открываю «Мои продукты» на Bitrefill… "
+                  f"в первый раз понадобится вход в открывшемся окне.{RST}")
+            for _ln in _import_gift_cards_from_bitrefill().splitlines():
+                print(f"  {_ln}")
+            pause()
             continue
         if ch in ("н", "n"):
             print(f"\n  {DIM}Смотрю наличие на Bitrefill…{RST}")

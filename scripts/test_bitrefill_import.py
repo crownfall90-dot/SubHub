@@ -53,18 +53,6 @@ PIN code
 def main() -> None:
     import bitrefill as b
 
-    # ── ссылка ────────────────────────────────────────────────────────────
-    inv, tok = b.parse_order_url(
-        "https://www.bitrefill.com/checkout/098522b5-1b5a-4ff7-8ef3-e8c94a9ddbef"
-        "#4BHODBSYyF0WgR1qLolg")
-    assert inv == "098522b5-1b5a-4ff7-8ef3-e8c94a9ddbef", inv
-    assert tok == "4BHODBSYyF0WgR1qLolg", tok
-    # без токена — тоже валидная ссылка
-    assert b.parse_order_url("https://www.bitrefill.com/checkout/" + "a" * 20)[1] == ""
-    # мусор не проходит
-    assert b.parse_order_url("https://example.com/") == ("", "")
-    assert b.parse_order_url("") == ("", "")
-
     # ── карты со страницы ─────────────────────────────────────────────────
     cards = b.cards_from_text(PAGE)
     assert len(cards) == 3, cards
@@ -94,10 +82,19 @@ def main() -> None:
     assert b._amount_to_denom("100,00") == 100
     assert b._amount_to_denom("") == 0
 
-    # ── импорт в хранилище: чужая ссылка отсекается без сети ─────────────
+    # ── импорт из аккаунта: одна кнопка, без ссылок и ввода ─────────────
     import menu as _menu
-    assert 'не похоже на ссылку' in _menu._import_gift_cards_from_link('https://example.com/')
-    assert 'не похоже на ссылку' in _menu._import_gift_cards_from_link('')
+    assert callable(_menu._import_gift_cards_from_bitrefill)
+    import inspect
+    assert not [p for p in inspect.signature(
+        _menu._import_gift_cards_from_bitrefill).parameters.values()
+        if p.default is inspect.Parameter.empty], 'кнопка не должна требовать аргументов'
+    assert callable(b.import_all_cards)
+    assert not hasattr(b, 'parse_order_url'), 'импорт по ссылке должен был уйти'
+
+    # вставленная страница заказа разбирается общим парсером хранилища
+    parsed, errs = _menu._parse_gift_cards(PAGE)
+    assert not errs and len(parsed) == 3, (parsed, errs)
 
     # ── импортированное должно проходить общий парсер хранилища ───────────
     import menu as m

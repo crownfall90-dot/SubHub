@@ -1,18 +1,16 @@
-"""Импорт гифт-карт Flipkart из заказа Bitrefill по ссылке.
+"""Bitrefill: импорт купленных карт в хранилище и наличие товара.
 
-Ссылка вида
-`https://www.bitrefill.com/checkout/<id>#<accessToken>` открывается в отдельном
-Chrome-профиле SubHub. Первый раз нужно один раз войти в аккаунт Bitrefill —
-дальше сессия живёт в профиле и импорт идёт без участия человека.
+`import_all_cards` заходит в аккаунт (в отдельном Chrome-профиле SubHub) и
+забирает ВСЕ карты из «Мои продукты» — новые купленные подхватываются сами,
+ссылку на заказ вводить не нужно. Вход требуется один раз: дальше сессия
+живёт в профиле.
 
-Почему через браузер, а не обычным HTTP-запросом:
-  • сайт под Cloudflare — простой GET получает страницу проверки;
-  • заказ отдаётся только владельцу: `/api/accounts/invoice/<id>?accessToken=…`
-    без сессии аккаунта отвечает `404 Invoice not found`, одного токена мало,
-    поэтому коды читаются со страницы, а не из API.
+Почему через браузер: сайт под Cloudflare, обычный GET получает страницу
+проверки, а заказы отдаются только владельцу сессии. В официальном API товар
+закрыт для нашего аккаунта (`/products/flipkart-india` → 403), поэтому и
+наличие (`check_stock`) читается с сайта.
 
-Разбор карт (`cards_from_text`) вынесен отдельной чистой функцией — её гоняет
-тест без сети и без браузера.
+Разбор карт (`cards_from_text`) — чистая функция, её гоняет тест без сети.
 """
 from __future__ import annotations
 
@@ -29,16 +27,6 @@ _PIN_RE = re.compile(r"\b(\d{4,8})\b")
 _AMOUNT_RE = re.compile(r"[₹]\s*([\d\s.,]{2,12})|([\d\s.,]{2,12})\s*[₹]")
 
 
-def parse_order_url(url: str) -> tuple[str, str]:
-    """Ссылка на заказ → (invoice_id, access_token). Пустые строки, если не разобрал."""
-    u = str(url or "").strip()
-    m = re.search(r"/(?:checkout|invoice|order)/([0-9a-fA-F-]{16,64})", u)
-    if not m:
-        return "", ""
-    token = ""
-    if "#" in u:
-        token = u.split("#", 1)[1].split("?")[0].split("&")[0].strip()
-    return m.group(1), token
 
 
 def _amount_to_denom(raw: str) -> int:
@@ -128,76 +116,6 @@ PROFILE_NAME = "bitrefill_profile"
 _LOGIN_MARKERS = ("invoice not found", "log in", "войти", "sign in", "not found")
 
 
-async def fetch_order_cards(url: str, *, default_denom: int | None = None,
-                            log=print, login_wait: float = 180.0) -> tuple[list, str]:
-    """Открывает заказ Bitrefill и возвращает (карты, сообщение).
-
-    Первый запуск: если сессии нет, окно остаётся открытым и ждёт до login_wait
-    секунд, пока человек войдёт в аккаунт. Дальше вход уже не нужен.
-    """
-    import asyncio
-    import contextlib
-
-    import menu as _menu
-    from playwright.async_api import async_playwright
-
-    inv, token = parse_order_url(url)
-    if not inv:
-        return [], "Не похоже на ссылку заказа Bitrefill"
-
-    profile = _menu._HERE / "data" / PROFILE_NAME
-    profile.mkdir(parents=True, exist_ok=True)
-    page_url = f"https://www.bitrefill.com/checkout/{inv}" + (f"#{token}" if token else "")
-
-    pw = ctx = None
-    try:
-        # Окно видимое: Cloudflare заворачивает headless на проверку бота
-        kw = _menu._browser_launch_kw(headless=False, profile_path=profile)
-        pw = await async_playwright().start()
-        ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
-        with contextlib.suppress(Exception):
-            _st = _menu._build_stealth_js_m()
-            if _st:
-                await ctx.add_init_script(_st)
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-
-        deadline = asyncio.get_running_loop().time() + max(10.0, login_wait)
-        asked = False
-        while True:
-            await page.goto(page_url, wait_until="domcontentloaded", timeout=60_000)
-            with contextlib.suppress(Exception):
-                await page.wait_for_load_state("networkidle", timeout=20_000)
-            await page.wait_for_timeout(2500)
-
-            text = ""
-            with contextlib.suppress(Exception):
-                text = await page.evaluate("() => document.body?.innerText || ''")
-
-            cards = cards_from_text(text, default_denom)
-            if cards:
-                return cards, f"Найдено карт: {len(cards)}"
-
-            low = text.lower()
-            if any(mk in low for mk in _LOGIN_MARKERS):
-                if asyncio.get_running_loop().time() > deadline:
-                    return [], ("Заказ не открылся: нужен вход в аккаунт Bitrefill. "
-                                "Войдите в открывшемся окне и повторите.")
-                if not asked:
-                    asked = True
-                    log("  Войдите в аккаунт Bitrefill в открывшемся окне — "
-                        "жду и заберу карты сам…")
-                await page.wait_for_timeout(5000)
-                continue
-            return [], "Карты на странице не найдены (заказ пустой или другой формат)"
-    except Exception as exc:
-        return [], f"Ошибка: {exc}"
-    finally:
-        if ctx is not None:
-            with contextlib.suppress(Exception):
-                await _menu._close_browser_session(ctx, pw, profile)
-        elif pw is not None:
-            with contextlib.suppress(Exception):
-                await pw.stop()
 
 
 # ── Наличие товара ───────────────────────────────────────────────────────────
@@ -297,6 +215,109 @@ async def check_stock(product_id: str = PRODUCT_ID) -> tuple[dict, str]:
         if ctx is not None:
             with contextlib.suppress(Exception):
                 await _menu._close_browser_session(ctx, pw, prof)
+        elif pw is not None:
+            with contextlib.suppress(Exception):
+                await pw.stop()
+
+
+# ── Импорт всех карт из аккаунта ─────────────────────────────────────────────
+
+PROFILE_NAME = "bitrefill_profile"
+PRODUCTS_URL = "https://www.bitrefill.com/account/products"
+_LOGGED_OUT = ("log in", "войти", "sign in", "sign up", "зарегистр")
+
+
+async def import_all_cards(*, log=print, login_wait: float = 240.0,
+                           default_denom: int | None = None) -> tuple[list, str]:
+    """Забирает все карты из «Мои продукты». Возвращает (карты, сообщение).
+
+    Коды на карточках скрыты, пока не нажать «показать» — поэтому сначала
+    кликаем по всем таким кнопкам, потом читаем текст страницы. У Bitrefill
+    есть настройка «Автоматическое распечатывание»: с ней коды открыты сразу,
+    и клики просто не находят целей.
+    """
+    import asyncio
+    import contextlib
+
+    import menu as _menu
+    from playwright.async_api import async_playwright
+
+    profile = _menu._HERE / "data" / PROFILE_NAME
+    profile.mkdir(parents=True, exist_ok=True)
+
+    pw = ctx = None
+    try:
+        # Окно видимое: при первом запуске в нём нужно войти в аккаунт
+        kw = _menu._browser_launch_kw(headless=False, profile_path=profile)
+        pw = await async_playwright().start()
+        ctx = await pw.chromium.launch_persistent_context(str(profile.resolve()), **kw)
+        with contextlib.suppress(Exception):
+            _st = _menu._build_stealth_js_m()
+            if _st:
+                await ctx.add_init_script(_st)
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+
+        deadline = asyncio.get_running_loop().time() + max(10.0, login_wait)
+        asked = False
+        while True:
+            await page.goto(PRODUCTS_URL, wait_until="domcontentloaded", timeout=60_000)
+            with contextlib.suppress(Exception):
+                await page.wait_for_load_state("networkidle", timeout=20_000)
+            await page.wait_for_timeout(2500)
+
+            # Подгружаем весь список: карточек может быть много
+            with contextlib.suppress(Exception):
+                for _ in range(12):
+                    _before = await page.evaluate("() => document.body.scrollHeight")
+                    await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                    await page.wait_for_timeout(1200)
+                    if await page.evaluate("() => document.body.scrollHeight") == _before:
+                        break
+
+            # Раскрываем скрытые коды
+            with contextlib.suppress(Exception):
+                revealed = await page.evaluate("""() => {
+                    const want = ['показать', 'reveal', 'show code', 'показать код',
+                                  'распечат', 'unseal'];
+                    let n = 0;
+                    for (const el of document.querySelectorAll(
+                            'button,a,[role="button"]')) {
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t && want.some(w => t.includes(w))) { el.click(); n++; }
+                    }
+                    return n;
+                }""")
+                if revealed:
+                    log(f"  Раскрываю коды: {revealed}")
+                    await page.wait_for_timeout(3000)
+
+            text = ""
+            with contextlib.suppress(Exception):
+                text = await page.evaluate("() => document.body?.innerText || ''")
+
+            cards = cards_from_text(text, default_denom)
+            if cards:
+                return cards, f"Найдено карт в аккаунте: {len(cards)}"
+
+            low = text.lower()
+            if any(mk in low for mk in _LOGGED_OUT):
+                if asyncio.get_running_loop().time() > deadline:
+                    return [], ("Нужен вход в аккаунт Bitrefill. Войдите в "
+                                "открывшемся окне и нажмите импорт снова.")
+                if not asked:
+                    asked = True
+                    log("  Войдите в аккаунт Bitrefill в открывшемся окне — "
+                        "дальше заберу карты сам…")
+                await page.wait_for_timeout(5000)
+                continue
+            return [], ("Карты на странице не найдены. Если коды скрыты, включите "
+                        "в настройках Bitrefill «Автоматическое распечатывание».")
+    except Exception as exc:
+        return [], f"Ошибка: {exc}"
+    finally:
+        if ctx is not None:
+            with contextlib.suppress(Exception):
+                await _menu._close_browser_session(ctx, pw, profile)
         elif pw is not None:
             with contextlib.suppress(Exception):
                 await pw.stop()

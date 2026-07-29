@@ -56,6 +56,18 @@ def _parse_gift_cards(text: str, default_denom: int | None = None) -> tuple[list
     import re as _re
     denoms = set(GIFT_DENOMS)
     out, errs = [], []
+
+    # Страница заказа Bitrefill, вставленная целиком: между номером и PIN там
+    # стоят строки-метки, а номинал написан рядом как «₹100.00» — построчный
+    # разбор ниже такого не понимает. Отдельный разбор знает эту раскладку,
+    # поэтому достаточно скопировать страницу разом, не карту за картой.
+    try:
+        from bitrefill import cards_from_text as _cft
+        _page = _cft(text, default_denom)
+    except Exception:
+        _page = []
+    if _page:
+        return _page, []
     # Формат «номер на строке, PIN на следующей» → склеиваем в одну запись
     _lines = [ln.strip() for ln in text.splitlines()]
     items, _i = [], 0
