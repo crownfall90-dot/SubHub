@@ -8,7 +8,8 @@ Chrome-профиле SubHub. Первый раз нужно один раз в�
 Почему через браузер, а не обычным HTTP-запросом:
   • сайт под Cloudflare — простой GET получает страницу проверки;
   • заказ отдаётся только владельцу: `/api/accounts/invoice/<id>?accessToken=…`
-    без сессии аккаунта отвечает `404 Invoice not found`, одного токена мало.
+    без сессии аккаунта отвечает `404 Invoice not found`, одного токена мало,
+    поэтому коды читаются со страницы, а не из API.
 
 Разбор карт (`cards_from_text`) вынесен отдельной чистой функцией — её гоняет
 тест без сети и без браузера.
@@ -118,54 +119,6 @@ def cards_from_text(text: str, default_denom: int | None = None) -> list[dict]:
     return out
 
 
-def cards_from_invoice_json(data, default_denom: int | None = None) -> list[dict]:
-    """Достаёт карты из JSON инвойса, если сайт отдаёт коды структурой.
-
-    Форму ответа Bitrefill не документирует, поэтому обходим дерево и ищем пары
-    «длинный номер + короткий PIN» в одном объекте. Что не распозналось —
-    добирается разбором текста страницы.
-    """
-    out: list[dict] = []
-    seen: set[str] = set()
-
-    def _denom_of(obj: dict) -> int:
-        for key in ("value", "faceValue", "denomination", "amount", "price"):
-            v = obj.get(key)
-            if isinstance(v, (int, float)) and v > 0:
-                return int(v)
-            if isinstance(v, str):
-                d = _amount_to_denom(v)
-                if d:
-                    return d
-        return int(default_denom or 0)
-
-    def walk(node):
-        if isinstance(node, dict):
-            number = pin = ""
-            for k, v in node.items():
-                if not isinstance(v, (str, int)):
-                    continue
-                sv = str(v).strip()
-                kl = k.lower()
-                if re.fullmatch(r"\d{14,19}", sv) and any(
-                        t in kl for t in ("code", "number", "card", "serial", "pan")):
-                    number = sv
-                elif re.fullmatch(r"\d{4,8}", sv) and "pin" in kl:
-                    pin = sv
-            if number and pin and number not in seen:
-                d = _denom_of(node)
-                if d:
-                    seen.add(number)
-                    out.append({"denom": d, "number": number, "pin": pin,
-                                "used": False})
-            for v in node.values():
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(data)
-    return out
 
 
 # ── Браузерная часть ─────────────────────────────────────────────────────────
@@ -184,7 +137,6 @@ async def fetch_order_cards(url: str, *, default_denom: int | None = None,
     """
     import asyncio
     import contextlib
-    import json as _json
 
     import menu as _menu
     from playwright.async_api import async_playwright
@@ -195,9 +147,6 @@ async def fetch_order_cards(url: str, *, default_denom: int | None = None,
 
     profile = _menu._HERE / "data" / PROFILE_NAME
     profile.mkdir(parents=True, exist_ok=True)
-    api = (f"https://www.bitrefill.com/api/accounts/invoice/{inv}"
-           f"?accessToken={token}&source=action" if token else
-           f"https://www.bitrefill.com/api/accounts/invoice/{inv}")
     page_url = f"https://www.bitrefill.com/checkout/{inv}" + (f"#{token}" if token else "")
 
     pw = ctx = None
@@ -225,16 +174,6 @@ async def fetch_order_cards(url: str, *, default_denom: int | None = None,
                 text = await page.evaluate("() => document.body?.innerText || ''")
 
             cards = cards_from_text(text, default_denom)
-            if not cards:
-                # Пробуем JSON инвойса — иногда коды приходят структурой
-                with contextlib.suppress(Exception):
-                    raw = await page.evaluate(
-                        """async (u) => {
-                            const r = await fetch(u, {credentials: 'include'});
-                            return r.status === 200 ? await r.text() : '';
-                        }""", api)
-                    if raw:
-                        cards = cards_from_invoice_json(_json.loads(raw), default_denom)
             if cards:
                 return cards, f"Найдено карт: {len(cards)}"
 

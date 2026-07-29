@@ -15159,6 +15159,39 @@ def _save_card_order(order: list) -> None:
         pass
 
 
+def _import_gift_cards_from_link(url: str, default_denom: int | None = None) -> str:
+    """Тянет карты из заказа Bitrefill по ссылке и кладёт в хранилище.
+
+    Возвращает текст отчёта — одинаковый для консоли и Telegram.
+    """
+    import bitrefill as _br
+    inv, _tok = _br.parse_order_url(url)
+    if not inv:
+        return "Это не похоже на ссылку заказа Bitrefill"
+    try:
+        cards, msg = asyncio.run(_br.fetch_order_cards(url, default_denom=default_denom))
+    except Exception as exc:
+        return f"Ошибка: {exc}"
+    if not cards:
+        return msg or "Карты не найдены"
+    have = {str(c.get("number")) for c in _load_gift_cards()}
+    fresh = [c for c in cards if str(c["number"]) not in have]
+    dup = len(cards) - len(fresh)
+    if fresh:
+        _now = time.time()
+        for c in fresh:
+            c["added_ts"] = _now
+        _save_gift_cards(_load_gift_cards() + fresh)
+    by_denom: dict = {}
+    for c in fresh:
+        by_denom[c["denom"]] = by_denom.get(c["denom"], 0) + 1
+    parts = "  ·  ".join(f"₹{d}×{n}" for d, n in sorted(by_denom.items(), reverse=True))
+    return (f"Найдено в заказе: {len(cards)}\n"
+            f"Добавлено: {len(fresh)}" + (f"  ({parts})" if parts else "") + "\n"
+            f"Уже были: {dup}\n"
+            f"Баланс хранилища: ₹{_gift_balance()}")
+
+
 def screen_gift_cards():
     """Просмотр подарочных карт: остаток, номиналы, что есть, история активаций."""
     while True:
@@ -15217,6 +15250,7 @@ def screen_gift_cards():
         print()
         _pm_sw = "на 💳 карту" if _pm_cur == "gift" else "на 🎁 гифт-карты"
         opt("С", f"Переключить способ оплаты {_pm_sw}", Y)
+        opt("Б", "🔗 Забрать карты из заказа Bitrefill  (по ссылке)", G)
         opt("Н", "🎁 Наличие на Bitrefill  (когда появятся — сообщу в Telegram)", C)
         opt("Д", "Удалить ВСЕ карты из хранилища", R)
         opt("0", "Назад", DIM)
@@ -15229,6 +15263,20 @@ def screen_gift_cards():
             return
         if ch in ("с", "c", "s"):
             _save_pay_method("card" if _pm_cur == "gift" else "gift")
+            continue
+        if ch in ("б", "b"):
+            print(f"\n  {DIM}Вставьте ссылку на заказ Bitrefill "
+                  f"(пустая строка — отмена):{RST}")
+            try:
+                _url = input("  ").strip()
+            except (KeyboardInterrupt, EOFError):
+                _url = ""
+            if _url:
+                print(f"  {DIM}Открываю заказ… в первый раз понадобится вход "
+                      f"в аккаунт Bitrefill в открывшемся окне.{RST}")
+                for _ln in _import_gift_cards_from_link(_url).splitlines():
+                    print(f"  {_ln}")
+                pause()
             continue
         if ch in ("н", "n"):
             print(f"\n  {DIM}Смотрю наличие на Bitrefill…{RST}")
@@ -16929,9 +16977,8 @@ def _bitrefill_stock_watch() -> None:
                 asyncio.run(_bitrefill_check_once())
             time.sleep(_BITREFILL_CHECK_EVERY)
 
-    if not (_read_secrets().get("bitrefill") or {}).get("api_key") \
-            and not BITREFILL_STOCK_FILE.exists():
-        pass          # секция необязательна: наличие читается с сайта, не по ключу
+    # API-ключ здесь не нужен: наличие читается с сайта, а не через API
+    # (товар закрыт для нашего аккаунта — /products/flipkart-india даёт 403).
     _thr.Thread(target=_loop, daemon=True, name="bitrefill-stock").start()
 
 

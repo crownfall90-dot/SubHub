@@ -274,6 +274,7 @@ def _menu_tg_bot_thread() -> None:
         _sales_cost_waiting: dict = {}  # {cid: "3m"|"12m"} — ждём ввод себестоимости
         _note_waiting: dict = {}        # {cid: phone} — ждём текст примечания к профилю
         _gift_add_waiting: dict = {}    # {cid: denom|"auto"} — ждём номера+PIN гифт-карт
+        _gift_link_waiting: dict = {}   # {cid: True} — ждём ссылку на заказ Bitrefill
 
         # ── Вспомогательные ──────────────────────────────────────────────────
         _NOTIFY_DEFAULT_OFF = {"buy_number"}  # шумные — по умолчанию выкл
@@ -777,6 +778,8 @@ def _menu_tg_bot_thread() -> None:
                 [{"text": "🎁 Гифт-карты",  "callback_data": "gift:menu"},
                  {"text": _pm_lbl,          "callback_data": "gift:method_toggle"}],
                 [{"text": f"📶 SMS: {_sms_lbl}", "callback_data": "sms:cycle"}],
+                [{"text": "🔗 Забрать карты по ссылке",
+                  "callback_data": "gift:import_link"}],
                 [{"text": "🎁 Наличие на Bitrefill",
                   "callback_data": "bitrefill:stock"}],
                 [{"text": "🧪 Самопроверка", "callback_data": "run:selfcheck"}],
@@ -2023,6 +2026,20 @@ def _menu_tg_bot_thread() -> None:
                 f"Годных всего: {len(cands)}",
                 parse_mode="HTML")
             await _bg_buy(cid, phone, months)
+
+        async def _bg_bitrefill_import(cid, url):
+            """Импорт карт из заказа Bitrefill по присланной ссылке."""
+            import asyncio as _aio_bi
+            await _send(cid, "🔗 Открываю заказ на Bitrefill…")
+            try:
+                report = await _aio_bi.get_running_loop().run_in_executor(
+                    None, _m("_import_gift_cards_from_link"), url)
+            except Exception as exc:
+                await _send(cid, f"⚠️ {escape_html(exc)}", parse_mode="HTML")
+                return
+            await _send(cid, "🎁 <b>Импорт из Bitrefill</b>\n"
+                             "━━━━━━━━━━━━━━━━━━━\n"
+                             f"{escape_html(report)}", parse_mode="HTML")
 
         async def _bg_bitrefill_stock(cid):
             """Проверить наличие карт Flipkart на Bitrefill прямо сейчас."""
@@ -3275,6 +3292,20 @@ def _menu_tg_bot_thread() -> None:
                 asyncio.create_task(_bg_buy_auto(cid, months))
                 return
 
+            if data == "gift:import_link":
+                _gift_link_waiting[cid] = True
+                await _ack(qid, "🔗 Жду ссылку")
+                await _edit(cid, mid,
+                            "🔗 <b>Импорт карт из заказа Bitrefill</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━\n\n"
+                            "Пришлите ссылку на заказ — заберу все карты "
+                            "и положу в хранилище.\n\n"
+                            "<i>В первый раз откроется окно с входом в Bitrefill.</i>",
+                            {"inline_keyboard": [
+                                [{"text": "◀️ Назад", "callback_data": "go:other"}],
+                            ]}, parse_mode="HTML")
+                return
+
             if data == "bitrefill:stock":
                 await _ack(qid, "🔎 Проверяю наличие…")
                 asyncio.create_task(_bg_bitrefill_stock(cid))
@@ -4207,6 +4238,14 @@ def _menu_tg_bot_thread() -> None:
 
             # ── Гифт-карты: приём текста или файла (ДО OTP-перехвата, иначе
             #    цифры карт улетят в 3DS-OTP) ──────────────────────────────────
+            if _gift_link_waiting.get(cid) and text:
+                _gift_link_waiting.pop(cid, None)
+                if "bitrefill.com" not in text.lower():
+                    await _send(cid, "⚠️ Это не ссылка на заказ Bitrefill.")
+                    return
+                asyncio.create_task(_bg_bitrefill_import(cid, text.strip()))
+                return
+
             _gw = _gift_add_waiting.get(cid)
             if _gw is not None:
                 _def_denom = None if _gw == "auto" else int(_gw)

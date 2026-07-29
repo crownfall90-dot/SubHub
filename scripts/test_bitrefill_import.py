@@ -94,12 +94,10 @@ def main() -> None:
     assert b._amount_to_denom("100,00") == 100
     assert b._amount_to_denom("") == 0
 
-    # ── карты из JSON, если сайт отдаст их структурой ─────────────────────
-    data = {"items": [{"cardNumber": "6000170823257591", "pin": "243092",
-                       "value": 100}]}
-    got = b.cards_from_invoice_json(data)
-    assert got == [{"denom": 100, "number": "6000170823257591",
-                    "pin": "243092", "used": False}], got
+    # ── импорт в хранилище: чужая ссылка отсекается без сети ─────────────
+    import menu as _menu
+    assert 'не похоже на ссылку' in _menu._import_gift_cards_from_link('https://example.com/')
+    assert 'не похоже на ссылку' in _menu._import_gift_cards_from_link('')
 
     # ── импортированное должно проходить общий парсер хранилища ───────────
     import menu as m
