@@ -647,8 +647,6 @@ class LoginAutomation:
         # Фоновые задачи для номеров, которые нельзя было отменить из-за кулдауна.
         self._background_tasks: list[asyncio.Task] = []
         self._stale_cancelled: bool = False  # очистка старых активаций только 1 раз
-        self._last_proxy_host: str | None = None  # free-proxy host текущего launch
-        self._last_used_proxy: bool = False
 
     # ── public ──────────────────────────────────────────────────────────────
 
@@ -754,33 +752,6 @@ class LoginAutomation:
                     ok = await self._login_phase1(tab, phone, index)
                     # Access Denied / OTP reject — другой прокси или прямой доступ
                     # (без VeepN-расширения на этапе входа).
-                    if not ok and getattr(self, "_last_used_proxy", False):
-                        import menu as _menu_fb
-                        denied = False
-                        with contextlib.suppress(Exception):
-                            denied = await _menu_fb._flipkart_page_access_denied(tab)
-                        self._poison_last_proxy(
-                            "access_denied" if denied else "otp_fail",
-                        )
-                        with contextlib.suppress(Exception):
-                            await temp_context.close()
-                        logger.warning(
-                            f"[{index}] "
-                            + (
-                                "Access Denied — другой прокси"
-                                if denied
-                                else "OTP через прокси отклонён — другой прокси / напрямую"
-                            )
-                            + f" (+{phone})"
-                        )
-                        temp_context = await self._launch_context(
-                            temp_path,
-                            _allow_proxy=True,
-                            _proxy_tries_left=3 if denied else 2,
-                        )
-                        tab = await self._ready_login_page(temp_context)
-                        tab.set_default_timeout(self.config.timeout)
-                        ok = await self._login_phase1(tab, phone, index)
                     if ok:
                         await self.sms_client.set_status(act_id, GrizzlySMSClient.STATUS_READY)
                         mon = asyncio.create_task(
@@ -1662,7 +1633,6 @@ class LoginAutomation:
             if await _menu_ad._flipkart_page_access_denied(page):
                 logger.warning(f"[{index}] Access Denied — прокси не подошёл для Flipkart")
                 await self._save_screenshot(page, index, phone, "access_denied")
-                self._poison_last_proxy("access_denied")
                 return False
 
         rect = None
@@ -1797,7 +1767,6 @@ class LoginAutomation:
                         "«Something's not right» — обычно плохой прокси/IP"
                     )
                     await self._save_screenshot(page, index, phone, "otp_rejected")
-                    self._poison_last_proxy("otp_rejected")
                     return False
                 try:
                     el = await page.query_selector(otp_sel_ph1)
@@ -1817,8 +1786,6 @@ class LoginAutomation:
                 await asyncio.sleep(0.35)
 
             if not otp_ok:
-                if await self._is_otp_send_rejected(page):
-                    self._poison_last_proxy("otp_rejected")
                 logger.error(
                     f"[{index}] OTP-поле не появилось после Request OTP "
                     f"(URL: {page.url}) — прокси/IP скорее всего отвергнут Flipkart"
@@ -1829,16 +1796,6 @@ class LoginAutomation:
         logger.info(f"[{index}] Phase1 OK — URL: {page.url}")
         return True
 
-    def _poison_last_proxy(self, reason: str = "") -> None:
-        """Убрать прокси, на котором Flipkart не шлёт OTP, из пула."""
-        host = getattr(self, "_last_proxy_host", None)
-        if not host:
-            return
-        with contextlib.suppress(Exception):
-            import menu as _menu
-            _menu._mark_free_proxy_dead(host)
-            logger.info(f"Прокси {host} убран из пула ({reason or 'bad'})")
-        self._last_proxy_host = None
 
     async def _is_otp_send_rejected(self, page: Page) -> bool:
         """Toast «Something's not right» — Flipkart не принял запрос OTP (часто прокси)."""
@@ -2387,8 +2344,6 @@ class LoginAutomation:
         self,
         profile_path: Path,
         headless: Optional[bool] = None,
-        _allow_proxy: bool = True,
-        _proxy_tries_left: int = 3,
     ) -> BrowserContext:
         """Chrome для входа: сеть через _resolve_flipkart_launch_network.
 
@@ -2403,27 +2358,9 @@ class LoginAutomation:
         profile_path.mkdir(parents=True, exist_ok=True)
         _menu._pre_inject_chrome_prefs(profile_path)
 
-        # Вход / поиск номеров — без VeepN-расширения (только прокси или прямой доступ)
-        use_vpn, proxy = await _menu._resolve_flipkart_launch_network(
-            allow_proxy=_allow_proxy,
-            allow_vpn_extension=False,
-        )
-        use_vpn = False  # расширение не для логина
-        self._last_used_proxy = bool(proxy and proxy.get("server"))
-        self._last_proxy_host = (
-            (proxy or {}).get("_free_host") if self._last_used_proxy else None
-        )
-        if proxy:
-            src = proxy.get("_source") or "proxy"
-            logger.info(
-                f"[{profile_path.name}] Вход через прокси "
-                f"{proxy.get('server')} [{src}] (без расширения)"
-            )
-        else:
-            logger.info(
-                f"[{profile_path.name}] Flipkart без прокси и без расширения "
-                "(прямой доступ / VPN на ПК)"
-            )
+        # Сеть одна: прямое соединение (VPN держит пользователь на ПК)
+        proxy = None
+        logger.info(f"[{profile_path.name}] Flipkart напрямую (VPN на ПК)")
 
         phone = ""
         with contextlib.suppress(Exception):
@@ -2433,7 +2370,6 @@ class LoginAutomation:
             phone=phone,
             profile_path=profile_path,
             use_vpn=False,
-            proxy=proxy,
         )
 
         context = await self.playwright.chromium.launch_persistent_context(
@@ -2451,59 +2387,6 @@ class LoginAutomation:
                 lambda route: route.abort()
             )
 
-        if proxy:
-            # Одна загрузка login: оставляем вкладку для phase1 (без второго goto).
-            ok_proxy = False
-            access_denied = False
-            page = context.pages[0] if context.pages else await context.new_page()
-            with contextlib.suppress(Exception):
-                await page.goto(
-                    self.config.site_url,
-                    wait_until="domcontentloaded",
-                    timeout=18_000,
-                )
-                access_denied = await _menu._flipkart_page_access_denied(page)
-                _body = (await page.evaluate(
-                    "() => document.body?.innerText?.slice(0,400) || ''")).lower()
-                ok_proxy = (
-                    not access_denied
-                    and "flipkart" in _body
-                )
-            if not ok_proxy:
-                host = proxy.get("_free_host") or proxy.get("server")
-                why = "Access Denied" if access_denied else "не открыл Flipkart"
-                logger.info(
-                    f"[{profile_path.name}] Прокси {host} — {why} "
-                    f"(прокси не подошёл)"
-                )
-                with contextlib.suppress(Exception):
-                    if proxy.get("_free_host"):
-                        _menu._mark_free_proxy_dead(proxy["_free_host"])
-                with contextlib.suppress(Exception):
-                    await context.close()
-                # Сначала другой прокси, потом direct (без расширения)
-                if _allow_proxy and _proxy_tries_left > 0:
-                    logger.info(
-                        f"[{profile_path.name}] Перезапуск с другим прокси "
-                        f"(осталось попыток: {_proxy_tries_left})"
-                    )
-                    return await self._launch_context(
-                        profile_path,
-                        headless=headless,
-                        _allow_proxy=True,
-                        _proxy_tries_left=_proxy_tries_left - 1,
-                    )
-                logger.info(
-                    f"[{profile_path.name}] Прокси исчерпаны — прямой доступ "
-                    "(VPN на ПК, без расширения)"
-                )
-                return await self._launch_context(
-                    profile_path,
-                    headless=headless,
-                    _allow_proxy=False,
-                    _proxy_tries_left=0,
-                )
-            logger.info(f"[{profile_path.name}] ✔ Flipkart через прокси — вкладка готова")
 
         logger.debug(f"Контекст: {profile_path.name}")
         return context

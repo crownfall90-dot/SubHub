@@ -1,14 +1,14 @@
-"""Self-check: сеть сценариев — прокси (тумблер) или direct (личный VPN на ПК).
+"""Self-check: сеть сценариев — всегда прямое соединение.
 
-VPN-расширения удалены из проекта: use_vpn всегда False, расширение
-не ставится и не включается ни в одном сценарии.
+Прокси и VPN-расширения удалены: VPN держит пользователь на ПК, браузер ходит
+напрямую. Тест закрепляет этот контракт — если в план сети снова просочится
+прокси или расширение, он упадёт.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -17,63 +17,28 @@ sys.path.insert(0, str(ROOT / "subhub"))
 import menu as m  # noqa: E402
 
 
-def _run() -> None:
-    fake_proxy = {"server": "http://1.2.3.4:8080"}
+def main() -> None:
+    use_vpn, proxy = asyncio.run(m._resolve_flipkart_launch_network())
+    assert use_vpn is False, use_vpn
+    assert proxy is None, proxy
 
-    async def _proxy_on() -> None:
-        """Прокси ВКЛ и живой найден → сценарий идёт через прокси."""
-        with (
-            patch.object(m, "_proxy_enabled", return_value=True),
-            patch.object(
-                m, "_select_proxy_for_launch_async",
-                new=AsyncMock(return_value=fake_proxy),
-            ),
-        ):
-            use_vpn, proxy, err = await m._resolve_profile_scenario_network(
-                Path("chrome_profiles_done/profile_x"),
-            )
-        assert err is None
-        assert use_vpn is False
-        assert proxy == fake_proxy
+    # Аргументы совместимости не должны воскрешать прокси
+    use_vpn, proxy = asyncio.run(
+        m._resolve_flipkart_launch_network(allow_vpn_extension=True))
+    assert use_vpn is False and proxy is None
 
-    async def _proxy_off_direct() -> None:
-        """Прокси ВЫКЛ → direct (личный VPN на ПК), без расширения."""
-        with patch.object(m, "_proxy_enabled", return_value=False):
-            use_vpn, proxy, err = await m._resolve_profile_scenario_network(
-                Path("chrome_profiles_done/profile_x"),
-            )
-        assert err is None
-        assert use_vpn is False
-        assert proxy is None
+    # Запуск браузера — без proxy и без расширения
+    kw = m._browser_launch_kw(headless=True)
+    assert "proxy" not in kw, kw.get("proxy")
+    assert not any("load-extension" in a for a in kw["args"]), kw["args"]
 
-    async def _proxy_on_dead() -> None:
-        """Прокси ВКЛ, живого нет → direct (личный VPN), расширение не трогаем."""
-        with (
-            patch.object(m, "_proxy_enabled", return_value=True),
-            patch.object(
-                m, "_select_proxy_for_launch_async",
-                new=AsyncMock(return_value=None),
-            ),
-        ):
-            use_vpn, proxy = await m._resolve_flipkart_launch_network(
-                allow_vpn_extension=True,
-            )
-        assert use_vpn is False
-        assert proxy is None
+    src = (ROOT / "subhub" / "menu.py").read_text(encoding="utf-8", errors="replace")
+    assert "_select_proxy_for_launch_async" in src, "заглушка нужна для совместимости"
+    for gone in ("_get_free_proxies", "_proxy6_api_key", "_fetch_free_proxy_candidates"):
+        assert gone not in src, f"остатки прокси: {gone}"
 
-    def _extension_removed() -> None:
-        """Расширение недоступно нигде: dir=None, vpn_enabled=False."""
-        assert m._vpn_extension_dir() is None
-        assert m._vpn_extension_dir(ignore_toggle=True) is None
-        assert m._vpn_enabled() is False
-        assert m._needs_load_extension(None) is False
-
-    asyncio.run(_proxy_on())
-    asyncio.run(_proxy_off_direct())
-    asyncio.run(_proxy_on_dead())
-    _extension_removed()
-    print("ok: profile proxy network (no vpn extension)")
+    print("PASS profile_proxy_network")
 
 
 if __name__ == "__main__":
-    _run()
+    main()

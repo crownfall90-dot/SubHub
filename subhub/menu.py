@@ -130,8 +130,28 @@ async def _vpn_disconnect(*_a, **_k) -> bool:
     return True
 
 
-async def _vpn_is_proxy_active(*_a, **_k) -> bool:
+
+# ── Прокси удалены ────────────────────────────────────────────────────────────
+# Раньше здесь была подсистема HTTP-прокси (proxy6 + бесплатные списки):
+# подбор живого прокси под Flipkart, замер задержки, кэш мёртвых, ротация.
+# Не используется: соединение идёт напрямую, VPN держит пользователь на ПК.
+# Заглушки возвращают то же, что подсистема отдавала при выключенном тумблере.
+
+def _proxy_enabled() -> bool:
     return False
+
+
+def _proxy_config() -> dict:
+    return {}
+
+
+
+
+
+
+async def _select_proxy_for_launch_async(*_a, **_k):
+    return None
+
 
 
 async def _ensure_vpn_connected(*_a, **_k) -> bool:
@@ -11650,36 +11670,8 @@ _free_proxy_pick_i = 0
 _free_proxy_pick_lock = threading.Lock()
 
 
-def _proxy_config() -> dict:
-    """Секция proxy из config.yaml (безопасно, с дефолтами)."""
-    try:
-        import yaml as _y
-        cfg_path = _HERE / "config.yaml"
-        with open(cfg_path, encoding="utf-8") as _fh:
-            cfg = _y.safe_load(_fh) or {}
-        p = cfg.get("proxy") or {}
-        raw_list = p.get("list") or []
-        plist = [
-            str(x).strip() for x in raw_list
-            if isinstance(x, (str, int)) and str(x).strip()
-        ]
-        return {
-            "enabled": bool(p.get("enabled", False)),
-            "mode": str(p.get("mode", "auto_free")).strip() or "auto_free",
-            "server": str(p.get("server", "")).strip(),
-            "username": str(p.get("username", "")).strip(),
-            "password": str(p.get("password", "")).strip(),
-            "list": plist,
-        }
-    except Exception:
-        return {
-            "enabled": False, "mode": "auto_free", "server": "",
-            "username": "", "password": "", "list": [],
-        }
 
 
-def _proxy_enabled() -> bool:
-    return bool(_proxy_config().get("enabled"))
 
 
 _SMS_PROVIDER_ORDER = ("grizzly", "pvapins", "auto")
@@ -11799,33 +11791,6 @@ def _sms_providers_status_line() -> str:
     return "   ·   ".join(parts)
 
 
-def _set_proxy_enabled(enabled: bool) -> bool:
-    """Пишет proxy.enabled в config.yaml точечно (сохраняет комментарии вокруг блока)."""
-    cfg_path = _HERE / "config.yaml"
-    try:
-        text = cfg_path.read_text(encoding="utf-8")
-    except Exception:
-        return False
-    # Только первая строка `enabled:` внутри секции proxy: … до следующего корневого ключа
-    m = re.search(r"(?m)^(proxy:\s*\n)(.*?)(?=^[a-zA-Z_][\w]*:|\Z)", text, re.S)
-    if not m:
-        return False
-    head, body = m.group(1), m.group(2)
-    new_body, n = re.subn(
-        r"(?m)^([ \t]*enabled:\s*)(true|false|True|False)\s*$",
-        rf"\g<1>{'true' if enabled else 'false'}",
-        body,
-        count=1,
-    )
-    if n == 0:
-        # нет строки enabled — вставим после proxy:
-        new_body = f"  enabled: {'true' if enabled else 'false'}\n" + body
-    new_text = text[: m.start()] + head + new_body + text[m.end() :]
-    try:
-        cfg_path.write_text(new_text, encoding="utf-8")
-        return True
-    except Exception:
-        return False
 
 
 async def _resolve_flipkart_launch_network(
@@ -11891,192 +11856,28 @@ async def _resolve_profile_scenario_network(
     return False, None, None
 
 
-def _fetch_free_proxy_candidates() -> list[str]:
-    """Скачивает списки публичных HTTP-прокси из нескольких источников (host:port)."""
-    out: list[str] = []
-    try:
-        import httpx as _hx
-        import concurrent.futures as _cf
-    except Exception:
-        return out
-
-    def _one(url: str) -> list[str]:
-        local: list[str] = []
-        try:
-            r = _hx.get(url, timeout=8, trust_env=False)
-            if r.status_code != 200:
-                return local
-            for line in r.text.splitlines():
-                line = line.strip()
-                if ":" in line and not line.startswith("#"):
-                    local.append(line.split("//")[-1])
-        except Exception:
-            pass
-        return local
-
-    with _cf.ThreadPoolExecutor(max_workers=len(_FREE_PROXY_SOURCES) or 1) as ex:
-        for part in ex.map(_one, _FREE_PROXY_SOURCES):
-            out.extend(part)
-    seen: set = set()
-    uniq: list[str] = []
-    for p in out:
-        if p not in seen:
-            seen.add(p)
-            uniq.append(p)
-    return uniq
 
 
 # Страны, с которых Flipkart обычно шлёт OTP (CN/RU free DC — «Something's not right»)
 _OTP_GEO_OK = frozenset({"IN", "US", "CA", "SG", "GB", "DE", "FR", "NL"})
 
 
-def _proxy_serves_flipkart(proxy: str, timeout: float = _FREE_PROXY_PROBE_TIMEOUT) -> bool:
-    """True, если через прокси Flipkart отдаёт настоящую страницу (200 + контент)."""
-    return _proxy_flipkart_latency(proxy, timeout=timeout) is not None
 
 
-def _proxy_country_code(proxy: str, timeout: float = 3.5) -> str:
-    """ISO country code через прокси (ip-api) или ''."""
-    try:
-        import httpx as _hx
-        with _hx.Client(
-            proxy=f"http://{proxy}", timeout=timeout,
-            trust_env=False, follow_redirects=True,
-        ) as c:
-            r = c.get(
-                "http://ip-api.com/json/?fields=status,countryCode",
-                timeout=timeout,
-            )
-            if r.status_code == 200:
-                d = r.json()
-                if d.get("status") == "success":
-                    return str(d.get("countryCode") or "").upper()
-    except Exception:
-        pass
-    return ""
 
 
-def _proxy_flipkart_latency(
-    proxy: str, timeout: float = _FREE_PROXY_PROBE_TIMEOUT,
-) -> float | None:
-    """Latency (сек) до рабочей страницы Flipkart или None."""
-    try:
-        import httpx as _hx
-        t0 = time.monotonic()
-        with _hx.Client(
-            proxy=f"http://{proxy}", timeout=timeout,
-            trust_env=False, follow_redirects=True,
-        ) as c:
-            # login легче главной витрины — быстрее probe
-            r = c.get("https://www.flipkart.com/account/login?ret=/", timeout=timeout)
-            body = r.text[:2000].lower()
-            if (r.status_code == 200 and "flipkart" in body
-                    and "access denied" not in body):
-                return time.monotonic() - t0
-    except Exception:
-        return None
-    return None
 
 
-def _proxy_otp_score(proxy: str) -> float | None:
-    """Сортировочный ключ (меньше = лучше) или None если прокси не подходит для OTP."""
-    lat = _proxy_flipkart_latency(proxy)
-    if lat is None:
-        return None
-    cc = _proxy_country_code(proxy)
-    if cc and cc not in _OTP_GEO_OK:
-        return None  # CN и прочие — Flipkart режет Request OTP
-    if cc == "IN":
-        return lat
-    if cc in ("US", "CA", "SG"):
-        return 10.0 + lat
-    if cc in _OTP_GEO_OK:
-        return 20.0 + lat
-    # гео неизвестно — низкий приоритет (часто мёртвые/CN без ответа ip-api)
-    return 50.0 + lat
 
 
-def _validate_free_proxies(cands: list[str], *, want: int = 6,
-                           max_workers: int = 80, budget: float = 35.0,
-                           max_candidates: int = 600) -> list[str]:
-    """Параллельно проверяет кандидатов; IN/US первыми, без geo CN и т.п.
-
-    ThreadPoolExecutor при обычном выходе ждёт ВСЕ задачи — shutdown(cancel_futures).
-    """
-    import concurrent.futures as _cf
-    scored: list[tuple[float, str]] = []
-    if not cands:
-        return []
-    random.shuffle(cands)
-    cands = cands[:max_candidates]
-    t0 = time.monotonic()
-    ex = _cf.ThreadPoolExecutor(max_workers=max_workers)
-    try:
-        futs = {ex.submit(_proxy_otp_score, p): p for p in cands}
-        for fut in _cf.as_completed(futs):
-            p = futs[fut]
-            try:
-                sc = fut.result()
-                if sc is not None:
-                    scored.append((sc, p))
-            except Exception:
-                pass
-            if len(scored) >= want or (time.monotonic() - t0) > budget:
-                break
-    finally:
-        ex.shutdown(wait=False, cancel_futures=True)
-    scored.sort(key=lambda x: x[0])
-    return [p for _, p in scored]
 
 
-def _load_free_proxy_cache() -> list[str]:
-    try:
-        raw = json.loads(_FREE_PROXY_CACHE_FILE.read_text(encoding="utf-8"))
-        if time.time() - float(raw.get("ts", 0)) < _FREE_PROXY_TTL:
-            return [p for p in raw.get("proxies", []) if isinstance(p, str)]
-    except Exception:
-        pass
-    return []
 
 
-def _save_free_proxy_cache(proxies: list[str]) -> None:
-    try:
-        _FREE_PROXY_CACHE_FILE.write_text(
-            json.dumps({"proxies": proxies, "ts": time.time()}, ensure_ascii=False),
-            encoding="utf-8")
-    except Exception:
-        pass
 
 
-_free_proxy_refresh_lock = threading.Lock()
 
 
-def _get_free_proxies(min_count: int = 1) -> list[str]:
-    """Возвращает пул рабочих для Flipkart бесплатных прокси (кэш → иначе подбор)."""
-    cached = _load_free_proxy_cache()
-    if len(cached) >= min_count:
-        return cached
-    with _free_proxy_refresh_lock:
-        cached = _load_free_proxy_cache()
-        if len(cached) >= min_count:
-            return cached
-        print(f"  {DIM}Прокси: подбираю IN/US под Flipkart OTP…{RST}")
-        t0 = time.monotonic()
-        cands = _fetch_free_proxy_candidates()
-        working = _validate_free_proxies(cands, want=6)
-        elapsed = time.monotonic() - t0
-        if working:
-            _save_free_proxy_cache(working)
-            print(
-                f"  {G}✔ Прокси: {len(working)} для OTP за {elapsed:.0f}s "
-                f"(IN/US первыми){RST}"
-            )
-        else:
-            print(
-                f"  {Y}⚠ Прокси: IN/US под OTP не нашлось за {elapsed:.0f}s "
-                f"— Proxy6 / VeePN{RST}"
-            )
-        return working
 
 
 def prefetch_free_proxies() -> None:
@@ -12086,165 +11887,21 @@ def prefetch_free_proxies() -> None:
     cfg = _proxy_config()
     if cfg.get("mode") == "manual" or cfg.get("server"):
         return
-    with contextlib.suppress(Exception):
-        if _select_proxy_for_launch():
-            return
-        _get_free_proxies(min_count=1)
+    return
 
 
-def _mark_free_proxy_dead(proxy: str) -> None:
-    """Убирает нерабочий прокси из кэша, чтобы следующий поток его не брал."""
-    try:
-        left = [p for p in _load_free_proxy_cache() if p != proxy]
-        _save_free_proxy_cache(left)
-    except Exception:
-        pass
 
 
-def _take_free_proxy() -> str | None:
-    """Берёт следующий прокси из кэша по кругу (быстрые — в начале списка)."""
-    global _free_proxy_pick_i
-    proxies = _get_free_proxies(min_count=1)
-    if not proxies:
-        return None
-    with _free_proxy_pick_lock:
-        i = _free_proxy_pick_i % len(proxies)
-        _free_proxy_pick_i = i + 1
-        return proxies[i]
 
 
-def _proxy6_api_key() -> str:
-    try:
-        key = (_read_secrets().get("proxy6") or {}).get("api_key", "").strip()
-    except Exception:
-        key = ""
-    if not key:
-        try:
-            import yaml as _y
-            cfg = _y.safe_load(
-                (_HERE / "config.yaml").read_text(encoding="utf-8")
-            ) or {}
-            key = str((cfg.get("proxy6") or {}).get("api_key") or "").strip()
-        except Exception:
-            key = ""
-    if not key or key.upper().startswith("YOUR_"):
-        return ""
-    return key
 
 
-def _select_proxy6() -> dict | None:
-    """Активный прокси Proxy6 (предпочтительно India) → Playwright proxy dict."""
-    key = _proxy6_api_key()
-    if not key:
-        return None
-    try:
-        import httpx as _hx
-        country = "in"
-        with contextlib.suppress(Exception):
-            import yaml as _y
-            cfg = _y.safe_load(
-                (_HERE / "config.yaml").read_text(encoding="utf-8")
-            ) or {}
-            country = str((cfg.get("proxy6") or {}).get("country") or "in").strip().lower() or "in"
-        r = _hx.get(
-            f"https://px6.link/api/{key}/getproxy",
-            params={"state": "active", "nokey": ""},
-            timeout=12,
-            trust_env=False,
-        )
-        data = r.json()
-        if data.get("status") != "yes":
-            return None
-        items = data.get("list") or []
-        if isinstance(items, dict):
-            items = list(items.values())
-        if not items:
-            return None
-        # India first, then others
-        def _rank(it: dict) -> tuple:
-            cc = str(it.get("country") or "").lower()
-            return (0 if cc == country else 1, str(it.get("host") or ""))
-
-        items = sorted([x for x in items if isinstance(x, dict)], key=_rank)
-        p = items[0]
-        host = str(p.get("host") or p.get("ip") or "").strip()
-        port = str(p.get("port") or "").strip()
-        user = str(p.get("user") or "").strip()
-        pw = str(p.get("pass") or p.get("password") or "").strip()
-        if not host or not port:
-            return None
-        # HTTP для Playwright; SOCKS в type=socks — тоже пробуем http schema
-        out: dict = {
-            "server": f"http://{host}:{port}",
-            "_free_host": f"{host}:{port}",
-            "_source": "proxy6",
-        }
-        if user:
-            out["username"] = user
-            out["password"] = pw
-        print(f"  {G}✔ Proxy6: {host}:{port} ({p.get('country') or '?'}){RST}")
-        return out
-    except Exception as exc:
-        print(f"  {Y}⚠ Proxy6: {exc}{RST}")
-        return None
 
 
-def _select_proxy_from_list(cfg: dict) -> dict | None:
-    """proxy.list из config — host:port или URL."""
-    lst = cfg.get("list") or []
-    if not lst:
-        return None
-    raw = random.choice(lst)
-    s = str(raw).strip()
-    if "://" not in s:
-        s = f"http://{s}"
-    # user:pass@host:port
-    host_tag = s.split("@")[-1].replace("http://", "").replace("https://", "")
-    out: dict = {"server": s if s.startswith("http") else f"http://{s}",
-                 "_free_host": host_tag, "_source": "list"}
-    return out
 
 
-def _select_proxy_for_launch() -> dict | None:
-    """Playwright proxy: manual → list → Proxy6(IN) → auto_free (IN/US).
-
-    Бесплатные CN-прокси Flipkart открывает, но Request OTP режет —
-    для OTP берём только подходящую географию / платный Proxy6.
-    """
-    cfg = _proxy_config()
-    if not cfg["enabled"]:
-        return None
-    if cfg["mode"] == "manual" or cfg["server"]:
-        if not cfg["server"]:
-            return None
-        out = {"server": cfg["server"]}
-        if cfg["username"]:
-            out["username"] = cfg["username"]
-            out["password"] = cfg["password"]
-        return out
-    # Явный список в config
-    picked = _select_proxy_from_list(cfg)
-    if picked:
-        return picked
-    # Proxy6 India (если ключ в secrets/config)
-    picked = _select_proxy6()
-    if picked:
-        return picked
-    if cfg["mode"] in ("proxy6", "proxy6_only"):
-        return None
-    server = _take_free_proxy()
-    if not server:
-        return None
-    return {"server": f"http://{server}", "_free_host": server, "_source": "auto_free"}
 
 
-async def _select_proxy_for_launch_async() -> dict | None:
-    """Асинхронная обёртка — подбор прокси в отдельном потоке (сеть блокирует)."""
-    try:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, _select_proxy_for_launch)
-    except Exception:
-        return None
 
 
 async def _check_flipkart_accessible() -> bool:
@@ -13662,8 +13319,6 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     if ok:
                         _open_ok = True
                         break
-                    if _proxy and _proxy.get("_free_host"):
-                        _mark_free_proxy_dead(_proxy["_free_host"])
                     print(
                         f"  {Y}⚠ Access Denied / прокси не подошёл "
                         f"({_proxy.get('server') if _proxy else 'direct'}) — "
@@ -13739,9 +13394,8 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                     continue
                 if p1 != "ok":
                     # Без расширения: другой прокси или следующий номер
-                    if _proxy and p1.startswith("error:") and _proxy.get("_free_host"):
-                        _mark_free_proxy_dead(_proxy["_free_host"])
-                        print(f"  {Y}⚠ Вход не удался — другой прокси / номер…{RST}")
+                    if p1.startswith("error:"):
+                        print(f"  {Y}⚠ Вход не удался — беру следующий номер…{RST}")
                         _try_next = True
                         _del_profile = True
                         _grizzly_module.mark_failed(phone_id)
@@ -13854,8 +13508,6 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                                     _grizzly_module.update_rental_browser(nid, page=npage)
                                     n_ok = True
                                     break
-                                if _proxy_n and _proxy_n.get("_free_host"):
-                                    _mark_free_proxy_dead(_proxy_n["_free_host"])
                                     _skip_hosts_n.add(_proxy_n["_free_host"])
                                 if _att_n >= 2:
                                     # последний заход — direct
@@ -13918,10 +13570,6 @@ async def _do_all_in_one(months: int, headless: bool = False, card: dict | None 
                             print(f"  {G}Номер #{n} готов, жду OTP...{RST}")
                         else:
                             print(f"  {Y}Номер #{n} не прошёл ({r2}){RST}")
-                            # Прокси не открыл Flipkart — убрать из пула, чтобы
-                            # следующие потоки взяли другой прокси/VeePN
-                            if _proxy_n and r2.startswith("error:") and _proxy_n.get("_free_host"):
-                                _mark_free_proxy_dead(_proxy_n["_free_host"])
                             _grizzly_module.mark_failed(nid)
                             if n_ctx:
                                 try: await n_ctx.close()
