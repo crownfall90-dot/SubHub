@@ -203,18 +203,44 @@ def stock_gone_message(gone: list, state: dict) -> str:
 
 
 
+# Cloudflare пропускает по TLS-отпечатку клиента, а не по кукам: обычный
+# requests/httpx получает 403 даже с куками из браузера (проверено). curl_cffi
+# умеет представляться Chrome на уровне TLS — и запрос проходит за 0.3с вместо
+# ~10с на запуск headless-браузера.
+_IMPERSONATE = "chrome124"
+
+
+def _http_stock(product_id: str) -> dict | None:
+    """Наличие обычным HTTP с подделкой TLS-отпечатка. None — не получилось."""
+    import contextlib
+    try:
+        from curl_cffi import requests as _cr
+    except ImportError:
+        return None
+    with contextlib.suppress(Exception):
+        r = _cr.get(f"https://www.bitrefill.com{_STOCK_API}{product_id}",
+                    impersonate=_IMPERSONATE, timeout=25)
+        if r.status_code == 200:
+            return stock_from_product(r.json())
+    return None
+
+
 async def check_stock(product_id: str = PRODUCT_ID) -> tuple[dict, str]:
     """Смотрит наличие на сайте. Возвращает (состояние, ошибка).
 
-    Только через headless-браузер: Cloudflare смотрит не на куки, а на
-    TLS-отпечаток клиента — прямой запрос даже с куками из браузера стабильно
-    получает 403 (проверено). С боевыми аргументами запуска проекта проверка
-    проходит незаметно и занимает ~10 секунд.
+    Сначала обычный HTTP с TLS-отпечатком Chrome (0.3с). Если curl_cffi не
+    установлен или Cloudflare поменял правила — поднимаем headless-браузер
+    (~10с), он проходит всегда.
     """
     import contextlib
     import json as _json
 
     import menu as _menu
+
+    fast = _http_stock(product_id)
+    if fast is not None:
+        return fast, ""
+
     from playwright.async_api import async_playwright
 
     prof = _menu._HERE / "data" / "bitrefill_stock_profile"
