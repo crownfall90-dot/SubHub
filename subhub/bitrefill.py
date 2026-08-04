@@ -173,15 +173,46 @@ def stock_message(state: dict) -> str:
     return "\n".join(lines)
 
 
+def stock_gone_message(gone: list, state: dict) -> str:
+    """Текст о том, что номинал закончился: что ушло и что осталось (HTML)."""
+    name = state.get("name") or "Flipkart India"
+    cur = state.get("currency") or "INR"
+    gone_ints = {int(g) for g in gone}
+    left = [d for d in (state.get("denoms") or [])
+            if int(d.get("value") or 0) not in gone_ints]
+    gone_s = ", ".join(f"<b>{g} {cur}</b>" for g in sorted(gone_ints))
+    lines = [f"\u274c <b>{name}</b> \u2014 закончился {gone_s}",
+             "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+             "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501", ""]
+    if state.get("in_stock") and left:
+        lines.append("Остались в наличии:")
+        for d in left:
+            price = f"  \u00b7  ${d['usd']:.2f}" if d.get("usd") is not None else ""
+            lines.append(f"\u25b8 <b>{d['value']} {cur}</b>{price}")
+    else:
+        lines.append("\U0001f6ab <b>Нет в наличии</b> \u2014 не осталось ничего.")
+        lines.append("<i>Сообщу, когда завезут.</i>")
+    return "\n".join(lines)
+
+
+
+
+
+
+
+
+
+
 async def check_stock(product_id: str = PRODUCT_ID) -> tuple[dict, str]:
     """Смотрит наличие на сайте. Возвращает (состояние, ошибка).
 
-    Через headless-браузер: сайт под Cloudflare, обычный запрос получает 403.
-    С боевыми аргументами запуска проекта проверка проходит незаметно.
+    Только через headless-браузер: Cloudflare смотрит не на куки, а на
+    TLS-отпечаток клиента — прямой запрос даже с куками из браузера стабильно
+    получает 403 (проверено). С боевыми аргументами запуска проекта проверка
+    проходит незаметно и занимает ~10 секунд.
     """
     import contextlib
     import json as _json
-    import tempfile
 
     import menu as _menu
     from playwright.async_api import async_playwright

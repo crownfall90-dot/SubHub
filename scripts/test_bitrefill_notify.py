@@ -65,22 +65,34 @@ def main() -> None:
         assert len(sent) == 2, sent
         assert "500 INR" in sent[1] and "100 INR" in sent[1], sent[1]
 
-        # 5. Пропал — молчим, но состояние обновилось
-        feed(OUT)
-        asyncio.run(m._bitrefill_check_once())
-        assert len(sent) == 2, "об исчезновении товара сообщать не просили"
-        saved = json.loads(tmp.read_text(encoding="utf-8"))
-        assert saved["in_stock"] is False, saved
-
-        # 6. Появился снова — снова сообщаем
+        # 5. Один номинал ушёл, другой остался — говорим что кончилось и что есть
         feed(IN_100)
         asyncio.run(m._bitrefill_check_once())
         assert len(sent) == 3, sent
+        assert "закончился" in sent[2] and "500 INR" in sent[2], sent[2]
+        assert "Остались" in sent[2] and "100 INR" in sent[2], sent[2]
 
-        # 7. notify=False (кнопка «проверить сейчас») ничего не шлёт
+        # 6. Пропало всё — сообщаем, что в наличии ничего нет
+        feed(OUT)
+        asyncio.run(m._bitrefill_check_once())
+        assert len(sent) == 4, sent
+        assert "Нет в наличии" in sent[3] or "нет в наличии" in sent[3], sent[3]
+        saved = json.loads(tmp.read_text(encoding="utf-8"))
+        assert saved["in_stock"] is False, saved
+
+        # 7. Пока пусто — молчим
+        asyncio.run(m._bitrefill_check_once())
+        assert len(sent) == 4, f"повтор об отсутствии: {sent[4:]}"
+
+        # 8. Появился снова — снова сообщаем
+        feed(IN_100)
+        asyncio.run(m._bitrefill_check_once())
+        assert len(sent) == 5, sent
+
+        # 9. notify=False (кнопка «проверить сейчас») ничего не шлёт
         feed(IN_100_500)
         asyncio.run(m._bitrefill_check_once(False))
-        assert len(sent) == 3, "ручная проверка не должна слать уведомление"
+        assert len(sent) == 5, "ручная проверка не должна слать уведомление"
     finally:
         m.BITREFILL_STOCK_FILE, m._bitrefill_notify, b.check_stock = (
             orig_file, orig_notify, orig_check)

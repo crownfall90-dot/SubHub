@@ -16903,9 +16903,12 @@ def _migrate_config() -> None:
 
 
 BITREFILL_STOCK_FILE = _DATA / "bitrefill_stock.json"
-# Как часто спрашивать сайт о наличии. Проверка поднимает headless-браузер,
-# поэтому редко: товар завозят партиями, минуты роли не играют.
-_BITREFILL_CHECK_EVERY = 20 * 60
+# Как часто спрашивать сайт о наличии. Каждая проверка поднимает headless-
+# Chrome (~10с): обойтись прямым запросом нельзя, Cloudflare режет его по
+# TLS-отпечатку. 10 минут — компромисс между «узнать быстро» и «не жечь
+# процессор впустую»; при сбоях интервал растёт до получаса.
+_BITREFILL_CHECK_EVERY = 10 * 60
+_BITREFILL_BACKOFF_MAX = 30 * 60
 
 
 def _bitrefill_notify(text: str) -> None:
@@ -16950,11 +16953,22 @@ async def _bitrefill_check_once(notify: bool = True) -> tuple[dict, str]:
     now_denoms = {int(d.get("value") or 0) for d in (state.get("denoms") or [])}
     appeared = state.get("in_stock") and not prev.get("in_stock")
     new_denoms = state.get("in_stock") and (now_denoms - prev_denoms)
+    # Об исчезновении говорим, только если раньше товар был в наличии — иначе
+    # сыпались бы сообщения при каждой смене витрины у распроданного товара.
+    was_in = bool(prev.get("in_stock"))
+    gone_denoms = (prev_denoms - now_denoms) if was_in else set()
+    went_out = was_in and not state.get("in_stock")
     with contextlib.suppress(Exception):
         _atomic_write_text(BITREFILL_STOCK_FILE,
                            json.dumps({**state, "checked_ts": time.time()},
                                       ensure_ascii=False, indent=2))
     if notify and (appeared or new_denoms):
+        _bitrefill_notify(_br.stock_message(state))
+    elif notify and gone_denoms:
+        # какой номинал ушёл и что осталось (или что не осталось ничего)
+        _bitrefill_notify(_br.stock_gone_message(sorted(gone_denoms), state))
+    elif notify and went_out:
+        # витрина та же, но купить уже нечего
         _bitrefill_notify(_br.stock_message(state))
     return state, ""
 
@@ -16964,10 +16978,16 @@ def _bitrefill_stock_watch() -> None:
     import threading as _thr
 
     def _loop():
+        delay = _BITREFILL_CHECK_EVERY
         while True:
+            ok = False
             with contextlib.suppress(Exception):
-                asyncio.run(_bitrefill_check_once())
-            time.sleep(_BITREFILL_CHECK_EVERY)
+                _st, _err = asyncio.run(_bitrefill_check_once())
+                ok = bool(_st) and not _err
+            # Сайт молчит — отступаем, чтобы не долбить его вхолостую
+            delay = (_BITREFILL_CHECK_EVERY if ok
+                     else min(delay * 2, _BITREFILL_BACKOFF_MAX))
+            time.sleep(delay)
 
     # API-ключ здесь не нужен: наличие читается с сайта, а не через API
     # (товар закрыт для нашего аккаунта — /products/flipkart-india даёт 403).
